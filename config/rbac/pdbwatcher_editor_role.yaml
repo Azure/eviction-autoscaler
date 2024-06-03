@@ -1,0 +1,27 @@
+# permissions for end users to edit pdbwatchers.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-pdb-autoscaler
+    app.kubernetes.io/managed-by: kustomize
+  name: pdbwatcher-editor-role
+rules:
+- apiGroups:
+  - apps.mydomain.com
+  resources:
+  - pdbwatchers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps.mydomain.com
+  resources:
+  - pdbwatchers/status
+  verbs:
+  - get

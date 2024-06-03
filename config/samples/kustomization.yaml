@@ -1,0 +1,4 @@
+## Append samples of your project ##
+resources:
+- apps_v1_pdbwatcher.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

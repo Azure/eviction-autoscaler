@@ -63,7 +63,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: controller:latest
+        image: javgarcia0907/k8s-pdb-autoscaler:latest
         name: manager
         securityContext:
           allowPrivilegeEscalation: false

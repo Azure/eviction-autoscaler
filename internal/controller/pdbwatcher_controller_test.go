@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package controller
+package controllers
 
 import (
 	"context"
@@ -38,7 +38,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: "default", // TODO: Modify as needed
 		}
 		pdbwatcher := &appsv1.PDBWatcher{}
 
@@ -51,14 +51,14 @@ var _ = Describe("PDBWatcher Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					// TODO: Specify other spec details if needed.
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
 		})
 
 		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
+			// TODO: Cleanup logic after each test, like removing the resource instance.
 			resource := &appsv1.PDBWatcher{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
@@ -66,6 +66,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			By("Cleanup the specific resource instance PDBWatcher")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
+
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
 			controllerReconciler := &PDBWatcherReconciler{
@@ -77,8 +78,6 @@ var _ = Describe("PDBWatcher Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
 		})
 	})
 })

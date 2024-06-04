@@ -35,7 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	appsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
-	"github.com/Javier090/k8s-pdb-autoscaler/internal/controller"
+	controllers "github.com/Javier090/k8s-pdb-autoscaler/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -123,7 +123,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.PDBWatcherReconciler{
+	if err = (&controllers.PDBWatcherReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {

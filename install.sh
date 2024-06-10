@@ -3,7 +3,6 @@
 # Define variables
 DOCKER_IMAGE="javgarcia0907/k8s-pdb-autoscaler:latest"
 NAMESPACE="system"
-CRD_FILE="config/crd/bases"
 DEPLOYMENT_FILE="config/manager/manager.yaml"
 SERVICE_ACCOUNT_FILE="service_account.yaml"
 ROLE_FILE="role.yaml"
@@ -13,7 +12,7 @@ CLUSTER_ROLE_BINDING_FILE="clusterrolebinding.yaml"
 PDB_FILE="testPDB.yaml"
 DEPLOYMENT_TEST_FILE="testDeployment.yaml"
 
-# Function to create namespace if not exists
+
 create_namespace() {
   kubectl get namespace $1 > /dev/null 2>&1
   if [ $? -ne 0 ]; then
@@ -49,8 +48,6 @@ docker push $DOCKER_IMAGE
 # Create namespace
 create_namespace $NAMESPACE
 
-# Apply CRD
-apply_yaml $CRD_FILE
 
 # Apply Service Account
 apply_yaml $SERVICE_ACCOUNT_FILE

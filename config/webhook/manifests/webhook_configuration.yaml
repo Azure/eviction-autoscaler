@@ -1,0 +1,20 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: eviction-webhook
+webhooks:
+  - name: eviction.mydomain.com
+    clientConfig:
+      service:
+        name: eviction-webhook-service
+        namespace: default
+        path: /validate-eviction
+      caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUM1VENDQWMwQ0ZFR21sdVVJazMrUnJzdEFaNXNPblJZN1BERU5NQTBHQ1NxR1NJYjNEUUVCQ3dVQU1DOHgKTFRBckJnTlZCQU1NSkdWMmFXTjBhVzl1TFhkbFltaHZiMnN0YzJWeWRtbGpaUzVrWldaaGRXeDBMbk4yWXpBZQpGdzB5TkRBMk1UTXlNVFF5TVRoYUZ3MHlOVEEyTVRNeU1UUXlNVGhhTUM4eExUQXJCZ05WQkFNTUpHVjJhV04wCmFXOXVMWGRsWW1odmIyc3RjMlZ5ZG1salpTNWtaV1poZFd4MExuTjJZekNDQVNJd0RRWUpLb1pJaHZjTkFRRUIKQlFBRGdnRVBBRENDQVFvQ2dnRUJBTE8xR2JDQ0dsOXJlRlpKSEJ3M3JFMlozZXNxdGpNbHlnRXJtc2NlbGtZeApGLzNTZWh5L09FcVpoRFVieWx6OXFLWFJ6NkxraFUwRm43V0F2QW9GcEthbFl6MkY1YlBxNkZWd2xwT3dYNG1vCmRrYlVqRVdBOUIwU3RkcFZQc2hFbEVIZ3JVaUpkd0F2Yi95QWFoZGJEN05zWFdQa1NHMVNZUzA3amVhOC9MYjMKTHVMTHE3TFBUVHVJL3l2TFdESStGbk9OYzBacE04L3Y2QkV2UjdOdGZJaU1leklZZ0JQdElDc01YSXFQTy9ESAoxMjVoNnR5UzRub3NvMzQ1V3dhZ3dSYjdFNFordzZIZWZDUllIOTZzUytNQ2dRbGthNllrRjBoUFIyNVlFNHlUCmNSa2h4eDlCZ2wxT2t0VVpQbkxOTGhZUnRQOEV4UjhvWjdTTHZUZHVoOVVDQXdFQUFUQU5CZ2txaGtpRzl3MEIKQVFzRkFBT0NBUUVBVVBKY1YzT1FpYU5nemNBUjhyTWJPWmlHb1VxVEkxcm14RSs1c011ZWx5SUV6RXRKWlQ4dQpsT0pQbmtGSDA1RTlrU1c0bWdKWXVrZU0rN21pWGFwQXM3eWR4UHh4RU43djU3U3plZ0pzQjdKMFFyZG5yVktuCk9FTVBCL3pkbElDMFJocG1SWmlXekdFSE1NY2pqK2hReFFRejdaTTk4bWxXVDVCNGk5WFRlOTdNaXQySXNtaFoKc3YyRTUvWTlEWjBObk5OdndCYkptVzcvY2lnbWxMRDgybE9aTkJhLzFwMmhvNWRBR2o5WGFIL3RCNnhpUUVIagpDbjA2MXRWVDYxYnpkZkZaek5mNnQzaW5DM0NpdGIwUEp4Tk5jL2pPaEhFNTZLdFhQR3FmakJBNTEzekwzb0FQCnRRK0toQ09WV3dqcDQrY3FVcmZHemk1alJZMER5ajNGOVE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg== # Base64 encoded CA bundle
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods/eviction"]
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore

@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eviction-webhook
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eviction-webhook
+  template:
+    metadata:
+      labels:
+        app: eviction-webhook
+    spec:
+      containers:
+        - name: eviction-webhook
+          image: javgarcia0907/k8s-pdb-autoscaler:latest
+          ports:
+            - containerPort: 443
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /certs
+              readOnly: true
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "250m"
+            limits:
+              memory: "128Mi"
+              cpu: "500m"
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: webhook-certs
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eviction-webhook-service
+  namespace: default
+spec:
+  ports:
+    - port: 443
+      targetPort: 443
+  selector:
+    app: eviction-webhook

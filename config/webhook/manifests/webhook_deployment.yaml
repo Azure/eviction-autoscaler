@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: eviction-webhook
-  namespace: default
+  namespace: system
 spec:
   replicas: 1
   selector:
@@ -13,6 +13,7 @@ spec:
       labels:
         app: eviction-webhook
     spec:
+      serviceAccountName: eviction-webhook
       containers:
         - name: eviction-webhook
           image: javgarcia0907/k8s-pdb-autoscaler:latest
@@ -38,7 +39,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: eviction-webhook-service
-  namespace: default
+  namespace: system
 spec:
   ports:
     - port: 443

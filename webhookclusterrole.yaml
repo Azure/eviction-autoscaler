@@ -1,7 +1,7 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: pdbwatcher-role
+  name: webhook-role
 rules:
 - apiGroups: ["apps.mydomain.com"]
   resources: ["pdbwatchers"]

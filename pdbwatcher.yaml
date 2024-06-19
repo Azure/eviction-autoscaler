@@ -4,7 +4,7 @@ metadata:
   name: example-pdbwatcher
   namespace: system
 spec:
-  pdbName: example-pdb
+  pdbName: example-pdbwatcher
   deploymentName: example-deployment
   scaleFactor: 1
   minReplicas: 1

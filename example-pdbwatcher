@@ -1,8 +1,8 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: example-deployment
-  namespace: default
+  name: example-pdbwatcher
+  namespace: system
 spec:
   replicas: 1
   selector:

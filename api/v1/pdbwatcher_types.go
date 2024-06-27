@@ -6,18 +6,28 @@ import (
 
 // PDBWatcherSpec defines the desired state of PDBWatcher
 type PDBWatcherSpec struct {
-	PDBName        string `json:"pdbName"`
+	// PDBName is the name of the Pod Disruption Budget to watch.
+	PDBName string `json:"pdbName"`
+	// DeploymentName is the name of the Deployment to scale.
 	DeploymentName string `json:"deploymentName"`
-	ScaleFactor    int32  `json:"scaleFactor"`
-	MinReplicas    int32  `json:"minReplicas"`
-	MaxReplicas    int32  `json:"maxReplicas"`
+	// ScaleFactor is the factor by which the Deployment should be scaled.
+	ScaleFactor int32 `json:"scaleFactor"`
+	// MinReplicas is the minimum number of replicas to maintain for the Deployment.
+	// Note: The scaling will start from this value.
+	MinReplicas int32 `json:"minReplicas"`
+	// MaxReplicas is the maximum number of replicas to maintain for the Deployment defined by the MaxSurge amout.
+	// Note: The scaling will not exceed this value.
+	MaxReplicas int32 `json:"maxReplicas"`
 }
 
 // PDBWatcherStatus defines the observed state of PDBWatcher
 type PDBWatcherStatus struct {
-	CurrentReplicas    int32  `json:"currentReplicas"`
-	DisruptionsAllowed int32  `json:"disruptionsAllowed"`
-	Error              string `json:"error,omitempty"`
+	// CurrentReplicas is the current number of replicas of the Deployment.
+	CurrentReplicas int32 `json:"currentReplicas"`
+	// DisruptionsAllowed is the current number of disruptions allowed for the PDB.
+	DisruptionsAllowed int32 `json:"disruptionsAllowed"`
+	// Error contains any error encountered during the reconcile process.
+	Error string `json:"error,omitempty"`
 }
 
 // +kubebuilder:object:root=true

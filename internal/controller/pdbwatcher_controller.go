@@ -127,7 +127,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 			// Check if the eviction was recent (within the last 5 minutes)
 			if time.Since(evictionTime) < 5*time.Minute {
-				// Add logic to handle recent evictions if needed
 				logger.Info(fmt.Sprintf("Recent eviction for Pod %s at %s", log.PodName, log.EvictionTime))
 			}
 		}

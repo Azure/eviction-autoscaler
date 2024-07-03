@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -113,6 +114,31 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
+	}
+
+	// Process Eviction Logs
+	if len(pdbWatcher.Status.EvictionLogs) > 0 {
+		for _, log := range pdbWatcher.Status.EvictionLogs {
+			evictionTime, err := time.Parse(time.RFC3339, log.EvictionTime)
+			if err != nil {
+				logger.Error(err, "Failed to parse eviction time")
+				continue
+			}
+
+			// Check if the eviction was recent (within the last 5 minutes)
+			if time.Since(evictionTime) < 5*time.Minute {
+				// Add logic to handle recent evictions if needed
+				logger.Info(fmt.Sprintf("Recent eviction for Pod %s at %s", log.PodName, log.EvictionTime))
+			}
+		}
+
+		// Clear eviction logs after processing
+		pdbWatcher.Status.EvictionLogs = []myappsv1.EvictionLog{}
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil

@@ -54,6 +54,17 @@ spec:
                 disruptionsAllowed:
                   type: integer
                   description: "The current number of disruptions allowed for the PDB."
+                evictionLogs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      podName:
+                        type: string
+                      evictionTime:
+                        type: string
+                      status:
+                        type: string
               required:
                 - currentReplicas
                 - disruptionsAllowed

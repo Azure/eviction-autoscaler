@@ -8,7 +8,6 @@ import (
 
 	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
 	"github.com/go-logr/logr"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -51,17 +50,37 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		EvictionTime: time.Now().Format(time.RFC3339),
 	}
 
-	// Fetch the PDBWatcher instance
-	pdbWatcher := &myappsv1.PDBWatcher{}
-	err := e.Client.Get(ctx, types.NamespacedName{Name: "example-pdbwatcher", Namespace: req.Namespace}, pdbWatcher)
+	// List all PDBWatchers
+	pdbWatcherList := &myappsv1.PDBWatcherList{}
+	err := e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
-		logger.Error(err, "Unable to fetch PDBWatcher")
-		return admission.Errored(http.StatusInternalServerError, err)
+		logger.Error(err, "Unable to list PDBWatchers")
+		return admission.Errored(http.StatusInternalServerError, err) // don't want to block eviction
+	}
+
+	// Find the applicable PDBWatcher
+	var applicablePDBWatcher *myappsv1.PDBWatcher
+	for _, pdbWatcher := range pdbWatcherList.Items {
+		// Add your logic to identify the applicable PDBWatcher
+		// For example, based on labels, annotations, etc.
+		applicablePDBWatcher = &pdbWatcher
+		break
+	}
+
+	if applicablePDBWatcher == nil {
+		logger.Info("No applicable PDBWatcher found")
+		return admission.Allowed("no applicable PDBWatcher")
 	}
 
 	// Update the PDBWatcher status with the new eviction log
-	pdbWatcher.Status.EvictionLogs = append(pdbWatcher.Status.EvictionLogs, evictionLog)
-	err = e.Client.Status().Update(ctx, pdbWatcher)
+	// Ensure the eviction log does not grow indefinitely
+	maxLogs := 100
+	if len(applicablePDBWatcher.Status.EvictionLogs) >= maxLogs {
+		applicablePDBWatcher.Status.EvictionLogs = applicablePDBWatcher.Status.EvictionLogs[1:]
+	}
+	applicablePDBWatcher.Status.EvictionLogs = append(applicablePDBWatcher.Status.EvictionLogs, evictionLog)
+
+	err = e.Client.Status().Update(ctx, applicablePDBWatcher)
 	if err != nil {
 		logger.Error(err, "Unable to update PDBWatcher status")
 		return admission.Errored(http.StatusInternalServerError, err)

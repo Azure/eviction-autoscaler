@@ -27,24 +27,9 @@ spec:
                 deploymentName:
                   type: string
                   description: "The name of the Deployment to scale."
-                scaleFactor:
-                  type: integer
-                  description: "The number by which to scale the Deployment."
-                  minimum: 1
-                minReplicas:
-                  type: integer
-                  description: "The minimum number of replicas to maintain."
-                  minimum: 1
-                maxReplicas:
-                  type: integer
-                  description: "The maximum number of replicas to maintain."
-                  minimum: 1
               required:
                 - pdbName
                 - deploymentName
-                - scaleFactor
-                - minReplicas
-                - maxReplicas
             status:
               type: object
               properties:
@@ -65,9 +50,24 @@ spec:
                         type: string
                       status:
                         type: string
+                scaleFactor:
+                  type: integer
+                  description: "The number by which to scale the Deployment."
+                  minimum: 1
+                minReplicas:
+                  type: integer
+                  description: "The minimum number of replicas to maintain."
+                  minimum: 1
+                maxReplicas:
+                  type: integer
+                  description: "The maximum number of replicas to maintain."
+                  minimum: 1
               required:
                 - currentReplicas
                 - disruptionsAllowed
+                - scaleFactor
+                - minReplicas
+                - maxReplicas
       additionalPrinterColumns:
         - name: PDB Name
           type: string
@@ -80,15 +80,15 @@ spec:
         - name: Scale Factor
           type: integer
           description: "The scale factor for the Deployment"
-          jsonPath: .spec.scaleFactor
+          jsonPath: .status.scaleFactor
         - name: Min Replicas
           type: integer
           description: "The minimum number of replicas"
-          jsonPath: .spec.minReplicas
+          jsonPath: .status.minReplicas
         - name: Max Replicas
           type: integer
           description: "The maximum number of replicas"
-          jsonPath: .spec.maxReplicas
+          jsonPath: .status.maxReplicas
         - name: Current Replicas
           type: integer
           description: "The current number of replicas"

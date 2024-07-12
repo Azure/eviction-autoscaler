@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -22,12 +23,15 @@ import (
 // PDBWatcherReconciler reconciles a PDBWatcher object
 type PDBWatcherReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 
 func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -82,10 +86,11 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if len(deploymentMap) > 1 {
+		r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "MultipleDeployments", "PDB overlaps with multiple deployments")
 		return ctrl.Result{}, fmt.Errorf("PDB %s/%s overlaps with multiple deployments", pdbWatcher.Namespace, pdbWatcher.Spec.PDBName)
 	}
 
-	// Fetch the Deployment
+	// Determine the deployment name
 	deploymentName := pdbWatcher.Spec.DeploymentName
 	if len(deploymentMap) == 1 {
 		for name := range deploymentMap {
@@ -93,31 +98,29 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// Fetch the Deployment
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Check the DisruptionsAllowed field
-	if pdb.Status.DisruptionsAllowed == 0 {
-		// Scale up the Deployment
-		newReplicas := *deployment.Spec.Replicas + pdbWatcher.Spec.ScaleFactor
-		if newReplicas > pdbWatcher.Spec.MaxReplicas {
-			newReplicas = pdbWatcher.Spec.MaxReplicas
-		}
-		deployment.Spec.Replicas = &newReplicas
-		err = r.Update(ctx, deployment)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
+	// Update status dynamically
+	pdbWatcher.Status.CurrentReplicas = *deployment.Spec.Replicas
+	pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
+	pdbWatcher.Status.MaxReplicas = *deployment.Spec.Replicas + deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
+	pdbWatcher.Status.ScaleFactor = 1 // This can be dynamically calculated based on your requirements
 
-		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
+	err = r.Status().Update(ctx, pdbWatcher)
+	if err != nil {
+		logger.Error(err, "Failed to update PDBWatcher status")
+		return ctrl.Result{}, err
 	}
 
-	// Process Eviction Logs
-	if len(pdbWatcher.Status.EvictionLogs) > 0 {
+	// Check the DisruptionsAllowed field
+	if pdb.Status.DisruptionsAllowed == 0 {
+		// Check if there are recent evictions
+		recentEviction := false
 		for _, log := range pdbWatcher.Status.EvictionLogs {
 			evictionTime, err := time.Parse(time.RFC3339, log.EvictionTime)
 			if err != nil {
@@ -125,12 +128,31 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				continue
 			}
 
-			// Check if the eviction was recent (within the last 5 minutes)
 			if time.Since(evictionTime) < 5*time.Minute {
-				logger.Info(fmt.Sprintf("Recent eviction for Pod %s at %s", log.PodName, log.EvictionTime))
+				recentEviction = true
+				break
 			}
 		}
 
+		if recentEviction {
+			// Scale up the Deployment
+			newReplicas := pdbWatcher.Status.CurrentReplicas + pdbWatcher.Status.ScaleFactor
+			if newReplicas > pdbWatcher.Status.MaxReplicas {
+				newReplicas = pdbWatcher.Status.MaxReplicas
+			}
+			deployment.Spec.Replicas = &newReplicas
+			err = r.Update(ctx, deployment)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			// Log the scaling action
+			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
+		}
+	}
+
+	// Process Eviction Logs
+	if len(pdbWatcher.Status.EvictionLogs) > 0 {
 		// Clear eviction logs after processing
 		pdbWatcher.Status.EvictionLogs = []myappsv1.EvictionLog{}
 		err = r.Status().Update(ctx, pdbWatcher)
@@ -140,6 +162,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
+	// What will return us to the original state? Assuming we need a watch on PDB for it to come off
 	return ctrl.Result{}, nil
 }
 

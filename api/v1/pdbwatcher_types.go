@@ -14,9 +14,6 @@ type EvictionLog struct {
 type PDBWatcherSpec struct {
 	PDBName        string `json:"pdbName"`
 	DeploymentName string `json:"deploymentName"`
-	ScaleFactor    int32  `json:"scaleFactor"`
-	MinReplicas    int32  `json:"minReplicas"` // Minimum number of replicas to maintain
-	MaxReplicas    int32  `json:"maxReplicas"` // Maximum number of replicas to maintain
 }
 
 // PDBWatcherStatus defines the observed state of PDBWatcher
@@ -24,6 +21,9 @@ type PDBWatcherStatus struct {
 	CurrentReplicas    int32         `json:"currentReplicas"`
 	DisruptionsAllowed int32         `json:"disruptionsAllowed"`
 	EvictionLogs       []EvictionLog `json:"evictionLogs,omitempty"`
+	ScaleFactor        int32         `json:"scaleFactor"`
+	MinReplicas        int32         `json:"minReplicas"` // Minimum number of replicas to maintain
+	MaxReplicas        int32         `json:"maxReplicas"` // Maximum number of replicas to maintain
 }
 
 // +kubebuilder:object:root=true

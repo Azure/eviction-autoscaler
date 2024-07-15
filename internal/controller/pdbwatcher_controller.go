@@ -53,6 +53,27 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// Fetch all PDBWatchers in the namespace
+	pdbWatcherList := &myappsv1.PDBWatcherList{}
+	err = r.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Find the applicable PDBWatcher
+	var applicablePDBWatcher *myappsv1.PDBWatcher
+	for _, watcher := range pdbWatcherList.Items {
+		if watcher.Spec.PDBName == pdb.Name {
+			applicablePDBWatcher = &watcher
+			break
+		}
+	}
+
+	if applicablePDBWatcher == nil {
+		logger.Info("No applicable PDBWatcher found")
+		return ctrl.Result{}, nil
+	}
+
 	// Check if PDB overlaps with multiple deployments
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
@@ -106,10 +127,14 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Update status dynamically
-	pdbWatcher.Status.CurrentReplicas = *deployment.Spec.Replicas
+	if pdbWatcher.Status.CurrentReplicas == 0 {
+		pdbWatcher.Status.CurrentReplicas = *deployment.Spec.Replicas
+	}
 	pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
-	pdbWatcher.Status.MaxReplicas = *deployment.Spec.Replicas + deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
-	pdbWatcher.Status.ScaleFactor = 1 // This can be dynamically calculated based on your requirements
+	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		pdbWatcher.Status.MaxReplicas = *deployment.Spec.Replicas + int32(deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue())
+	}
+	pdbWatcher.Status.ScaleFactor = 1
 
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
@@ -162,7 +187,17 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// What will return us to the original state? Assuming we need a watch on PDB for it to come off
+	// Watch for changes in PDB to revert to original state
+	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
+		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
+		err = r.Update(ctx, deployment)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		// Log the scaling action
+		logger.Info(fmt.Sprintf("Scaled down Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, pdbWatcher.Status.MinReplicas))
+	}
+
 	return ctrl.Result{}, nil
 }
 

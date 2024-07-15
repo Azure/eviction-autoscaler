@@ -8,6 +8,11 @@ import (
 
 	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
@@ -50,21 +55,44 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		EvictionTime: time.Now().Format(time.RFC3339),
 	}
 
-	// List all PDBWatchers
+	// Fetch the pod to get its labels
+	pod := &corev1.Pod{}
+	err := e.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, pod)
+	if err != nil {
+		logger.Error(err, "Unable to fetch Pod")
+		return admission.Errored(http.StatusInternalServerError, err)
+	}
+
+	// List all PDBWatchers in the namespace
 	pdbWatcherList := &myappsv1.PDBWatcherList{}
-	err := e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
+	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
 		logger.Error(err, "Unable to list PDBWatchers")
-		return admission.Errored(http.StatusInternalServerError, err) // don't want to block eviction
+		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
 	// Find the applicable PDBWatcher
 	var applicablePDBWatcher *myappsv1.PDBWatcher
 	for _, pdbWatcher := range pdbWatcherList.Items {
-		// Add your logic to identify the applicable PDBWatcher
-		// For example, based on labels, annotations, etc.
-		applicablePDBWatcher = &pdbWatcher
-		break
+		// Fetch the associated PDB
+		pdb := &policyv1.PodDisruptionBudget{}
+		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
+		if err != nil {
+			logger.Error(err, "Unable to fetch PDB", "pdbName", pdbWatcher.Spec.PDBName)
+			continue
+		}
+
+		// Check if the PDB selector matches the evicted pod's labels
+		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+		if err != nil {
+			logger.Error(err, "Invalid PDB selector", "pdbName", pdbWatcher.Spec.PDBName)
+			continue
+		}
+
+		if selector.Matches(labels.Set(pod.Labels)) {
+			applicablePDBWatcher = &pdbWatcher
+			break
+		}
 	}
 
 	if applicablePDBWatcher == nil {
@@ -86,6 +114,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
+	logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", evictionLog.EvictionTime)
 	return admission.Allowed("eviction allowed")
 }
 

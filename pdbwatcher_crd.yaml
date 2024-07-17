@@ -27,6 +27,29 @@ spec:
                 deploymentName:
                   type: string
                   description: "The name of the Deployment to scale."
+              required:
+                - pdbName
+                - deploymentName
+            status:
+              type: object
+              properties:
+                currentReplicas:
+                  type: integer
+                  description: "The current number of replicas of the Deployment."
+                disruptionsAllowed:
+                  type: integer
+                  description: "The current number of disruptions allowed for the PDB."
+                evictionLogs:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      podName:
+                        type: string
+                      evictionTime:
+                        type: string
+                      status:
+                        type: string
                 scaleFactor:
                   type: integer
                   description: "The number by which to scale the Deployment."
@@ -40,23 +63,11 @@ spec:
                   description: "The maximum number of replicas to maintain."
                   minimum: 1
               required:
-                - pdbName
-                - deploymentName
+                - currentReplicas
+                - disruptionsAllowed
                 - scaleFactor
                 - minReplicas
                 - maxReplicas
-            status:
-              type: object
-              properties:
-                currentReplicas:
-                  type: integer
-                  description: "The current number of replicas of the Deployment."
-                disruptionsAllowed:
-                  type: integer
-                  description: "The current number of disruptions allowed for the PDB."
-              required:
-                - currentReplicas
-                - disruptionsAllowed
       additionalPrinterColumns:
         - name: PDB Name
           type: string
@@ -69,15 +80,15 @@ spec:
         - name: Scale Factor
           type: integer
           description: "The scale factor for the Deployment"
-          jsonPath: .spec.scaleFactor
+          jsonPath: .status.scaleFactor
         - name: Min Replicas
           type: integer
           description: "The minimum number of replicas"
-          jsonPath: .spec.minReplicas
+          jsonPath: .status.minReplicas
         - name: Max Replicas
           type: integer
           description: "The maximum number of replicas"
-          jsonPath: .spec.maxReplicas
+          jsonPath: .status.maxReplicas
         - name: Current Replicas
           type: integer
           description: "The current number of replicas"

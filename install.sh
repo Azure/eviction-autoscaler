@@ -9,9 +9,18 @@ ROLE_FILE="role.yaml"
 ROLE_BINDING_FILE="role_binding.yaml"
 CLUSTER_ROLE_FILE="clusterrole.yaml"
 CLUSTER_ROLE_BINDING_FILE="clusterrolebinding.yaml"
-PDB_FILE="testPDB.yaml"
-DEPLOYMENT_TEST_FILE="testDeployment.yaml"
-
+PDB_FILE="pdb.yaml"
+EXAMPLE_PDBWATCHER_FILE="example-pdbwatcher"
+WEBHOOK_CLUSTER_ROLE_FILE="webhookclusterrole.yaml"
+WEBHOOK_ROLE_BINDING_FILE="webhookrolebind.yaml"
+WEBHOOK_SERVICE_FILE="config/webhook/manifests/web_service.yml"
+WEBHOOK_CONFIGURATION_FILE="config/webhook/manifests/webhook_configuration.yaml"
+WEBHOOK_DEPLOYMENT_FILE="config/webhook/manifests/webhook_deployment.yaml"
+WEBHOOK_CERTS_SECRET="webhook-certs"
+WEBHOOK_CERT_FILE="webhook.crt"
+WEBHOOK_KEY_FILE="webhook.key"
+PDBWATCHER_CRD_FILE="pdbwatcher_crd.yaml"
+PDBWATCHER_INSTANCE_FILE="pdbwatcher.yaml"
 
 create_namespace() {
   kubectl get namespace $1 > /dev/null 2>&1
@@ -34,6 +43,17 @@ apply_yaml() {
   fi
 }
 
+# Function to create a secret
+create_secret() {
+  if [ -f $2 ] && [ -f $3 ]; then
+    echo "Creating secret $1"
+    kubectl create secret generic $1 --from-file=tls.crt=$2 --from-file=tls.key=$3 -n $NAMESPACE
+  else
+    echo "Secret files $2 or $3 do not exist"
+    exit 1
+  fi
+}
+
 # Start installation
 echo "Starting installation..."
 
@@ -47,7 +67,6 @@ docker push $DOCKER_IMAGE
 
 # Create namespace
 create_namespace $NAMESPACE
-
 
 # Apply Service Account
 apply_yaml $SERVICE_ACCOUNT_FILE
@@ -70,8 +89,31 @@ apply_yaml $DEPLOYMENT_FILE
 # Apply PDB
 apply_yaml $PDB_FILE
 
-# Apply Deployment Test
-apply_yaml $DEPLOYMENT_TEST_FILE
+# Apply Example PDBWatcher
+apply_yaml $EXAMPLE_PDBWATCHER_FILE
+
+# Apply Webhook Cluster Role
+apply_yaml $WEBHOOK_CLUSTER_ROLE_FILE
+
+# Apply Webhook Role Binding
+apply_yaml $WEBHOOK_ROLE_BINDING_FILE
+
+# Apply Webhook Service
+apply_yaml $WEBHOOK_SERVICE_FILE
+
+# Apply Webhook Configuration
+apply_yaml $WEBHOOK_CONFIGURATION_FILE
+
+# Apply Webhook Deployment
+apply_yaml $WEBHOOK_DEPLOYMENT_FILE
+
+# Create Webhook Certificates Secret
+create_secret $WEBHOOK_CERTS_SECRET $WEBHOOK_CERT_FILE $WEBHOOK_KEY_FILE
+
+# Apply PDBWatcher CRD
+apply_yaml $PDBWATCHER_CRD_FILE
+
+# Apply PDBWatcher instance
+apply_yaml $PDBWATCHER_INSTANCE_FILE
 
 echo "Installation completed."
-

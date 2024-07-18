@@ -9,22 +9,20 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1" // Add this import
 )
 
 // PDBWatcherReconciler reconciles a PDBWatcher object
 type PDBWatcherReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers,verbs=get;list;watch;create;update;patch;delete
@@ -41,28 +39,28 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	err := r.Get(ctx, req.NamespacedName, pdbWatcher)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, nil // PDBWatcher not found, could be deleted, nothing to do
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
 
 	// Fetch the PDB
 	pdb := &policyv1.PodDisruptionBudget{}
 	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err // Error fetching PDB
 	}
 
 	// Check if PDB overlaps with multiple deployments
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err // Error converting label selector
 	}
 
 	podList := &corev1.PodList{}
 	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdbWatcher.Namespace, LabelSelector: selector})
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err // Error listing pods
 	}
 
 	deploymentMap := make(map[string]struct{})
@@ -72,7 +70,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, types.NamespacedName{Name: ownerRef.Name, Namespace: pdbWatcher.Namespace}, replicaSet)
 				if err != nil {
-					return ctrl.Result{}, err
+					return ctrl.Result{}, err // Error fetching ReplicaSet
 				}
 
 				// Get the Deployment that owns this ReplicaSet
@@ -86,7 +84,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if len(deploymentMap) > 1 {
-		r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "MultipleDeployments", "PDB overlaps with multiple deployments")
 		return ctrl.Result{}, fmt.Errorf("PDB %s/%s overlaps with multiple deployments", pdbWatcher.Namespace, pdbWatcher.Spec.PDBName)
 	}
 
@@ -102,14 +99,22 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
 	if err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, err // Error fetching Deployment
 	}
 
+	// Track resource version to detect conflicts
+	initialResourceVersion := deployment.ResourceVersion
+
 	// Update status dynamically
-	pdbWatcher.Status.CurrentReplicas = *deployment.Spec.Replicas
+	if pdbWatcher.Status.CurrentReplicas == 0 {
+		pdbWatcher.Status.CurrentReplicas = *deployment.Spec.Replicas
+	}
 	pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
-	pdbWatcher.Status.MaxReplicas = *deployment.Spec.Replicas + deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
-	pdbWatcher.Status.ScaleFactor = 1 // Dynamically Calculated
+	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		pdbWatcher.Status.MaxReplicas = *deployment.Spec.Replicas + int32(deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntValue())
+	}
+	pdbWatcher.Status.ScaleFactor = 1 // Modify based on requirements
+
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
 		logger.Error(err, "Failed to update PDBWatcher status")
@@ -161,7 +166,19 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// What will return us to the original state? Assuming we need a watch on PDB for it to come off
+	// Watch for changes in PDB to revert to original state
+	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
+		if deployment.ResourceVersion != initialResourceVersion {
+			deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
+			err = r.Update(ctx, deployment)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			// Log the scaling action
+			logger.Info(fmt.Sprintf("Scaled down Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, pdbWatcher.Status.MinReplicas))
+		}
+	}
+
 	return ctrl.Result{}, nil
 }
 

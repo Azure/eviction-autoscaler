@@ -26,10 +26,15 @@ spec:
                   description: "The name of the Pod Disruption Budget to watch."
                 deploymentName:
                   type: string
-                  description: "The name of the Deployment to scale."
+                  description: "The name of the Deployment to scale. Optional."
+                  default: ""  # Optional field
+                scaleFactor:
+                  type: integer
+                  description: "The number by which to scale the Deployment. Optional."
+                  minimum: 1
+                  default: 1  # Default value
               required:
                 - pdbName
-                - deploymentName
             status:
               type: object
               properties:

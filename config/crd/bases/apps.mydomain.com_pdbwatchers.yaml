@@ -75,6 +75,8 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              resourceVersion:
+                type: string
               scaleFactor:
                 format: int32
                 type: integer
@@ -83,6 +85,7 @@ spec:
             - disruptionsAllowed
             - maxReplicas
             - minReplicas
+            - resourceVersion
             - scaleFactor
             type: object
         type: object

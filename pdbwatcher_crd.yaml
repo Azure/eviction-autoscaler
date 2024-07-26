@@ -26,11 +26,11 @@ spec:
                   description: "The name of the Pod Disruption Budget to watch."
                 deploymentName:
                   type: string
-                  description: "The name of the Deployment to scale. Optional."
+                  description: "The name of the Deployment to scale."
                   default: ""  # Optional field
                 scaleFactor:
                   type: integer
-                  description: "The number by which to scale the Deployment. Optional."
+                  description: "The number by which to scale the Deployment."
                   minimum: 1
                   default: 1  # Default value
               required:

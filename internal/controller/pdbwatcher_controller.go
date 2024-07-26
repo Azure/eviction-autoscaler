@@ -125,6 +125,19 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
 
+	// Check if the resource version has changed
+	if pdbWatcher.Status.ResourceVersion != "" && pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
+		// Update ResourceVersion and MinReplicas
+		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+		pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
 	// Track initial state to detect conflicts
 	initialResourceVersion := deployment.ResourceVersion
 	initialReplicas := *deployment.Spec.Replicas
@@ -208,30 +221,41 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Watch for changes in PDB to revert to original state
 	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
-		// Check if the resource version has changed
+		// Re-fetch the Deployment to ensure the resource version is up-to-date
 		err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 
-		if deployment.ResourceVersion != initialResourceVersion {
-			// Deployment has been modified externally, revert to the original state
-			deployment.Spec.Replicas = &initialReplicas
-			err = r.Update(ctx, deployment)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Log the scaling action
-			logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, initialReplicas))
-
-			// Update ResourceVersion in PDBWatcher status
+		// Check if the resource version has changed
+		if pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
+			// Deployment has been modified externally, update the resource version and min replicas
 			pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+			pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
 			err = r.Status().Update(ctx, pdbWatcher)
 			if err != nil {
 				logger.Error(err, "Failed to update PDBWatcher status")
 				return ctrl.Result{}, err
 			}
+			return ctrl.Result{}, nil
+		}
+
+		// Revert Deployment to the original state
+		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
+		err = r.Update(ctx, deployment)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		// Log the scaling action
+		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, *deployment.Spec.Replicas))
+
+		// Update ResourceVersion in PDBWatcher status
+		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
 		}
 	}
 

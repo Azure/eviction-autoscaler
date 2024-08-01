@@ -263,7 +263,32 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			logger.Error(err, "Failed to update PDBWatcher status")
 			return ctrl.Result{}, err
 		}
+		// Watch for changes in PDB to revert to the original state
+	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
+		// Attempt to revert Deployment to the original state
+		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
+		err = r.Update(ctx, deployment)
+		if err != nil {
+			if errors.IsConflict(err) {
+				// If a conflict occurs, it indicates an external modification; log and requeue
+				logger.Info("Deployment resource version conflict detected. Requeuing.")
+				return ctrl.Result{Requeue: true}, nil
+			}
+			return ctrl.Result{}, err
+		}
+
+		// Log the scaling action
+		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, *deployment.Spec.Replicas))
+
+		// Update ResourceVersion in PDBWatcher status after a successful update
+		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
+		}
 	}
+
 
 	return ctrl.Result{}, nil
 }

@@ -1,19 +1,7 @@
-apiVersion: apps/v1
-kind: Deployment
+apiVersion: apps.mydomain.com/v1
+kind: PDBWatcher
 metadata:
-  name: example-pdbwatcher
-  namespace: system
+  name: my-apps-pdb-watcher
+  namespace: default
 spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: example
-  template:
-    metadata:
-      labels:
-        app: example
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:latest
-
+  pdbName: example-pdb

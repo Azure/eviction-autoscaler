@@ -5,7 +5,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: controller-manager
-  namespace: system
+  namespace: default
 roleRef:
   kind: ClusterRole
   name: pdbwatcher-role

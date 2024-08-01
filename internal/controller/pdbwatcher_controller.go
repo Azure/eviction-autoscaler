@@ -112,10 +112,21 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Determine the deployment name
 	deploymentName := pdbWatcher.Spec.DeploymentName
-	if len(deploymentMap) == 1 {
+	if deploymentName == "" && len(deploymentMap) == 1 {
 		for name := range deploymentMap {
 			deploymentName = name
 		}
+	}
+
+	// Log the deployment map and deployment name for debugging
+	logger.Info(fmt.Sprintf("Deployment map: %v", deploymentMap))
+	logger.Info(fmt.Sprintf("Determined Deployment name: %s", deploymentName))
+
+	// Validate the deployment name
+	if deploymentName == "" {
+		errMsg := "Deployment name is empty"
+		logger.Error(fmt.Errorf(errMsg), errMsg)
+		return ctrl.Result{}, fmt.Errorf(errMsg)
 	}
 
 	// Fetch the Deployment
@@ -125,9 +136,10 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
 
-	// Check if the resource version has changed
-	if pdbWatcher.Status.ResourceVersion != "" && pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
-		// Update ResourceVersion and MinReplicas
+	// Check if the resource version has changed or if it's empty (initial state)
+	if pdbWatcher.Status.ResourceVersion == "" || pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
+		// The resource version has changed, which means someone else has modified the Deployment.
+		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
 		pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
 		err = r.Status().Update(ctx, pdbWatcher)
@@ -157,16 +169,13 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
 			percentage, err := strconv.Atoi(percentageStr)
 			if err == nil {
-				maxSurge = (initialReplicas * int32(percentage)) / 100
+				maxSurge = (pdbWatcher.Status.MinReplicas * int32(percentage)) / 100
 			}
 		}
 	}
-	pdbWatcher.Status.MaxReplicas = initialReplicas + maxSurge
+	pdbWatcher.Status.MaxReplicas = pdbWatcher.Status.MinReplicas + maxSurge
 
 	pdbWatcher.Status.ScaleFactor = 1 // Modify based on requirements
-
-	// Save ResourceVersion to PDBWatcher status
-	pdbWatcher.Status.ResourceVersion = initialResourceVersion
 
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
@@ -203,6 +212,9 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				return ctrl.Result{}, err
 			}
 
+			// Save ResourceVersion to PDBWatcher status
+			pdbWatcher.Status.ResourceVersion = initialResourceVersion
+
 			// Log the scaling action
 			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
 		}
@@ -221,12 +233,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Watch for changes in PDB to revert to original state
 	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
-		// Re-fetch the Deployment to ensure the resource version is up-to-date
-		err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
 		// Check if the resource version has changed
 		if pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
 			// Deployment has been modified externally, update the resource version and min replicas

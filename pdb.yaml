@@ -1,11 +1,10 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: example-pdbwatcher
-  namespace: system
+  name: example-pdb
+  namespace: default
 spec:
   minAvailable: 1
   selector:
     matchLabels:
       app: my-app
-

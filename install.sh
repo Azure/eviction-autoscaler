@@ -2,7 +2,7 @@
 
 # Define variables
 DOCKER_IMAGE="javgarcia0907/k8s-pdb-autoscaler:latest"
-NAMESPACE="system"
+NAMESPACE="default"
 DEPLOYMENT_FILE="config/manager/manager.yaml"
 SERVICE_ACCOUNT_FILE="service_account.yaml"
 ROLE_FILE="role.yaml"
@@ -10,7 +10,7 @@ ROLE_BINDING_FILE="role_binding.yaml"
 CLUSTER_ROLE_FILE="clusterrole.yaml"
 CLUSTER_ROLE_BINDING_FILE="clusterrolebinding.yaml"
 PDB_FILE="pdb.yaml"
-EXAMPLE_PDBWATCHER_FILE="example-pdbwatcher"
+EXAMPLE_PDBWATCHER_FILE="example-pdbwatcher.yaml"
 WEBHOOK_CLUSTER_ROLE_FILE="webhookclusterrole.yaml"
 WEBHOOK_ROLE_BINDING_FILE="webhookrolebind.yaml"
 WEBHOOK_SERVICE_FILE="config/webhook/manifests/web_service.yml"
@@ -54,6 +54,21 @@ create_secret() {
   fi
 }
 
+# Generate certificates
+generate_certificates() {
+  echo "Generating certificates..."
+  openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+    -subj "/CN=${WEBHOOK_SERVICE_NAME}.${NAMESPACE}.svc" \
+    -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CERT_FILE
+}
+
+# Auto inject CA Bundle to Webhook Config 
+inject_ca_bundle() {
+  echo "Injecting CA Bundle into webhook configuration..."
+  CA_BUNDLE=$(cat $WEBHOOK_CERT_FILE | base64 | tr -d '\n')
+  sed -i "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
+}
+
 # Start installation
 echo "Starting installation..."
 
@@ -67,6 +82,15 @@ docker push $DOCKER_IMAGE
 
 # Create namespace
 create_namespace $NAMESPACE
+
+# Generate certificates
+generate_certificates
+
+# Create Webhook Certificates Secret
+create_secret $WEBHOOK_CERTS_SECRET $WEBHOOK_CERT_FILE $WEBHOOK_KEY_FILE #generate secrets on fly with install script 
+
+# Inject CA Bundle
+inject_ca_bundle
 
 # Apply Service Account
 apply_yaml $SERVICE_ACCOUNT_FILE
@@ -106,9 +130,6 @@ apply_yaml $WEBHOOK_CONFIGURATION_FILE
 
 # Apply Webhook Deployment
 apply_yaml $WEBHOOK_DEPLOYMENT_FILE
-
-# Create Webhook Certificates Secret
-create_secret $WEBHOOK_CERTS_SECRET $WEBHOOK_CERT_FILE $WEBHOOK_KEY_FILE
 
 # Apply PDBWatcher CRD
 apply_yaml $PDBWATCHER_CRD_FILE

@@ -2,4 +2,4 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: eviction-webhook
-  namespace: system
+  namespace: default

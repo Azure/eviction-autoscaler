@@ -5,7 +5,7 @@ metadata:
 subjects:
 - kind: ServiceAccount
   name: eviction-webhook
-  namespace: system
+  namespace: default
 roleRef:
   kind: ClusterRole
   name: webhook-role

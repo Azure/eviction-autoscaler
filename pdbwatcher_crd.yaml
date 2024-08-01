@@ -27,9 +27,14 @@ spec:
                 deploymentName:
                   type: string
                   description: "The name of the Deployment to scale."
+                  default: ""  # Optional field
+                scaleFactor:
+                  type: integer
+                  description: "The number by which to scale the Deployment."
+                  minimum: 1
+                  default: 1  # Default value
               required:
                 - pdbName
-                - deploymentName
             status:
               type: object
               properties:

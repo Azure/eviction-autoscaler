@@ -1,7 +1,0 @@
-apiVersion: apps.mydomain.com/v1
-kind: PDBWatcher
-metadata:
-  name: my-apps-pdb-watcher
-  namespace: default
-spec:
-  pdbName: example-pdb

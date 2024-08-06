@@ -21,18 +21,12 @@ spec:
             spec:
               type: object
               properties:
-                pdbName:
-                  type: string
-                  description: "The name of the Pod Disruption Budget to watch."
                 deploymentName:
                   type: string
                   description: "The name of the Deployment to scale."
-                  default: ""  # Optional field
-                scaleFactor:
-                  type: integer
-                  description: "The number by which to scale the Deployment."
-                  minimum: 1
-                  default: 1  # Default value
+                pdbName:
+                  type: string
+                  description: "The name of the Pod Disruption Budget to watch."
               required:
                 - pdbName
             status:
@@ -53,19 +47,20 @@ spec:
                         type: string
                       evictionTime:
                         type: string
+                        format: date-time
                       status:
                         type: string
-                scaleFactor:
+                maxReplicas:
                   type: integer
-                  description: "The number by which to scale the Deployment."
+                  description: "The maximum number of replicas to maintain."
                   minimum: 1
                 minReplicas:
                   type: integer
                   description: "The minimum number of replicas to maintain."
                   minimum: 1
-                maxReplicas:
+                scaleFactor:
                   type: integer
-                  description: "The maximum number of replicas to maintain."
+                  description: "The number by which to scale the Deployment."
                   minimum: 1
               required:
                 - currentReplicas
@@ -102,3 +97,5 @@ spec:
           type: integer
           description: "The allowed number of disruptions"
           jsonPath: .status.disruptionsAllowed
+      subresources:
+        status: {}

@@ -43,9 +43,13 @@ spec:
                 type: string
               pdbName:
                 type: string
+              scaleFactor:
+                format: int32
+                type: integer
             required:
             - deploymentName
             - pdbName
+            - scaleFactor
             type: object
           status:
             description: PDBWatcherStatus defines the observed state of PDBWatcher

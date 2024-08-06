@@ -10,7 +10,6 @@ ROLE_BINDING_FILE="role_binding.yaml"
 CLUSTER_ROLE_FILE="clusterrole.yaml"
 CLUSTER_ROLE_BINDING_FILE="clusterrolebinding.yaml"
 PDB_FILE="pdb.yaml"
-EXAMPLE_PDBWATCHER_FILE="example-pdbwatcher.yaml"
 WEBHOOK_CLUSTER_ROLE_FILE="webhookclusterrole.yaml"
 WEBHOOK_ROLE_BINDING_FILE="webhookrolebind.yaml"
 WEBHOOK_SERVICE_FILE="config/webhook/manifests/web_service.yml"
@@ -20,7 +19,6 @@ WEBHOOK_CERTS_SECRET="webhook-certs"
 WEBHOOK_CERT_FILE="webhook.crt"
 WEBHOOK_KEY_FILE="webhook.key"
 PDBWATCHER_CRD_FILE="pdbwatcher_crd.yaml"
-PDBWATCHER_INSTANCE_FILE="pdbwatcher.yaml"
 
 create_namespace() {
   kubectl get namespace $1 > /dev/null 2>&1
@@ -113,9 +111,6 @@ apply_yaml $DEPLOYMENT_FILE
 # Apply PDB
 apply_yaml $PDB_FILE
 
-# Apply Example PDBWatcher
-apply_yaml $EXAMPLE_PDBWATCHER_FILE
-
 # Apply Webhook Cluster Role
 apply_yaml $WEBHOOK_CLUSTER_ROLE_FILE
 
@@ -133,8 +128,5 @@ apply_yaml $WEBHOOK_DEPLOYMENT_FILE
 
 # Apply PDBWatcher CRD
 apply_yaml $PDBWATCHER_CRD_FILE
-
-# Apply PDBWatcher instance
-apply_yaml $PDBWATCHER_INSTANCE_FILE
 
 echo "Installation completed."

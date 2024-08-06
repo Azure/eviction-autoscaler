@@ -6,7 +6,10 @@ rules:
   # Existing rules
   - apiGroups: ["apps.mydomain.com"]
     resources: ["pdbwatchers"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["apps.mydomain.com"]
+    resources: ["pdbwatchers/status"]
+    verbs: ["update"]
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch"]

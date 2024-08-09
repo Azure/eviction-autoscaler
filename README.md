@@ -45,15 +45,7 @@ First, clone the repository and navigate to the project directory:
 git clone https://github.com/your-repo/k8s-pdb-autoscaler.git
 cd k8s-pdb-autoscaler
 ```
-
-#### 2. Build and Push Docker Image
-Navigate to the provided install script.
-Update the Docker image name in the install script if needed, and then execute the following commands to build and push the Docker image:
-```bash
-docker build -t javgarcia0907/k8s-pdb-autoscaler:latest .
-docker push javgarcia0907/k8s-pdb-autoscaler:latest
-```
-### 3. Run the Installation Script
+### 2. Run the Installation Script
 
 Make sure the script is executable:
 
@@ -71,9 +63,9 @@ kubectl get pods
 ```
 To verify controller and webhook have been deployed without any issues. 
 
-### 4. Deploy the `autodeploy.sh` Script
+### 3. Deploy the `autodeploy.sh` Script
 
-Now run the autodeploy.sh script so the controller and webhook can communicated with the deployments within the cluster, this script will create PodDisruptionBudgets (PDBs) and PDBWatchers for all deployments in the default namespace. It is customizable to fit your needs.
+Now run the autodeploy.sh script so the controller and webhook can communicated with the deployments within the cluster within the default namespace, this script will create PodDisruptionBudgets (PDBs) and PDBWatchers for all deployments in the default namespace. It is customizable to fit your needs.
 
 Make sure the script is executable 
 ```

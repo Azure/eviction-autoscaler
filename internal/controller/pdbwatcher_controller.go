@@ -44,7 +44,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	err := r.Get(ctx, req.NamespacedName, pdbWatcher)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			logger.Info("PDBWatcher resource not found, ignoring since object must be deleted")
 			return ctrl.Result{}, nil // PDBWatcher not found, could be deleted, nothing to do
 		}
 		return ctrl.Result{}, err // Error fetching PDBWatcher
@@ -125,7 +124,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Validate the deployment name
 	if deploymentName == "" {
-		errMsg := "deployment name is empty"
+		errMsg := "Deployment name is empty"
 		logger.Error(fmt.Errorf(errMsg), errMsg)
 		return ctrl.Result{}, fmt.Errorf(errMsg)
 	}
@@ -134,57 +133,34 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
 	if err != nil {
-		logger.Error(err, "Failed to fetch Deployment", "deployment", deploymentName, "namespace", pdbWatcher.Namespace)
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
 
-	// Ensure minReplicas is initialized
-	initialReplicas := *deployment.Spec.Replicas
-	if pdbWatcher.Status.MinReplicas < 1 {
-		pdbWatcher.Status.MinReplicas = initialReplicas
-	}
-
-	// Handle nil Deployment Strategy and MaxSurge
-	maxSurge := int32(1) // Default max surge value
-	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
-		if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.Int {
-			maxSurge = deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
-		} else if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.String {
-			percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
-			percentage, err := strconv.Atoi(percentageStr)
-			if err == nil {
-				maxSurge = (pdbWatcher.Status.MinReplicas * int32(percentage)) / 100
-			}
+	// Check if the resource version has changed or if it's empty (initial state)
+	if pdbWatcher.Status.ResourceVersion == "" || pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
+		// The resource version has changed, which means someone else has modified the Deployment.
+		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
+		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+		pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
 		}
+		return ctrl.Result{}, nil
 	}
 
-	// Ensure maxReplicas is greater than or equal to minReplicas
-	pdbWatcher.Status.MaxReplicas = pdbWatcher.Status.MinReplicas + maxSurge
-	if pdbWatcher.Status.MaxReplicas < pdbWatcher.Status.MinReplicas {
-		pdbWatcher.Status.MaxReplicas = pdbWatcher.Status.MinReplicas
-	}
-
-	// Calculate scaleFactor dynamically
-	scaleFactor := calculateScaleFactor(pdbWatcher.Status.MinReplicas, pdbWatcher.Status.MaxReplicas)
-	pdbWatcher.Status.ScaleFactor = scaleFactor
-
-	// Update status dynamically
-	if pdbWatcher.Status.CurrentReplicas == 0 {
-		pdbWatcher.Status.CurrentReplicas = initialReplicas
-	}
-
-	// Log the status update for debugging
-	logger.Info(fmt.Sprintf("Updated PDBWatcher status: MinReplicas=%d, MaxReplicas=%d, ScaleFactor=%d", pdbWatcher.Status.MinReplicas, pdbWatcher.Status.MaxReplicas, scaleFactor))
-
-	// Update the PDBWatcher status
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
 		logger.Error(err, "Failed to update PDBWatcher status")
 		return ctrl.Result{}, err
 	}
+	// Log current state before checks
+	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, pdbWatcher.Status.MinReplicas))
 
 	// Check the DisruptionsAllowed field
 	if pdb.Status.DisruptionsAllowed == 0 {
+		logger.Info(fmt.Sprintf("No disruptions allowed for %s, attempting to scale up", pdb.Name))
 		// Check if there are recent evictions
 		recentEviction := false
 		for _, log := range pdbWatcher.Status.EvictionLogs {
@@ -201,19 +177,29 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		if recentEviction {
-			// Scale up the Deployment
-			newReplicas := pdbWatcher.Status.CurrentReplicas + scaleFactor
-			if newReplicas > pdbWatcher.Status.MaxReplicas {
-				newReplicas = pdbWatcher.Status.MaxReplicas
+			// Handle nil Deployment Strategy and MaxSurge
+			maxSurge := int32(1) // Default max surge value
+			if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+				if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.Int {
+					maxSurge = deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
+				} else if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.String {
+					percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
+					percentage, err := strconv.Atoi(percentageStr)
+					if err == nil {
+						maxSurge = (pdbWatcher.Status.MinReplicas * int32(percentage)) / 100
+					}
+				}
 			}
+			// Scale up the Deployment
+			newReplicas := pdbWatcher.Status.MinReplicas + maxSurge
 			deployment.Spec.Replicas = &newReplicas
 			err = r.Update(ctx, deployment)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 
-			// Update the PDBWatcher status with the new replica count
-			pdbWatcher.Status.CurrentReplicas = newReplicas
+			// Save ResourceVersion to PDBWatcher status
+			pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
 
 			// Log the scaling action
 			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
@@ -231,22 +217,38 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 	}
 
-	// Watch for changes in PDB to revert to the original state
+	// Watch for changes in PDB to revert to original state
 	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
-		// Attempt to revert Deployment to the original state
+		// Check if the resource version has changed
+		if pdbWatcher.Status.ResourceVersion != deployment.ResourceVersion {
+			// Deployment has been modified externally, update the resource version and min replicas
+			pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+			pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
+			err = r.Status().Update(ctx, pdbWatcher)
+			if err != nil {
+				logger.Error(err, "Failed to update PDBWatcher status")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
+
+		// Revert Deployment to the original state
 		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
 		err = r.Update(ctx, deployment)
 		if err != nil {
-			if errors.IsConflict(err) {
-				// If a conflict occurs, it indicates an external modification; log and requeue
-				logger.Info("Deployment resource version conflict detected. Requeuing.")
-				return ctrl.Result{Requeue: true}, nil
-			}
 			return ctrl.Result{}, err
 		}
 
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, *deployment.Spec.Replicas))
+
+		// Update ResourceVersion in PDBWatcher status
+		pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -256,14 +258,4 @@ func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&myappsv1.PDBWatcher{}).
 		Complete(r)
-}
-
-// Helper function to calculate scaleFactor
-func calculateScaleFactor(minReplicas, maxReplicas int32) int32 {
-	// Example calculation logic for scaleFactor
-	scaleFactor := int32(1) // Default scale factor
-	if maxReplicas > minReplicas {
-		scaleFactor = maxReplicas - minReplicas // Calculate based on difference
-	}
-	return scaleFactor
 }

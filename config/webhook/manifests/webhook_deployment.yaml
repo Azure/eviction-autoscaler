@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: eviction-webhook
-  namespace: default 
+  namespace: default
 spec:
   replicas: 1
   selector:
@@ -16,13 +16,18 @@ spec:
       serviceAccountName: eviction-webhook
       containers:
         - name: eviction-webhook
-          image: javgarcia0907/k8s-pdb-autoscaler:latest
+          image: javgarcia0907/iamgreat:v6
           ports:
-            - containerPort: 443
+            - containerPort: 9443
           volumeMounts:
             - name: webhook-certs
-              mountPath: /certs
+              mountPath: /ect/webhook/certs # Ensure this path matches your server configuration
               readOnly: true
+          env:
+            - name: TLS_CERT_FILE
+              value:  /etc/webhook/certs/tls.crt  
+            - name: TLS_KEY_FILE
+              value: /etc/webhook/certs/tls.key
           resources:
             requests:
               memory: "64Mi"
@@ -43,6 +48,6 @@ metadata:
 spec:
   ports:
     - port: 443
-      targetPort: 443
+      targetPort: 9443
   selector:
     app: eviction-webhook

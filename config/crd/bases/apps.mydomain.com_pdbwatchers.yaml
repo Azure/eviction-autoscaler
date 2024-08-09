@@ -43,23 +43,13 @@ spec:
                 type: string
               pdbName:
                 type: string
-              scaleFactor:
-                format: int32
-                type: integer
             required:
             - deploymentName
             - pdbName
-            - scaleFactor
             type: object
           status:
             description: PDBWatcherStatus defines the observed state of PDBWatcher
             properties:
-              currentReplicas:
-                format: int32
-                type: integer
-              disruptionsAllowed:
-                format: int32
-                type: integer
               evictionLogs:
                 items:
                   description: EvictionLog defines a log entry for pod evictions
@@ -73,24 +63,14 @@ spec:
                   - podName
                   type: object
                 type: array
-              maxReplicas:
-                format: int32
-                type: integer
               minReplicas:
                 format: int32
                 type: integer
               resourceVersion:
                 type: string
-              scaleFactor:
-                format: int32
-                type: integer
             required:
-            - currentReplicas
-            - disruptionsAllowed
-            - maxReplicas
             - minReplicas
             - resourceVersion
-            - scaleFactor
             type: object
         type: object
     served: true

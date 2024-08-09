@@ -150,41 +150,17 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	// Track initial state to detect conflicts
-	initialResourceVersion := deployment.ResourceVersion
-	initialReplicas := *deployment.Spec.Replicas
-
-	// Update status dynamically
-	if pdbWatcher.Status.CurrentReplicas == 0 {
-		pdbWatcher.Status.CurrentReplicas = initialReplicas
-	}
-	pdbWatcher.Status.MinReplicas = initialReplicas
-
-	// Handle nil Deployment Strategy and MaxSurge
-	maxSurge := int32(1) // Default max surge value
-	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
-		if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.Int {
-			maxSurge = deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
-		} else if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.String {
-			percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
-			percentage, err := strconv.Atoi(percentageStr)
-			if err == nil {
-				maxSurge = (pdbWatcher.Status.MinReplicas * int32(percentage)) / 100
-			}
-		}
-	}
-	pdbWatcher.Status.MaxReplicas = pdbWatcher.Status.MinReplicas + maxSurge
-
-	pdbWatcher.Status.ScaleFactor = 1 // Modify based on requirements
-
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
 		logger.Error(err, "Failed to update PDBWatcher status")
 		return ctrl.Result{}, err
 	}
+	// Log current state before checks
+	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, pdbWatcher.Status.MinReplicas))
 
 	// Check the DisruptionsAllowed field
 	if pdb.Status.DisruptionsAllowed == 0 {
+		logger.Info(fmt.Sprintf("No disruptions allowed for %s, attempting to scale up", pdb.Name))
 		// Check if there are recent evictions
 		recentEviction := false
 		for _, log := range pdbWatcher.Status.EvictionLogs {
@@ -201,11 +177,21 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		if recentEviction {
-			// Scale up the Deployment
-			newReplicas := pdbWatcher.Status.CurrentReplicas + pdbWatcher.Status.ScaleFactor
-			if newReplicas > pdbWatcher.Status.MaxReplicas {
-				newReplicas = pdbWatcher.Status.MaxReplicas
+			// Handle nil Deployment Strategy and MaxSurge
+			maxSurge := int32(1) // Default max surge value
+			if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+				if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.Int {
+					maxSurge = deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
+				} else if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.String {
+					percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
+					percentage, err := strconv.Atoi(percentageStr)
+					if err == nil {
+						maxSurge = (pdbWatcher.Status.MinReplicas * int32(percentage)) / 100
+					}
+				}
 			}
+			// Scale up the Deployment
+			newReplicas := pdbWatcher.Status.MinReplicas + maxSurge
 			deployment.Spec.Replicas = &newReplicas
 			err = r.Update(ctx, deployment)
 			if err != nil {
@@ -213,7 +199,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 
 			// Save ResourceVersion to PDBWatcher status
-			pdbWatcher.Status.ResourceVersion = initialResourceVersion
+			pdbWatcher.Status.ResourceVersion = deployment.ResourceVersion
 
 			// Log the scaling action
 			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))

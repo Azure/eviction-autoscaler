@@ -1,0 +1,25 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: pdbwatcher-role
+rules:
+  # Allow full access to PDBWatcher resources
+- apiGroups: ["apps.mydomain.com"]
+  resources: ["pdbwatchers", "pdbwatchers/status"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Allow read access to PodDisruptionBudgets
+- apiGroups: ["policy"]
+  resources: ["poddisruptionbudgets"]
+  verbs: ["get", "list", "watch"]
+  # Allow read and update access to Deployments and ReplicaSets
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "update"]
+  # Allow access to Leases for leader election
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update"]
+  # Allow read access to Pods
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]

@@ -2,41 +2,81 @@ package main
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"os"
 	"time"
 
 	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-var (
-	logger logr.Logger
-)
-
 func main() {
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{})
+
+	// Set up controller-runtime logging
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+
+	// Initialize the scheme
+	scheme := runtime.NewScheme()
+
+	// Add core Kubernetes types to the scheme
+	if err := corev1.AddToScheme(scheme); err != nil {
+		log.Fatalf("unable to add core Kubernetes resources to scheme: %v", err)
+	}
+
+	// Add PodDisruptionBudget to the scheme
+	if err := policyv1.AddToScheme(scheme); err != nil {
+		log.Fatalf("unable to add PodDisruptionBudget to scheme: %v", err)
+	}
+
+	// Add custom resource types to the scheme
+	if err := myappsv1.AddToScheme(scheme); err != nil {
+		log.Fatalf("unable to add custom resource to scheme: %v", err)
+	}
+
+	// Configure the manager without unsupported fields
+	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
+		Scheme:           scheme,
+		LeaderElection:   false,
+		LeaderElectionID: "eviction-webhook",
+	})
+
 	if err != nil {
-		logger.Error(err, "Unable to create manager")
+		log.Printf("Unable to create manager: %v", err)
 		os.Exit(1)
 	}
 
-	server := mgr.GetWebhookServer()
-	server.Register("/validate-eviction", &admission.Webhook{Handler: &EvictionHandler{
-		Client: mgr.GetClient(),
-	}})
+	// Configure the webhook server
+	hookServer := webhook.NewServer(webhook.Options{
+		Port:    9443,
+		CertDir: "/ect/webhook/certs",
+	})
 
-	logger = mgr.GetLogger().WithName("webhook")
+	// Register the webhook handler
+	hookServer.Register("/validate-eviction", &admission.Webhook{
+		Handler: &EvictionHandler{
+			Client: mgr.GetClient(),
+		},
+	})
+
+	// Add the webhook server to the manager
+	if err := mgr.Add(hookServer); err != nil {
+		log.Printf("Unable to add webhook server to manager: %v", err)
+		os.Exit(1)
+	}
+
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		logger.Error(err, "Problem running manager")
+		log.Printf("Problem running manager: %v", err)
 		os.Exit(1)
 	}
 }
@@ -47,7 +87,7 @@ type EvictionHandler struct {
 }
 
 func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	logger.Info("Received eviction request", "namespace", req.Namespace, "name", req.Name)
+	log.Printf("Received eviction request, namespace: %s, name: %s", req.Namespace, req.Name)
 
 	// Log eviction request
 	evictionLog := myappsv1.EvictionLog{
@@ -59,7 +99,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	pod := &corev1.Pod{}
 	err := e.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, pod)
 	if err != nil {
-		logger.Error(err, "Unable to fetch Pod")
+		log.Printf("Error: Unable to fetch Pod: %v", err)
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
@@ -67,7 +107,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	pdbWatcherList := &myappsv1.PDBWatcherList{}
 	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
-		logger.Error(err, "Unable to list PDBWatchers")
+		log.Printf("Error: Unable to list PDBWatchers: %v", err)
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
@@ -78,14 +118,14 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		pdb := &policyv1.PodDisruptionBudget{}
 		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
 		if err != nil {
-			logger.Error(err, "Unable to fetch PDB", "pdbName", pdbWatcher.Spec.PDBName)
+			log.Printf("Error: Unable to fetch PDB: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
 			continue
 		}
 
 		// Check if the PDB selector matches the evicted pod's labels
 		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 		if err != nil {
-			logger.Error(err, "Invalid PDB selector", "pdbName", pdbWatcher.Spec.PDBName)
+			log.Printf("Error: Invalid PDB selector: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
 			continue
 		}
 
@@ -96,7 +136,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	}
 
 	if applicablePDBWatcher == nil {
-		logger.Info("No applicable PDBWatcher found")
+		log.Println("No applicable PDBWatcher found")
 		return admission.Allowed("no applicable PDBWatcher")
 	}
 
@@ -110,11 +150,11 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	err = e.Client.Status().Update(ctx, applicablePDBWatcher)
 	if err != nil {
-		logger.Error(err, "Unable to update PDBWatcher status")
+		log.Printf("Error: Unable to update PDBWatcher status: %v", err)
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", evictionLog.EvictionTime)
+	log.Printf("Eviction logged successfully, podName: %s, evictionTime: %s", req.Name, evictionLog.EvictionTime)
 	return admission.Allowed("eviction allowed")
 }
 

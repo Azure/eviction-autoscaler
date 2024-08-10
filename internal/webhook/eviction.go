@@ -2,7 +2,6 @@ package webhook
 
 import (
 	"context"
-	"log"
 	"net/http"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
@@ -23,7 +23,9 @@ type EvictionHandler struct {
 }
 
 func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
-	log.Printf("Received eviction request, namespace: %s, name: %s", req.Namespace, req.Name)
+	logger := log.FromContext(ctx)
+
+	logger.Info("Received eviction request, namespace: %s, name: %s", req.Namespace, req.Name)
 
 	// Log eviction request
 	evictionLog := myappsv1.EvictionLog{
@@ -35,7 +37,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	pod := &corev1.Pod{}
 	err := e.Client.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: req.Name}, pod)
 	if err != nil {
-		log.Printf("Error: Unable to fetch Pod: %v", err)
+		logger.Error(err, "Error: Unable to fetch Pod")
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
@@ -43,7 +45,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	pdbWatcherList := &myappsv1.PDBWatcherList{}
 	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
-		log.Printf("Error: Unable to list PDBWatchers: %v", err)
+		logger.Error(err, "Error: Unable to list PDBWatchers")
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
@@ -54,14 +56,14 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		pdb := &policyv1.PodDisruptionBudget{}
 		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
 		if err != nil {
-			log.Printf("Error: Unable to fetch PDB: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
+			logger.Error(err, "Error: Unable to fetch PDB: %s", pdbWatcher.Spec.PDBName)
 			continue
 		}
 
 		// Check if the PDB selector matches the evicted pod's labels
 		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 		if err != nil {
-			log.Printf("Error: Invalid PDB selector: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
+			logger.Info("Error: Invalid PDB selector: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
 			continue
 		}
 
@@ -72,7 +74,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	}
 
 	if applicablePDBWatcher == nil {
-		log.Println("No applicable PDBWatcher found")
+		logger.Info("No applicable PDBWatcher found")
 		return admission.Allowed("no applicable PDBWatcher")
 	}
 
@@ -86,14 +88,15 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	err = e.Client.Status().Update(ctx, applicablePDBWatcher)
 	if err != nil {
-		log.Printf("Error: Unable to update PDBWatcher status: %v", err)
+		logger.Info("Error: Unable to update PDBWatcher status: %v", err)
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	log.Printf("Eviction logged successfully, podName: %s, evictionTime: %s", req.Name, evictionLog.EvictionTime)
+	logger.Info("Eviction logged successfully, podName: %s, evictionTime: %s", req.Name, evictionLog.EvictionTime)
 	return admission.Allowed("eviction allowed")
 }
 
+// what the heck does this do
 func (e *EvictionHandler) InjectDecoder(d *admission.Decoder) error {
 	e.decoder = d
 	return nil

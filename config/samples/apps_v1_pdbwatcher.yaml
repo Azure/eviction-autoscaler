@@ -1,9 +1,0 @@
-apiVersion: apps.mydomain.com/v1
-kind: PDBWatcher
-metadata:
-  labels:
-    app.kubernetes.io/name: k8s-pdb-autoscaler
-    app.kubernetes.io/managed-by: kustomize
-  name: pdbwatcher-sample
-spec:
-  # TODO(user): Add fields here

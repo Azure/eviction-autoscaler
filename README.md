@@ -24,3 +24,90 @@ This project aims to create a Kubernetes controller that watches Pod Disruption 
 ### 4. Efficient Resource Management
 - **Controller**: Avoid unnecessary scaling actions that could lead to resource wastage or application downtime.
 - **Webhook**: Provide detailed insights into eviction attempts and PDB statuses, ensuring that the controller only scales resources when truly necessary.
+
+## Installation and Setup
+
+Follow the steps below to install and set up the `k8s-pdb-autoscaler` in your Kubernetes cluster:
+
+### Prerequisites
+
+- A Kubernetes cluster
+- `kubectl` configured to interact with your cluster
+- Docker installed on your local machine
+
+### Installation Steps
+
+#### 1. Clone the Repository
+
+First, clone the repository and navigate to the project directory:
+
+```bash
+git clone https://github.com/your-repo/k8s-pdb-autoscaler.git
+cd k8s-pdb-autoscaler
+```
+### 2. Run the Installation Script
+
+Make sure the script is executable:
+
+```bash
+chmod +x install.sh
+```
+Execute the installation script:
+
+``` bash
+./install.sh
+```
+Run 
+``` bash
+kubectl get pods
+```
+To verify controller and webhook have been deployed without any issues. 
+You should see the controller and webhook pods running. If they are not running, check the logs for any errors:
+
+```bash
+kubectl logs <controller-pod-name>
+kubectl logs <webhook-pod-name>
+```
+### 3. Deploy the `autodeploy.sh` Script
+
+Now run the autodeploy.sh script so the controller and webhook can communicated with the deployments within the cluster within the default namespace, this script will create PodDisruptionBudgets (PDBs) and PDBWatchers for all deployments in the default namespace. It is customizable to fit your needs.
+
+Make sure the script is executable 
+```
+bash chmod +x autodeploy.sh
+```
+Run the Script 
+Execute the script to create and apply the PDBs and PDBWatchers:
+```bash 
+./autodeploy.sh
+```
+
+### 4. Verify Controller and Webhook Functionality
+After running the scripts, you need to ensure that both the controller and webhook are working as expected.
+
+Simulate a Pod Eviction
+You can manually attempt to evict a pod and check if the webhook logs the eviction request and if the controller reacts by adjusting the deployment's scale based on the PDB:
+
+Attempt to Evict a Pod:
+
+``` bash
+kubectl delete pod <pod-name> -n <namespace>
+```
+Check Webhook Logs:
+
+Verify that the webhook intercepted the eviction request:
+```bash
+kubectl logs <webhook-pod-name> -n <namespace>
+```
+Check Controller Logs:
+Verify that the controller took appropriate action, such as scaling a deployment:
+``` bash
+kubectl logs <controller-pod-name> -n <namespace>
+```
+Check Deployment and PDB Status:
+
+Ensure that the PDB status and deployment replicas have been updated accordingly:
+```bash
+kubectl get pdb -n <namespace>
+kubectl get deployment -n <namespace>
+```

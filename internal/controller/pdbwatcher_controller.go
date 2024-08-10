@@ -155,9 +155,12 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Error(err, "Failed to update PDBWatcher status")
 		return ctrl.Result{}, err
 	}
+	// Log current state before checks
+	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, pdbWatcher.Status.MinReplicas))
 
 	// Check the DisruptionsAllowed field
 	if pdb.Status.DisruptionsAllowed == 0 {
+		logger.Info(fmt.Sprintf("No disruptions allowed for %s, attempting to scale up", pdb.Name))
 		// Check if there are recent evictions
 		recentEviction := false
 		for _, log := range pdbWatcher.Status.EvictionLogs {

@@ -1,85 +1,21 @@
-package main
+package webhook
 
 import (
 	"context"
 	"log"
 	"net/http"
-	"os"
 	"time"
 
 	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
-
-func main() {
-
-	// Set up controller-runtime logging
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-
-	// Initialize the scheme
-	scheme := runtime.NewScheme()
-
-	// Add core Kubernetes types to the scheme
-	if err := corev1.AddToScheme(scheme); err != nil {
-		log.Fatalf("unable to add core Kubernetes resources to scheme: %v", err)
-	}
-
-	// Add PodDisruptionBudget to the scheme
-	if err := policyv1.AddToScheme(scheme); err != nil {
-		log.Fatalf("unable to add PodDisruptionBudget to scheme: %v", err)
-	}
-
-	// Add custom resource types to the scheme
-	if err := myappsv1.AddToScheme(scheme); err != nil {
-		log.Fatalf("unable to add custom resource to scheme: %v", err)
-	}
-
-	// Configure the manager without unsupported fields
-	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:           scheme,
-		LeaderElection:   false,
-		LeaderElectionID: "eviction-webhook",
-	})
-
-	if err != nil {
-		log.Printf("Unable to create manager: %v", err)
-		os.Exit(1)
-	}
-
-	// Configure the webhook server
-	hookServer := webhook.NewServer(webhook.Options{
-		Port:    9443,
-		CertDir: "/ect/webhook/certs",
-	})
-
-	// Register the webhook handler
-	hookServer.Register("/validate-eviction", &admission.Webhook{
-		Handler: &EvictionHandler{
-			Client: mgr.GetClient(),
-		},
-	})
-
-	// Add the webhook server to the manager
-	if err := mgr.Add(hookServer); err != nil {
-		log.Printf("Unable to add webhook server to manager: %v", err)
-		os.Exit(1)
-	}
-
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
-		log.Printf("Problem running manager: %v", err)
-		os.Exit(1)
-	}
-}
 
 type EvictionHandler struct {
 	Client  client.Client

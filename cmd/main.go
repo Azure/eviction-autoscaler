@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"log"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -33,9 +34,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	appsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
 	controllers "github.com/Javier090/k8s-pdb-autoscaler/internal/controller"
+	evictinwebhook "github.com/Javier090/k8s-pdb-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -91,7 +94,10 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	webhookServer := webhook.NewServer(webhook.Options{
+	// Configure the webhook server
+	hookServer := webhook.NewServer(webhook.Options{
+		Port:    9443,
+		CertDir: "/ect/webhook/certs",
 		TLSOpts: tlsOpts,
 	})
 
@@ -102,7 +108,7 @@ func main() {
 			SecureServing: secureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		WebhookServer:          webhookServer,
+		WebhookServer:          hookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
 		LeaderElectionID:       "d482b936.mydomain.com",
@@ -132,12 +138,25 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
+	// Register the webhook handler
+	hookServer.Register("/validate-eviction", &admission.Webhook{
+		Handler: &evictinwebhook.EvictionHandler{
+			Client: mgr.GetClient(),
+		},
+	})
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
+		os.Exit(1)
+	}
+
+	// Add the webhook server to the manager
+	if err := mgr.Add(hookServer); err != nil {
+		log.Printf("Unable to add webhook server to manager: %v", err)
 		os.Exit(1)
 	}
 

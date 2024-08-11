@@ -1,49 +1,31 @@
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: manager-role
+  name: controller-manager-clusterrole
 rules:
-- apiGroups:
-  - apps
-  resources:
-  - deployments
-  verbs:
-  - get
-  - list
-  - update
-  - watch
-- apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
-  - policy
-  resources:
-  - poddisruptionbudgets
-  verbs:
-  - get
-  - list
-  - watch
+  # Allow access to Events for logging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "update", "patch"]
+  # Allow read access to Pods across all namespaces
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  # Allow read and update access to Deployments and StatefulSets across all namespaces
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  # Allow read access to PodDisruptionBudgets across all namespaces
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  # Allow access to Nodes for cluster-scoped operations
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps.mydomain.com"]
+    resources: ["pdbwatchers"]
+    verbs: ["get", "list", "watch", "update"]
+  - apiGroups: ["apps.mydomain.com"]
+    resources: ["pdbwatchers/status"]
+    verbs: ["update"]

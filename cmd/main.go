@@ -97,7 +97,7 @@ func main() {
 	// Configure the webhook server
 	hookServer := webhook.NewServer(webhook.Options{
 		Port:    9443,
-		CertDir: "/ect/webhook/certs",
+		CertDir: "/etc/webhook/tls",
 		TLSOpts: tlsOpts,
 	})
 

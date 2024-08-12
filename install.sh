@@ -56,10 +56,10 @@ generate_certificates() {
   openssl genrsa -out .certs/webhook-server.key 2048
 
   # Create a certificate signing request (CSR)
-  openssl req -new -key .certs/webhook-server.key -out .certs/webhook-server.csr -subj "/CN=eviction-webhook.default.svc"
+  openssl req -new -key .certs/webhook-server.key -out .certs/webhook-server.csr --config config/webhook/manifests/cert.conf  
 
-# Create a self-signed certificate
-  openssl x509 -req -in .certs/webhook-server.csr -signkey .certs/webhook-server.key -out  .certs/webhook-server.crt -days 365
+  # Create a self-signed certificate
+  openssl x509 -req -in .certs/webhook-server.csr -signkey .certs/webhook-server.key -out .certs/webhook-server.crt -days 365 -extensions v3_req -extfile config/webhook/manifests/cert.conf
   
   #not idenpotennt
   kubectl create secret tls webhook-server-tls \
@@ -69,12 +69,12 @@ generate_certificates() {
   echo "Injecting CA Bundle into webhook configuration..."
   CA_BUNDLE=$(cat .certs/webhook-server.crt  | base64 | tr -d '\n')
   sed -i "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
-  echo $CABUNDLE
+  echo $CA_BUNDLE
 
-  # I had a hard time with the CSR_CONF_FILE
-  #openssl req -new -newkey rsa:2048 -nodes -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CSR_FILE -config $CSR_CONF_FILE
+    #openssl req -new -newkey rsa:2048 -nodes -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CSR_FILE -config $CSR_CONF_FILE
   #openssl x509 -req -in $WEBHOOK_CSR_FILE -CA $CA_CERT_FILE -CAkey $CA_KEY_FILE -CAcreateserial -out $WEBHOOK_CERT_FILE -days 365 -extensions v3_req -extfile $CSR_CONF_FILE
 }
+
 
 # Start installation
 echo "Starting installation..."
@@ -93,7 +93,7 @@ create_namespace $NAMESPACE
 
 # uncomment for new clusters .
 # Generate certificates
-#generate_certificates
+# generate_certificates
 
 # Apply CRD
 apply_yaml $CRD_FILE

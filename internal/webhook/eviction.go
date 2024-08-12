@@ -23,9 +23,10 @@ type EvictionHandler struct {
 }
 
 func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
+
 	logger := log.FromContext(ctx)
 
-	logger.Info("Received eviction request, namespace: %s, name: %s", req.Namespace, req.Name)
+	logger.Info("Received eviction request" "namespace", req.Namespace,"name", req.Name)
 
 	// Log eviction request
 	evictionLog := myappsv1.EvictionLog{

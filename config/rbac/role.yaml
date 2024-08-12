@@ -13,7 +13,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "delete"]
   # Allow read and update access to Deployments and StatefulSets across all namespaces
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
+    resources: ["deployments", "statefulsets", "replicasets"]
     verbs: ["get", "list", "watch", "update", "patch"]
   # Allow read access to PodDisruptionBudgets across all namespaces
   - apiGroups: ["policy"]

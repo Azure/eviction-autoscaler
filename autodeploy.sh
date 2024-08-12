@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define the namespace
-NAMESPACE=default
+NAMESPACE=kube-system
 
 # Get the list of deployments to create PDBs and PDBWatchers for
-deployments=$(kubectl get deployments -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook|controller-manager)$/ {print $1}')
+deployments=$(kubectl get deployments -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook)$/ {print $1}')
 
 # Function to create and apply PDB and PDBWatcher YAMLs
 create_and_apply_resources() {
@@ -63,6 +63,7 @@ EOF
 
 # Loop through each deployment and create resources
 for deploy in $deployments; do
+  echo "actioning on $deploy"
   create_and_apply_resources $deploy
 done
 

@@ -1,31 +1,20 @@
 #!/bin/bash
+set -e
+#So ideally we move towards kustomize and cert manager
+#that will make image and namespace simpler first then cert manger should make the webhook ca bundle easier.
 
 # Define variables
-CONTROLLER_IMAGE="javgarcia0907/k8s-pdb-autoscaler:webhookv1"
-WEBHOOK_IMAGE="javgarcia0907/k8s-pdb-autoscaler:webhookv1"
+IMAGE="paulgmiller/k8s-pdb-autoscaler:latest" 
+#WEBHOOK_IMAGE="paulgmiller/k8s-pdb-autoscaler:webhookv1"
 NAMESPACE="default"
 DEPLOYMENT_FILE="config/manager/manager.yaml"
-SERVICE_ACCOUNT_FILE="service_account.yaml"
-ROLE_FILE="role.yaml"
-ROLE_BINDING_FILE="role_binding.yaml"
-CLUSTER_ROLE_FILE="clusterrole.yaml"
-CLUSTER_ROLE_BINDING_FILE="clusterrolebinding.yaml"
-WEBHOOK_CLUSTER_ROLE_FILE="config/webhook/manifests/Roles/webhookclusterrole.yaml"
-WEBHOOK_ROLE_BINDING_FILE="config/webhook/manifests/Roles/webhookrolebind.yaml"
-WEBHOOK_SERVICE_FILE="config/webhook/manifests/web_service.yml"
+#lot of extra files in rbac. Condense?
+SERVICE_ACCOUNT_FILE="config/rbac/service_account.yaml"
+ROLE_BINDING_FILE="config/rbac/role_binding.yaml"
+CLUSTER_ROLE_FILE="config/rbac/role.yaml"
+CRD_FILE="config/crd/bases/apps.mydomain.com_pdbwatchers.yaml "
 WEBHOOK_CONFIGURATION_FILE="config/webhook/manifests/webhook_configuration.yaml"
-WEBHOOK_DEPLOYMENT_FILE="config/webhook/manifests/webhook_deployment.yaml"
-WEBHOOK_CERTS_SECRET="webhook-certs"
-WEBHOOK_CERT_FILE="config/webhook/manifests/tls.crt"
-WEBHOOK_KEY_FILE="config/webhook/manifests/tls.key"
-WEBHOOK_CSR_FILE="config/webhook/manifests/webhook.csr"
-CSR_CONF_FILE="config/webhook/manifests/csr.conf"
-CA_CERT_FILE="config/webhook/manifests/ca.crt"
-CA_KEY_FILE="config/webhook/manifests/ca.key"
-WEBHOOK_ACCOUNT_TOKEN="config/webhook/manifests/service-account-token-secret.yaml"
-PDBWATCHER_CRD_FILE="internal/controller/PDBRoles/pdbwatcher_crd.yaml"
-PDBWATCHER_ROLE="internal/controller/PDBRoles/clusterrole.yaml"
-PDBWATCHER_BIND="internal/controller/PDBRoles/clusterrolebinding.yaml"
+WEBHOOK_SVC_FILE="config/webhook/manifests/webhook_svc.yaml"
 
 create_namespace() {
   kubectl get namespace $1 > /dev/null 2>&1
@@ -62,91 +51,75 @@ create_secret() {
 # Generate certificates
 generate_certificates() {
   echo "Generating certificates..."
-  openssl req -new -newkey rsa:2048 -nodes -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CSR_FILE -config $CSR_CONF_FILE
-  openssl x509 -req -in $WEBHOOK_CSR_FILE -CA $CA_CERT_FILE -CAkey $CA_KEY_FILE -CAcreateserial -out $WEBHOOK_CERT_FILE -days 365 -extensions v3_req -extfile $CSR_CONF_FILE
+  #mkdir .certs #don't want to check this in.
+  # Create a private key
+  openssl genrsa -out .certs/webhook-server.key 2048
+
+  # Create a certificate signing request (CSR)
+  openssl req -new -key .certs/webhook-server.key -out .certs/webhook-server.csr --config config/webhook/manifests/cert.conf  
+
+  # Create a self-signed certificate
+  openssl x509 -req -in .certs/webhook-server.csr -signkey .certs/webhook-server.key -out .certs/webhook-server.crt -days 365 -extensions v3_req -extfile config/webhook/manifests/cert.conf
+  
+  #not idenpotennt
+  kubectl create secret tls webhook-server-tls \
+    --cert=.certs/webhook-server.crt \
+    --key=.certs/webhook-server.key 
+
+  echo "Injecting CA Bundle into webhook configuration..."
+  CA_BUNDLE=$(cat .certs/webhook-server.crt  | base64 | tr -d '\n')
+  sed -i "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
+  echo $CA_BUNDLE
+
+    #openssl req -new -newkey rsa:2048 -nodes -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CSR_FILE -config $CSR_CONF_FILE
+  #openssl x509 -req -in $WEBHOOK_CSR_FILE -CA $CA_CERT_FILE -CAkey $CA_KEY_FILE -CAcreateserial -out $WEBHOOK_CERT_FILE -days 365 -extensions v3_req -extfile $CSR_CONF_FILE
 }
 
-# Auto inject CA Bundle to Webhook Config 
-inject_ca_bundle() {
-  echo "Injecting CA Bundle into webhook configuration..."
-  CA_BUNDLE=$(cat $CA_CERT_FILE | base64 | tr -d '\n')
-  sed -i "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
-}
 
 # Start installation
 echo "Starting installation..."
 
 # Build the Docker image for the controller
 echo "Building Docker image for the controller..."
-docker build -t $CONTROLLER_IMAGE -f Dockerfile.controller .
-
-# Build the Docker image for the webhook
-echo "Building Docker image for the webhook..."
-docker build -t $WEBHOOK_IMAGE -f Dockerfile.webhook .
+docker build -t $IMAGE .
 
 # Push the Docker image for the controller
 echo "Pushing Docker image for the controller..."
-docker push $CONTROLLER_IMAGE
+docker push $IMAGE
 
-# Push the Docker image for the webhook
-echo "Pushing Docker image for the webhook..."
-docker push $WEBHOOK_IMAGE
 
 # Create namespace
 create_namespace $NAMESPACE
 
+# uncomment for new clusters .
 # Generate certificates
-generate_certificates
+# generate_certificates
 
-# Create Webhook Certificates Secret
-create_secret $WEBHOOK_CERTS_SECRET $WEBHOOK_CERT_FILE $WEBHOOK_KEY_FILE
-
-# Inject CA Bundle
-inject_ca_bundle
+# Apply CRD
+apply_yaml $CRD_FILE
 
 # Apply Service Account
 apply_yaml $SERVICE_ACCOUNT_FILE
 
-# Apply Role
-apply_yaml $ROLE_FILE
-
-# Apply Role Binding
-apply_yaml $ROLE_BINDING_FILE
-
-# Apply Cluster Role
+# Apply Cluster role
 apply_yaml $CLUSTER_ROLE_FILE
 
-# Apply Cluster Role Binding
-apply_yaml $CLUSTER_ROLE_BINDING_FILE
+# Apply ClusterRole Binding
+apply_yaml $ROLE_BINDING_FILE
 
-# Apply Deployment for Controller
+#leases aren't at cluster level but are name space specific
+apply_yaml config/rbac/leader_election_role_binding.yaml 
+apply_yaml config/rbac/leader_election_role_binding.yaml 
+
+# Apply Deployment for Controller/webhook
 apply_yaml $DEPLOYMENT_FILE
 
-# Apply Webhook Cluster Role
-apply_yaml $WEBHOOK_CLUSTER_ROLE_FILE
-
-# Apply Webhook Role Binding
-apply_yaml $WEBHOOK_ROLE_BINDING_FILE
-
-# Apply Webhook Service
-apply_yaml $WEBHOOK_SERVICE_FILE
-
-# Apply Webhook Secret token
-apply_yaml $WEBHOOK_ACCOUNT_TOKEN
 
 # Apply Webhook Configuration
 apply_yaml $WEBHOOK_CONFIGURATION_FILE
 
-# Apply Webhook Deployment
-apply_yaml $WEBHOOK_DEPLOYMENT_FILE
+# Apply Webhook svc
+apply_yaml $WEBHOOK_SVC_FILE
 
-# Apply PDBWatcher CRD
-apply_yaml $PDBWATCHER_CRD_FILE
-
-# Apply PDBWatcher Role
-apply_yaml $PDBWATCHER_ROLE
-
-# Apply PDBWatcher Rolebind
-apply_yaml $PDBWATCHER_BIND
 
 echo "Installation completed."

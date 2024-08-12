@@ -63,8 +63,9 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: javgarcia0907/controller:v1 
+        image: paulgmiller/k8s-pdb-autoscaler:latest
         name: manager
+        imagePullPolicy: Always
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:
@@ -91,5 +92,13 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
+        volumeMounts:
+        - name: webhook-tls
+          mountPath: /etc/webhook/tls
+          readOnly: true
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
+      volumes:
+      - name: webhook-tls
+        secret:
+          secretName: webhook-server-tls

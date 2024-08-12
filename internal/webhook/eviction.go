@@ -26,7 +26,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	logger := log.FromContext(ctx)
 
-	logger.Info("Received eviction request" "namespace", req.Namespace,"name", req.Name)
+	logger.Info("Received eviction request", "namespace", req.Namespace, "name", req.Name)
 
 	// Log eviction request
 	evictionLog := myappsv1.EvictionLog{

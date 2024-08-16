@@ -22,14 +22,15 @@ type EvictionHandler struct {
 	decoder *admission.Decoder
 }
 
+// this webhook updates the pdbwatcher's spec if there is a newish (configurable) eviction to cause a reconcile and see if we need to scale up
 func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) admission.Response {
 
 	logger := log.FromContext(ctx)
 
-	logger.Info("Received eviction request", "namespace", req.Namespace, "name", req.Name)
+	logger.Info("Received eviction request", "namespace", req.Namespace, "podname", req.Name)
 
 	// Log eviction request
-	evictionLog := myappsv1.EvictionLog{
+	evictionLog := myappsv1.Eviction{
 		PodName:      req.Name,
 		EvictionTime: time.Now().Format(time.RFC3339),
 	}
@@ -57,14 +58,14 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		pdb := &policyv1.PodDisruptionBudget{}
 		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
 		if err != nil {
-			logger.Error(err, "Error: Unable to fetch PDB: %s", pdbWatcher.Spec.PDBName)
+			logger.Error(err, "Error: Unable to fetch PDB:", "pdbname", pdbWatcher.Spec.PDBName)
 			continue
 		}
 
 		// Check if the PDB selector matches the evicted pod's labels
 		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 		if err != nil {
-			logger.Info("Error: Invalid PDB selector: %v, pdbName: %s", err, pdbWatcher.Spec.PDBName)
+			logger.Error(err, "Error: Invalid PDB selector", "pdbname", pdbWatcher.Spec.PDBName)
 			continue
 		}
 
@@ -79,21 +80,19 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Allowed("no applicable PDBWatcher")
 	}
 
-	// Update the PDBWatcher status with the new eviction log
-	// Ensure the eviction log does not grow indefinitely
-	maxLogs := 100
-	if len(applicablePDBWatcher.Status.EvictionLogs) >= maxLogs {
-		applicablePDBWatcher.Status.EvictionLogs = applicablePDBWatcher.Status.EvictionLogs[1:]
-	}
-	applicablePDBWatcher.Status.EvictionLogs = append(applicablePDBWatcher.Status.EvictionLogs, evictionLog)
+	logger.Info("Found pdbwatcher", "name", applicablePDBWatcher.Name)
 
-	err = e.Client.Status().Update(ctx, applicablePDBWatcher)
+	//TODO only update if we're 1 minute since last eviction to avoid swarms.
+
+	applicablePDBWatcher.Spec.LastEviction = evictionLog
+
+	err = e.Client.Update(ctx, applicablePDBWatcher)
 	if err != nil {
-		logger.Info("Error: Unable to update PDBWatcher status: %v", err)
-		return admission.Errored(http.StatusInternalServerError, err)
+		logger.Error(err, "Unable to update PDBWatcher status")
+		return admission.Errored(http.StatusInternalServerError, err) //this might happen if there's alot of evictions... Allow? Retry?
 	}
 
-	logger.Info("Eviction logged successfully, podName: %s, evictionTime: %s", req.Name, evictionLog.EvictionTime)
+	logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", evictionLog.EvictionTime)
 	return admission.Allowed("eviction allowed")
 }
 

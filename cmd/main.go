@@ -136,6 +136,7 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBWatcher")
 		os.Exit(1)
 	}
+
 	// +kubebuilder:scaffold:builder
 
 	// Register the webhook handler

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the namespace
-NAMESPACE=kube-system
+NAMESPACE=test
 
 # Get the list of deployments to create PDBs and PDBWatchers for
 deployments=$(kubectl get deployments -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook)$/ {print $1}')

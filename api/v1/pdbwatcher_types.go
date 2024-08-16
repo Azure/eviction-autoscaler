@@ -14,7 +14,7 @@ type Eviction struct {
 type PDBWatcherSpec struct {
 	PDBName        string   `json:"pdbName"`
 	DeploymentName string   `json:"deploymentName"`
-	LastEviction   Eviction `json:"lastEviction"`
+	LastEviction   Eviction `json:"lastEviction,omitempty"`
 }
 
 // PDBWatcherStatus defines the observed state of PDBWatcher

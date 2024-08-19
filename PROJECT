@@ -6,7 +6,7 @@ domain: mydomain.com
 layout:
 - go.kubebuilder.io/v4
 projectName: k8s-pdb-autoscaler
-repo: github.com/Javier090/k8s-pdb-autoscaler
+repo: github.com/paulgmiller/k8s-pdb-autoscaler
 resources:
 - api:
     crdVersion: v1
@@ -15,6 +15,6 @@ resources:
   domain: mydomain.com
   group: apps
   kind: PDBWatcher
-  path: github.com/Javier090/k8s-pdb-autoscaler/api/v1
+  path: github.com/paulgmiller/k8s-pdb-autoscaler/api/v1
   version: v1
 version: "3"

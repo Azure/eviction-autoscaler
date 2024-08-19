@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
+	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

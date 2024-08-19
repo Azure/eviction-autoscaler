@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
+	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 )
 
 // PDBWatcherReconciler reconciles a PDBWatcher object

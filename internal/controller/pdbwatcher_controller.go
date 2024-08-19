@@ -89,10 +89,10 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			//blank out deployment and try again?
-			pdbWatcher.Spec.DeploymentName = deploymentName
+			pdbWatcher.Spec.DeploymentName = ""
 			err = r.Update(ctx, pdbWatcher)
 			if err != nil {
-				logger.Error(err, "Failed to update PDBWatcher deployment")
+				logger.Error(err, "Failed to clear PDBWatcher deployment")
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{}, nil

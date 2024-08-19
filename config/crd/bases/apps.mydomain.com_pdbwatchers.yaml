@@ -41,6 +41,17 @@ spec:
             properties:
               deploymentName:
                 type: string
+              lastEviction:
+                description: EvictionLog defines a log entry for pod evictions
+                properties:
+                  evictionTime:
+                    type: string
+                  podName:
+                    type: string
+                required:
+                - evictionTime
+                - podName
+                type: object
               pdbName:
                 type: string
             required:
@@ -50,27 +61,26 @@ spec:
           status:
             description: PDBWatcherStatus defines the observed state of PDBWatcher
             properties:
-              evictionLogs:
-                items:
-                  description: EvictionLog defines a log entry for pod evictions
-                  properties:
-                    evictionTime:
-                      type: string
-                    podName:
-                      type: string
-                  required:
-                  - evictionTime
-                  - podName
-                  type: object
-                type: array
+              deploymentGeneration:
+                format: int64
+                type: integer
+              lastEviction:
+                description: EvictionLog defines a log entry for pod evictions
+                properties:
+                  evictionTime:
+                    type: string
+                  podName:
+                    type: string
+                required:
+                - evictionTime
+                - podName
+                type: object
               minReplicas:
                 format: int32
                 type: integer
-              resourceVersion:
-                type: string
             required:
+            - deploymentGeneration
             - minReplicas
-            - resourceVersion
             type: object
         type: object
     served: true

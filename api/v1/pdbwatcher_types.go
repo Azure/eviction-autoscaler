@@ -5,22 +5,23 @@ import (
 )
 
 // EvictionLog defines a log entry for pod evictions
-type EvictionLog struct {
+type Eviction struct {
 	PodName      string `json:"podName"`
 	EvictionTime string `json:"evictionTime"`
 }
 
 // PDBWatcherSpec defines the desired state of PDBWatcher
 type PDBWatcherSpec struct {
-	PDBName        string `json:"pdbName"`
-	DeploymentName string `json:"deploymentName"`
+	PDBName        string   `json:"pdbName"`
+	DeploymentName string   `json:"deploymentName"`
+	LastEviction   Eviction `json:"lastEviction,omitempty"`
 }
 
 // PDBWatcherStatus defines the observed state of PDBWatcher
 type PDBWatcherStatus struct {
-	EvictionLogs    []EvictionLog `json:"evictionLogs,omitempty"`
-	MinReplicas     int32         `json:"minReplicas"`     // Minimum number of replicas to maintain
-	ResourceVersion string        `json:"resourceVersion"` // Resource version of the deployment
+	LastEviction         Eviction `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
+	MinReplicas          int32    `json:"minReplicas"`            // Minimum number of replicas to maintain
+	DeploymentGeneration int64    `json:"deploymentGeneration"`   // generation (spec hash) of deployment.
 }
 
 // +kubebuilder:object:root=true

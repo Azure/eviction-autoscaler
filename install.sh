@@ -93,7 +93,7 @@ create_namespace $NAMESPACE
 
 # uncomment for new clusters .
 # Generate certificates
-# generate_certificates
+#generate_certificates
 
 # Apply CRD
 apply_yaml $CRD_FILE
@@ -109,7 +109,7 @@ apply_yaml $ROLE_BINDING_FILE
 
 #leases aren't at cluster level but are name space specific
 apply_yaml config/rbac/leader_election_role_binding.yaml 
-apply_yaml config/rbac/leader_election_role_binding.yaml 
+apply_yaml config/rbac/leader_election_role.yaml 
 
 # Apply Deployment for Controller/webhook
 apply_yaml $DEPLOYMENT_FILE

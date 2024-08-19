@@ -53,21 +53,8 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
 
-	// Check for conflicts with other PDBWatchers
-	conflictWatcherList := &myappsv1.PDBWatcherList{}
-	err = r.List(ctx, conflictWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
-	if err != nil {
-		return ctrl.Result{}, err // Error listing PDBWatchers
-	}
-
-	for _, watcher := range conflictWatcherList.Items {
-		if watcher.Name != pdbWatcher.Name && watcher.Spec.PDBName == pdbWatcher.Spec.PDBName {
-			// Conflict detected
-			err := fmt.Errorf("PDB %s is already being watched by another PDBWatcher %s", pdbWatcher.Spec.PDBName, watcher.Name)
-			logger.Error(err, "conflict!")
-			r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "Conflict", err.Error())
-			return ctrl.Result{}, err
-		}
+	if err := r.Conflicts(ctx, pdbWatcher); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Fetch the PDB
@@ -199,18 +186,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// Watch for changes in PDB to revert to original state
 	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
-		/*// Check if the resource version has changed
-		if pdbWatcher.Status.DeploymentGeneration != deployment.GetGeneration() {
-			// Deployment has been modified externally, update the resource version and min replicas
-			pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
-			pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
-			err = r.Status().Update(ctx, pdbWatcher)
-			if err != nil {
-				logger.Error(err, "Failed to update PDBWatcher status")
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}*/
 
 		// Revert Deployment to the original state
 		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
@@ -232,6 +207,27 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// does this go away if we force the pdb watcher name to be same as pdb?
+func (r *PDBWatcherReconciler) Conflicts(ctx context.Context, pdbWatcher *myappsv1.PDBWatcher) error {
+	// Check for conflicts with other PDBWatchers
+	conflictWatcherList := &myappsv1.PDBWatcherList{}
+	err := r.List(ctx, conflictWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
+	if err != nil {
+		return err // Error listing PDBWatchers
+	}
+
+	for _, watcher := range conflictWatcherList.Items {
+		if watcher.Name != pdbWatcher.Name && watcher.Spec.PDBName == pdbWatcher.Spec.PDBName {
+			// Conflict detected
+			err := fmt.Errorf("PDB %s is already being watched by another PDBWatcher %s", pdbWatcher.Spec.PDBName, watcher.Name)
+			log.FromContext(ctx).Error(err, "conflict!")
+			r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "Conflict", err.Error())
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	pdbautoscaler "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,7 +30,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	logger.Info("Received eviction request", "namespace", req.Namespace, "podname", req.Name)
 
 	// Log eviction request
-	evictionLog := myappsv1.Eviction{
+	evictionLog := pdbautoscaler.Eviction{
 		PodName:      req.Name,
 		EvictionTime: time.Now().Format(time.RFC3339),
 	}
@@ -44,7 +44,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	}
 
 	// List all PDBWatchers in the namespace
-	pdbWatcherList := &myappsv1.PDBWatcherList{}
+	pdbWatcherList := &pdbautoscaler.PDBWatcherList{}
 	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
 		logger.Error(err, "Error: Unable to list PDBWatchers")
@@ -52,7 +52,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	}
 
 	// Find the applicable PDBWatcher
-	var applicablePDBWatcher *myappsv1.PDBWatcher
+	var applicablePDBWatcher *pdbautoscaler.PDBWatcher
 	for _, pdbWatcher := range pdbWatcherList.Items {
 		// Fetch the associated PDB
 		pdb := &policyv1.PodDisruptionBudget{}

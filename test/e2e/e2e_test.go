@@ -24,7 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/Javier090/k8s-pdb-autoscaler/test/utils"
+	"github.com/paulgmiller/k8s-pdb-autoscaler/test/utils"
 )
 
 const namespace = "k8s-pdb-autoscaler-system"

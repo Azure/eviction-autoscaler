@@ -36,9 +36,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	appsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
-	controllers "github.com/Javier090/k8s-pdb-autoscaler/internal/controller"
-	evictinwebhook "github.com/Javier090/k8s-pdb-autoscaler/internal/webhook"
+	appsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	controllers "github.com/paulgmiller/k8s-pdb-autoscaler/internal/controller"
+	evictinwebhook "github.com/paulgmiller/k8s-pdb-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 

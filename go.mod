@@ -1,4 +1,4 @@
-module github.com/Javier090/k8s-pdb-autoscaler
+module github.com/paulgmiller/k8s-pdb-autoscaler
 
 go 1.22.0
 
@@ -73,4 +73,4 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-replace github.com/Javier090/k8s-pdb-autoscaler/config/webhook => ./config/webhook
+replace github.com/paulgmiller/k8s-pdb-autoscaler/config/webhook => ./config/webhook

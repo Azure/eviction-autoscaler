@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
-	myappsv1 "github.com/Javier090/k8s-pdb-autoscaler/api/v1"
+	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 )
 
 // PDBWatcherReconciler reconciles a PDBWatcher object
@@ -53,21 +53,9 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
 
-	// Check for conflicts with other PDBWatchers
-	conflictWatcherList := &myappsv1.PDBWatcherList{}
-	err = r.List(ctx, conflictWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
-	if err != nil {
-		return ctrl.Result{}, err // Error listing PDBWatchers
-	}
-
-	for _, watcher := range conflictWatcherList.Items {
-		if watcher.Name != pdbWatcher.Name && watcher.Spec.PDBName == pdbWatcher.Spec.PDBName {
-			// Conflict detected
-			err := fmt.Errorf("PDB %s is already being watched by another PDBWatcher %s", pdbWatcher.Spec.PDBName, watcher.Name)
-			logger.Error(err, "conflict!")
-			r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "Conflict", err.Error())
-			return ctrl.Result{}, err
-		}
+	//only do this on create? kill off by sharing nae?
+	if err := r.conflicts(ctx, pdbWatcher); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	// Fetch the PDB
@@ -78,72 +66,43 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDB
 	}
 
-	// Check if PDB overlaps with multiple deployments
-	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
-	if err != nil {
-		return ctrl.Result{}, err // Error converting label selector
-	}
-
-	podList := &corev1.PodList{}
-	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdbWatcher.Namespace, LabelSelector: selector, Limit: 1})
-	if err != nil {
-		return ctrl.Result{}, err // Error listing pods
-	}
-
-	deploymentMap := make(map[string]struct{})
-	for _, pod := range podList.Items {
-		for _, ownerRef := range pod.OwnerReferences {
-			if ownerRef.Kind == "ReplicaSet" {
-				replicaSet := &appsv1.ReplicaSet{}
-				err = r.Get(ctx, types.NamespacedName{Name: ownerRef.Name, Namespace: pdbWatcher.Namespace}, replicaSet)
-				if err != nil {
-					return ctrl.Result{}, err // Error fetching ReplicaSet
-				}
-
-				// Get the Deployment that owns this ReplicaSet
-				for _, rsOwnerRef := range replicaSet.OwnerReferences {
-					if rsOwnerRef.Kind == "Deployment" {
-						deploymentMap[rsOwnerRef.Name] = struct{}{}
-					}
-				}
-			}
-		}
-	}
-
-	// If multiple deployments are found, log a warning and return an error
-	if len(deploymentMap) > 1 {
-		r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "MultipleDeployments", "PDB overlaps with multiple deployments")
-		return ctrl.Result{}, fmt.Errorf("PDB %s/%s overlaps with multiple deployments", pdbWatcher.Namespace, pdbWatcher.Spec.PDBName)
-	}
-
-	// Determine the deployment name
 	deploymentName := pdbWatcher.Spec.DeploymentName
-	if deploymentName == "" && len(deploymentMap) == 1 {
-		for name := range deploymentMap {
-			deploymentName = name
-		}
-	}
-
-	// Log the deployment map and deployment name for debugging
-	logger.Info(fmt.Sprintf("Determined Deployment name: %s->%s", pdb.Name, deploymentName))
-
-	// Validate the deployment name
 	if deploymentName == "" {
-		errMsg := "Deployment name is empty"
-		logger.Error(fmt.Errorf(errMsg), errMsg)
-		return ctrl.Result{}, fmt.Errorf(errMsg)
+		deploymentName, err := r.discoverDeployment(ctx, pdb)
+		if err != nil {
+			//better error on notfound
+			return ctrl.Result{}, err // Error fetching PDB
+		}
+		pdbWatcher.Spec.DeploymentName = deploymentName
+		err = r.Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher deployment")
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+
 	}
 
 	// Fetch the Deployment
 	deployment := &appsv1.Deployment{}
 	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
 	if err != nil {
+		if errors.IsNotFound(err) {
+			//blank out deployment and try again?
+			pdbWatcher.Spec.DeploymentName = ""
+			err = r.Update(ctx, pdbWatcher)
+			if err != nil {
+				logger.Error(err, "Failed to clear PDBWatcher deployment")
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if pdbWatcher.Status.DeploymentGeneration == 0 || pdbWatcher.Status.DeploymentGeneration != deployment.GetGeneration() {
-		logger.Info("Derployment resource version changed reseting min replicas")
+		logger.Info("Deployment resource version changed reseting min replicas")
 		// The resource version has changed, which means someone else has modified the Deployment.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
@@ -156,11 +115,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	err = r.Status().Update(ctx, pdbWatcher)
-	if err != nil {
-		logger.Error(err, "Failed to update PDBWatcher status")
-		return ctrl.Result{}, err
-	}
 	// Log current state before checks
 	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, pdbWatcher.Status.MinReplicas))
 
@@ -192,25 +146,15 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 			// Log the scaling action
 			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
-		} else {
-			logger.Info("No recent reconcile event", "pdbname", pdb.Name)
+			return ctrl.Result{}, nil
 		}
+
+		logger.Info("No recent reconcile event", "pdbname", pdb.Name)
+		return ctrl.Result{}, nil
 	}
 
 	// Watch for changes in PDB to revert to original state
-	if pdb.Status.DisruptionsAllowed > 0 && *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
-		/*// Check if the resource version has changed
-		if pdbWatcher.Status.DeploymentGeneration != deployment.GetGeneration() {
-			// Deployment has been modified externally, update the resource version and min replicas
-			pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
-			pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
-			err = r.Status().Update(ctx, pdbWatcher)
-			if err != nil {
-				logger.Error(err, "Failed to update PDBWatcher status")
-				return ctrl.Result{}, err
-			}
-			return ctrl.Result{}, nil
-		}*/
+	if *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
 
 		// Revert Deployment to the original state
 		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
@@ -232,6 +176,76 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// does this go away if we force the pdb watcher name to be same as pdb?
+func (r *PDBWatcherReconciler) conflicts(ctx context.Context, pdbWatcher *myappsv1.PDBWatcher) error {
+	// Check for conflicts with other PDBWatchers
+	conflictWatcherList := &myappsv1.PDBWatcherList{}
+	err := r.List(ctx, conflictWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
+	if err != nil {
+		return err // Error listing PDBWatchers
+	}
+
+	for _, watcher := range conflictWatcherList.Items {
+		if watcher.Name != pdbWatcher.Name && watcher.Spec.PDBName == pdbWatcher.Spec.PDBName {
+			// Conflict detected
+			err := fmt.Errorf("PDB %s is already being watched by another PDBWatcher %s", pdbWatcher.Spec.PDBName, watcher.Name)
+			log.FromContext(ctx).Error(err, "conflict!")
+			r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "Conflict", err.Error())
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *PDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
+	logger := log.FromContext(ctx)
+	// Check if PDB overlaps with multiple deployments
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return "", err // Error converting label selector
+	}
+
+	podList := &corev1.PodList{}
+	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace, LabelSelector: selector, Limit: 1})
+	if err != nil {
+		return "", err // Error listing pods
+	}
+
+	deployments := []string{}
+	for _, pod := range podList.Items {
+		for _, ownerRef := range pod.OwnerReferences {
+			if ownerRef.Kind == "ReplicaSet" {
+				replicaSet := &appsv1.ReplicaSet{}
+				err = r.Get(ctx, types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
+				if err != nil {
+					return "", err // Error fetching ReplicaSet
+				}
+
+				// Get the Deployment that owns this ReplicaSet
+				for _, rsOwnerRef := range replicaSet.OwnerReferences {
+					if rsOwnerRef.Kind == "Deployment" {
+						deployments = append(deployments, rsOwnerRef.Name)
+					}
+				}
+			}
+			//todo handle stateful sets
+		}
+	}
+
+	// If multiple deployments are found, log a warning and return an error
+	if len(deployments) > 1 {
+		r.Recorder.Event(pdb, corev1.EventTypeWarning, "MultipleDeployments", "PDB overlaps with multiple deployments") //should we event on pdb watcher?
+		return "", fmt.Errorf("PDB %s/%s overlaps with multiple deployments", pdb.Namespace, pdb.Name)
+	}
+
+	if len(deployments) == 0 {
+		return "", fmt.Errorf("PDB %s/%s overlaps with zero deployments", pdb.Namespace, pdb.Name)
+	}
+	// Log the deployment map and deployment name for debugging
+	logger.Info(fmt.Sprintf("Determined Deployment name: %s->%s", pdb.Name, deployments[0]))
+	return deployments[0], nil
 }
 
 func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -283,6 +297,5 @@ func recentEviction(ctx context.Context, watcher myappsv1.PDBWatcher) bool {
 		return false
 	}
 
-	return time.Since(evictionTime) < 5*time.Minute
-
+	return time.Since(evictionTime) < 5*time.Minute //TODO let user set in spec
 }

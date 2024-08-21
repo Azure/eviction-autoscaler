@@ -10,6 +10,7 @@
 - [Introduction](#introduction)
 - [Features](#features)
 - [Installation](#installation)
+- [Usage](#usage)
 
 ## Introduction
 
@@ -60,8 +61,27 @@ Clone the repository and install the dependencies:
 git clone https://github.com/paulgmiller/k8s-pdb-autoscaler.git
 cd k8s-pdb-autoscaler
 hack/install.sh
-hack/autodeploy.sh <some namespace you want to protect>
 ```
+
+## Usage
+Here's how to see how this might work.
+
+```bash
+kubectl create ns laboratory
+kubectl create deployment -n laboratory piggie --image nginx
+hack/autodeploy.sh laboratory #want to replace this with tagging namespaces.
+# show a starting state
+k get pods -n laboratory
+k get pdbwatcher piggie-pdb-watcher -n laboratory -o yaml
+go run ./cmd/evict --label app=piggie -ns laboratory
+# show we've scaled up
+k get pods -n laboratory
+k get pdbwatcher piggie-pdb-watcher -n laboratory -o yaml
+# okay one more eviction to get us back down to one replica
+go run ./cmd/evict --label app=piggie -ns laboratory
+```
+
+
 
 ## TODO 
 
@@ -74,7 +94,7 @@ hack/autodeploy.sh <some namespace you want to protect>
 
 
 - Add these sections to the readme
-   - [Usage](#usage)
+  
   - [Configuration](#configuration)
   - [Examples](#examples)
   - [Contributing](#contributing)

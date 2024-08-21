@@ -53,7 +53,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
 
-	//only do this on create? kill off by sharing nae?
+	//only do this on create? kill off by sharing name?
 	if err := r.conflicts(ctx, pdbWatcher); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -123,6 +123,8 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// Check if there are recent evictions
 
 		if recentEviction(ctx, *pdbWatcher) {
+			//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
+
 			// Handle nil Deployment Strategy and MaxSurge
 			logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
 			// Scale up the Deployment

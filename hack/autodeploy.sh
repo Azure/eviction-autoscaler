@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # Define the namespace
-NAMESPACE=test
-
+NAMESPACE=$1
 # Get the list of deployments to create PDBs and PDBWatchers for
 deployments=$(kubectl get deployments -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook)$/ {print $1}')
 
@@ -46,15 +45,18 @@ EOF
   kubectl apply -f ${deploy}-pdb.yaml
   if [ $? -eq 0 ]; then
     echo "Applied PDB for deployment: $deploy"
+    rm ${deploy}-pdb.yaml
   else
     echo "Failed to apply PDB for deployment: $deploy"
     return 1
   fi
 
+
   # Apply the PDBWatcher YAML file
   kubectl apply -f ${deploy}-pdbwatcher.yaml
   if [ $? -eq 0 ]; then
     echo "Applied PDBWatcher for deployment: $deploy"
+    rm ${deploy}-pdbwatcher.yaml
   else
     echo "Failed to apply PDBWatcher for deployment: $deploy"
     return 1

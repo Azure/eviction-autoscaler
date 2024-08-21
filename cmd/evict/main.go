@@ -27,16 +27,19 @@ import (
 )
 
 func main() {
-	var kubeconfig, pod, namespace *string
+	var kubeconfig, pod, label, namespace *string
 	if home := homedir.HomeDir(); home != "" {
 		kubeconfig = flag.String("kubeconfig", filepath.Join(home, ".kube", "config"), "(optional) absolute path to the kubeconfig file")
 	} else {
 		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
 	}
 	pod = flag.String("pod", "piggie", "pod to evict")
+	label = flag.String("label", "", "pod to evict")
 	namespace = flag.String("ns", "test", "namespace of pod to evict")
 	flag.Parse()
-	log.Printf("evicting %s/%s", *namespace, *pod)
+
+	ctx := context.Background()
+
 	// use the current context in kubeconfig
 	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
 	if err != nil {
@@ -48,8 +51,16 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
+	if *label != "" {
+		pods, err := clientset.CoreV1().Pods(*namespace).List(ctx, v1.ListOptions{LabelSelector: *label, Limit: 1})
+		if err != nil {
+			panic(err.Error())
+		}
+		pod = &pods.Items[0].Name
+	}
 
-	ctx := context.Background()
+	log.Printf("evicting %s/%s", *namespace, *pod)
+
 	err = clientset.PolicyV1().Evictions(*namespace).Evict(ctx, &policy.Eviction{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      *pod,

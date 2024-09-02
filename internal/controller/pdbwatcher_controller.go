@@ -66,14 +66,15 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDB
 	}
 
-	deploymentName := pdbWatcher.Spec.DeploymentName
+	deploymentName := pdbWatcher.Spec.TargetName
 	if deploymentName == "" {
 		deploymentName, err := r.discoverDeployment(ctx, pdb)
 		if err != nil {
 			//better error on notfound
 			return ctrl.Result{}, err // Error fetching PDB
 		}
-		pdbWatcher.Spec.DeploymentName = deploymentName
+		pdbWatcher.Spec.TargetName = deploymentName
+		pdbWatcher.Spec.TargetType = "Deployment"
 		err = r.Update(ctx, pdbWatcher)
 		if err != nil {
 			logger.Error(err, "Failed to update PDBWatcher deployment")
@@ -89,7 +90,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err != nil {
 		if errors.IsNotFound(err) {
 			//blank out deployment and try again?
-			pdbWatcher.Spec.DeploymentName = ""
+			pdbWatcher.Spec.TargetName = ""
 			err = r.Update(ctx, pdbWatcher)
 			if err != nil {
 				logger.Error(err, "Failed to clear PDBWatcher deployment")
@@ -101,11 +102,11 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
-	if pdbWatcher.Status.DeploymentGeneration == 0 || pdbWatcher.Status.DeploymentGeneration != deployment.GetGeneration() {
+	if pdbWatcher.Status.TargetGeneration == 0 || pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
 		logger.Info("Deployment resource version changed reseting min replicas")
 		// The resource version has changed, which means someone else has modified the Deployment.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
-		pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
+		pdbWatcher.Status.TargetGeneration = deployment.GetGeneration()
 		pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
 		err = r.Status().Update(ctx, pdbWatcher)
 		if err != nil {
@@ -137,7 +138,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			}
 
 			// Save ResourceVersion to PDBWatcher status this will cause another reconcile.
-			pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
+			pdbWatcher.Status.TargetGeneration = deployment.GetGeneration()
 			pdbWatcher.Status.LastEviction = pdbWatcher.Spec.LastEviction //we could still keep a log here if thats useful
 			//should we clear evictions?
 			err = r.Status().Update(ctx, pdbWatcher)
@@ -169,7 +170,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, *deployment.Spec.Replicas))
 
 		// Update ResourceVersion in PDBWatcher status
-		pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
+		pdbWatcher.Status.TargetGeneration = deployment.GetGeneration()
 		err = r.Status().Update(ctx, pdbWatcher)
 		if err != nil {
 			logger.Error(err, "Failed to update PDBWatcher status")

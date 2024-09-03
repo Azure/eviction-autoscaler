@@ -1,24 +1,11 @@
-+++++++++++++-+#!/bin/bash
+#!/bin/bash
 
 # Define the namespace
 NAMESPACE=$1
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-et the list of deployments to create PDBs and PDBWatchers for
-deployments=$(kubectl get deployments -n $NAMESPACE --no-headers 
-statefulsets=$(kubectl get statefulsets -n $NAMESPACE --no-headers
+#get the list of deployments to create PDBs and PDBWatchers for
+deployments=$(kubectl get deployments -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook)$/ {print $1}')
+statefulsets=$(kubectl get statefulsets -n $NAMESPACE --no-headers | awk '$1 !~ /^(example-pdbwatcher|eviction-webhook)$/ {print $1}')
 
 # Function to create and apply PDB and PDBWatcher YAMLs
 create_and_apply_resources() {
@@ -91,4 +78,4 @@ for ss in $statefulsets; do
   create_and_apply_resources $ss "statefulset"
 done
 
-+e+cho "All PDBs and PDBWatchers have been created and applied."
+echo "All PDBs and PDBWatchers have been created and applied."

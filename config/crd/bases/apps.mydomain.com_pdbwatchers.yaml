@@ -52,14 +52,14 @@ spec:
                 type: object
               pdbName:
                 type: string
-              targetName:
+              targetKind:
                 type: string
-              targetType:
+              targetName:
                 type: string
             required:
             - pdbName
+            - targetKind
             - targetName
-            - targetType
             type: object
           status:
             description: PDBWatcherStatus defines the observed state of PDBWatcher

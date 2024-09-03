@@ -14,7 +14,7 @@ type Eviction struct {
 type PDBWatcherSpec struct {
 	PDBName      string   `json:"pdbName"`
 	TargetName   string   `json:"targetName"`
-	TargetType   string   `json:"targetType"` //deployment or statefulset (anything with an update statedgy)
+	TargetKind   string   `json:"targetKind"` //deployment or statefulset (anything with an update statedgy)
 	LastEviction Eviction `json:"lastEviction,omitempty"`
 }
 

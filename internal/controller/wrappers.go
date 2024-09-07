@@ -13,54 +13,62 @@ type Surger interface {
 	GetReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
-	client.Object
+	Obj() client.Object
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 }
 
 const (
 	deploymentKind  = "deployment"
-	statefulSetKind = "deployment"
+	statefulSetKind = "statefulset"
 )
 
 type DeploymentWrapper struct {
-	*v1.Deployment
+	obj *v1.Deployment
 }
 
 var _ Surger = &DeploymentWrapper{}
 
+func (d *DeploymentWrapper) Obj() client.Object {
+	return d.obj
+}
+
 func (d *DeploymentWrapper) GetReplicas() int32 {
-	if d.Spec.Replicas == nil {
+	if d.obj.Spec.Replicas == nil {
 		return 1 // Default value in Kubernetes if not set
 	}
-	return *d.Spec.Replicas
+	return *d.obj.Spec.Replicas
 }
 
 func (d *DeploymentWrapper) SetReplicas(replicas int32) {
-	d.Spec.Replicas = &replicas
+	d.obj.Spec.Replicas = &replicas
 }
 
 func (d *DeploymentWrapper) GetMaxSurge() intstr.IntOrString {
-	if d.Spec.Strategy.RollingUpdate != nil && d.Spec.Strategy.RollingUpdate.MaxSurge != nil {
-		return *d.Spec.Strategy.RollingUpdate.MaxSurge
+	if d.obj.Spec.Strategy.RollingUpdate != nil && d.obj.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		return *d.obj.Spec.Strategy.RollingUpdate.MaxSurge
 	}
 	return intstr.FromInt(0)
 }
 
 type StatefulSetWrapper struct {
-	*v1.StatefulSet
+	obj *v1.StatefulSet
 }
 
 var _ Surger = &StatefulSetWrapper{}
 
+func (s *StatefulSetWrapper) Obj() client.Object {
+	return s.obj
+}
+
 func (s *StatefulSetWrapper) GetReplicas() int32 {
-	if s.Spec.Replicas == nil {
+	if s.obj.Spec.Replicas == nil {
 		return 1 // Default value in Kubernetes if not set
 	}
-	return *s.Spec.Replicas
+	return *s.obj.Spec.Replicas
 }
 
 func (s *StatefulSetWrapper) SetReplicas(replicas int32) {
-	s.Spec.Replicas = &replicas
+	s.obj.Spec.Replicas = &replicas
 }
 
 func (s *StatefulSetWrapper) GetMaxSurge() intstr.IntOrString {
@@ -69,11 +77,11 @@ func (s *StatefulSetWrapper) GetMaxSurge() intstr.IntOrString {
 
 func GetSurger(kind string) (Surger, error) {
 	if kind == deploymentKind {
-		return &DeploymentWrapper{}, nil
+		return &DeploymentWrapper{obj:&v1.Deployment{}}, nil
 	} else if kind == statefulSetKind {
-		return &StatefulSetWrapper{}, nil
+		return &StatefulSetWrapper{obj:&v1.StatefulSet{}}, nil
 	} else {
-		return nil, fmt.Errorf("unknown target kind")
+		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}
 
 }

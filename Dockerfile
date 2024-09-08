@@ -11,10 +11,14 @@ COPY go.sum go.sum
 # and so that source changes don't invalidate our downloaded layer
 RUN go mod download
 
+RUN go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.57.2
+
 # Copy the go source
 COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY internal/ internal/
+
+RUN golangci-lint run ./...
 
 # Build
 # the GOARCH has not a default value to allow the binary be built according to the host where the command

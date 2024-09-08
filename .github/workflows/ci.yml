@@ -1,0 +1,38 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # Job to build the Docker image
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Build Docker image
+        run: docker build  .
+
+  # Job to lint Kubernetes YAML files
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install kubeconform (Kubernetes YAML linter)
+        run: |
+          curl -L https://github.com/yannh/kubeconform/releases/download/v0.4.16/kubeconform-linux-amd64.tar.gz | tar -C /usr/local/bin -xz
+
+      - name: Lint Kubernetes YAML files
+        run: |
+          kubeconform -strict -summary config/*.yaml

@@ -1,8 +1,9 @@
-# Project Name
+# K8s-pdb-autoscaler
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/paulgmiller/k8s-pdb-autoscaler)](https://goreportcard.com/report/github.com/paulgmiller/k8s-pdb-autoscaler)
 [![GoDoc](https://pkg.go.dev/badge/github.com/paulgmiller/k8s-pdb-autoscaler)](https://pkg.go.dev/github.com/paulgmiller/k8s-pdb-autoscaler)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI Pipeline](https://github.com/paulgmiller/k8s-pdb-autoscaler/actions/workflows/ci.yml/badge.svg)](https://github.com/paulgmiller/k8s-pdb-autoscaler/actions/workflows/ci.yml)
 
 
 ## Table of Contents

@@ -81,6 +81,9 @@ k get pdbwatcher piggie-pdb-watcher -n laboratory -o yaml
 # okay one more eviction to get us back down to one replica
 go run ./cmd/evict --label app=piggie -ns laboratory
 ```
+Here's a drain of  Node on a to node cluster that is running the [aks store demo](https://github.com/Azure-Samples/aks-store-demo) (4 deployments and two stateful sets). You can see the drains being rejected then going through on the left and new pods being surged in on the right.
+
+![Screenshot 2024-09-07 173336](https://github.com/user-attachments/assets/c7407ae5-6fcd-48d4-900d-32a7c6ca8b08)
 
 
 

@@ -39,8 +39,6 @@ spec:
           spec:
             description: PDBWatcherSpec defines the desired state of PDBWatcher
             properties:
-              deploymentName:
-                type: string
               lastEviction:
                 description: EvictionLog defines a log entry for pod evictions
                 properties:
@@ -54,9 +52,14 @@ spec:
                 type: object
               pdbName:
                 type: string
+              targetKind:
+                type: string
+              targetName:
+                type: string
             required:
-            - deploymentName
             - pdbName
+            - targetKind
+            - targetName
             type: object
           status:
             description: PDBWatcherStatus defines the observed state of PDBWatcher

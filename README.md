@@ -86,8 +86,8 @@ go run ./cmd/evict --label app=piggie -ns laboratory
 ## TODO 
 
 ###  Tactical 
-- Work with stateful sets.
 - Make the webhook cheaper. 
+- Stateful set scaledown. 
 - e2e
 - kustomize
 - cert manager. 

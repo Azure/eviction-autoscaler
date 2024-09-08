@@ -12,16 +12,17 @@ type Eviction struct {
 
 // PDBWatcherSpec defines the desired state of PDBWatcher
 type PDBWatcherSpec struct {
-	PDBName        string   `json:"pdbName"`
-	DeploymentName string   `json:"deploymentName"`
-	LastEviction   Eviction `json:"lastEviction,omitempty"`
+	PDBName      string   `json:"pdbName"`
+	TargetName   string   `json:"targetName"`
+	TargetKind   string   `json:"targetKind"` //deployment or statefulset (anything with an update statedgy)
+	LastEviction Eviction `json:"lastEviction,omitempty"`
 }
 
 // PDBWatcherStatus defines the observed state of PDBWatcher
 type PDBWatcherStatus struct {
-	LastEviction         Eviction `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
-	MinReplicas          int32    `json:"minReplicas"`            // Minimum number of replicas to maintain
-	DeploymentGeneration int64    `json:"deploymentGeneration"`   // generation (spec hash) of deployment.
+	LastEviction     Eviction `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
+	MinReplicas      int32    `json:"minReplicas"`            // Minimum number of replicas to maintain
+	TargetGeneration int64    `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
 }
 
 // +kubebuilder:object:root=true

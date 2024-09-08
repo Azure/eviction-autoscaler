@@ -37,7 +37,9 @@ type PDBWatcherReconciler struct {
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 
 func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -66,14 +68,15 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDB
 	}
 
-	deploymentName := pdbWatcher.Spec.DeploymentName
+	deploymentName := pdbWatcher.Spec.TargetName
 	if deploymentName == "" {
-		deploymentName, err := r.discoverDeployment(ctx, pdb)
+		deploymentName, err := r.discoverDeployment(ctx, pdb) //move this out of thie controller to a controller that watches pdbs
 		if err != nil {
 			//better error on notfound
 			return ctrl.Result{}, err // Error fetching PDB
 		}
-		pdbWatcher.Spec.DeploymentName = deploymentName
+		pdbWatcher.Spec.TargetName = deploymentName
+		pdbWatcher.Spec.TargetKind = deploymentKind
 		err = r.Update(ctx, pdbWatcher)
 		if err != nil {
 			logger.Error(err, "Failed to update PDBWatcher deployment")
@@ -84,12 +87,15 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Fetch the Deployment
-	deployment := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: deploymentName, Namespace: pdbWatcher.Namespace}, deployment)
+	target, err := GetSurger(pdbWatcher.Spec.TargetKind)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.TargetName, Namespace: pdbWatcher.Namespace}, target.Obj())
 	if err != nil {
 		if errors.IsNotFound(err) {
 			//blank out deployment and try again?
-			pdbWatcher.Spec.DeploymentName = ""
+			pdbWatcher.Spec.TargetName = ""
 			err = r.Update(ctx, pdbWatcher)
 			if err != nil {
 				logger.Error(err, "Failed to clear PDBWatcher deployment")
@@ -101,12 +107,12 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
-	if pdbWatcher.Status.DeploymentGeneration == 0 || pdbWatcher.Status.DeploymentGeneration != deployment.GetGeneration() {
+	if pdbWatcher.Status.TargetGeneration == 0 || pdbWatcher.Status.TargetGeneration != target.Obj().GetGeneration() {
 		logger.Info("Deployment resource version changed reseting min replicas")
 		// The resource version has changed, which means someone else has modified the Deployment.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
-		pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
-		pdbWatcher.Status.MinReplicas = *deployment.Spec.Replicas
+		pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
+		pdbWatcher.Status.MinReplicas = target.GetReplicas()
 		err = r.Status().Update(ctx, pdbWatcher)
 		if err != nil {
 			logger.Error(err, "Failed to update PDBWatcher status")
@@ -122,54 +128,55 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if pdb.Status.DisruptionsAllowed == 0 {
 		// Check if there are recent evictions
 
-		if recentEviction(ctx, *pdbWatcher) {
-			//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
-
-			// Handle nil Deployment Strategy and MaxSurge
-			logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
-			// Scale up the Deployment
-			newReplicas := calculateSurge(ctx, deployment, pdbWatcher.Status.MinReplicas)
-			deployment.Spec.Replicas = &newReplicas
-			err = r.Update(ctx, deployment)
-			if err != nil {
-				logger.Error(err, "failed to update deployment")
-				return ctrl.Result{}, err
-			}
-
-			// Save ResourceVersion to PDBWatcher status this will cause another reconcile.
-			pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
-			pdbWatcher.Status.LastEviction = pdbWatcher.Spec.LastEviction //we could still keep a log here if thats useful
-			//should we clear evictions?
-			err = r.Status().Update(ctx, pdbWatcher)
-			if err != nil {
-				logger.Error(err, "Failed to update PDBWatcher status")
-				return ctrl.Result{}, err
-			}
-
-			// Log the scaling action
-			logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, newReplicas))
+		if !recentEviction(ctx, *pdbWatcher) {
+			logger.Info("No recent evictions ", "pdbname", pdb.Name)
 			return ctrl.Result{}, nil
 		}
+		//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
 
-		logger.Info("No recent reconcile event", "pdbname", pdb.Name)
+		// Handle nil Deployment Strategy and MaxSurge
+		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
+		// Scale up the Deployment
+		newReplicas := calculateSurge(ctx, target, pdbWatcher.Status.MinReplicas)
+		target.SetReplicas(newReplicas)
+		err = r.Update(ctx, target.Obj())
+		if err != nil {
+			logger.Error(err, "failed to update deployment")
+			return ctrl.Result{}, err
+		}
+
+		// Save ResourceVersion to PDBWatcher status this will cause another reconcile.
+		pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
+		pdbWatcher.Status.LastEviction = pdbWatcher.Spec.LastEviction //we could still keep a log here if thats useful
+		//should we clear evictions?
+		err = r.Status().Update(ctx, pdbWatcher)
+		if err != nil {
+			logger.Error(err, "Failed to update PDBWatcher status")
+			return ctrl.Result{}, err
+		}
+
+		// Log the scaling action
+		logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
 		return ctrl.Result{}, nil
+
 	}
 
 	// Watch for changes in PDB to revert to original state
-	if *deployment.Spec.Replicas != pdbWatcher.Status.MinReplicas {
+	if target.GetReplicas() != pdbWatcher.Status.MinReplicas {
 
-		// Revert Deployment to the original state
-		deployment.Spec.Replicas = &pdbWatcher.Status.MinReplicas
-		err = r.Update(ctx, deployment)
+		// Revert Target to the original state
+		// This is bad if its a statefulset because scale down removes non zero replicas first even if zero isn't ready
+		target.SetReplicas(pdbWatcher.Status.MinReplicas)
+		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", deployment.Namespace, deployment.Name, *deployment.Spec.Replicas))
+		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
 
 		// Update ResourceVersion in PDBWatcher status
-		pdbWatcher.Status.DeploymentGeneration = deployment.GetGeneration()
+		pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
 		err = r.Status().Update(ctx, pdbWatcher)
 		if err != nil {
 			logger.Error(err, "Failed to update PDBWatcher status")
@@ -264,21 +271,24 @@ func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 // TODO Unittest
 // TODO don't do anything if they don't have a max surge
-func calculateSurge(ctx context.Context, deployment *appsv1.Deployment, minrepicas int32) int32 {
+func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 {
 
-	maxSurge := int32(1) // Default max surge value
-	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxSurge != nil {
-		if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.Int {
-			maxSurge = deployment.Spec.Strategy.RollingUpdate.MaxSurge.IntVal
-		} else if deployment.Spec.Strategy.RollingUpdate.MaxSurge.Type == intstr.String {
-			percentageStr := strings.TrimSuffix(deployment.Spec.Strategy.RollingUpdate.MaxSurge.StrVal, "%")
-			percentage, err := strconv.Atoi(percentageStr)
-			if err != nil {
-				log.FromContext(ctx).Error(err, "invalid surge", "deployment", deployment.Name)
-			}
-			maxSurge = int32(math.Ceil((float64(minrepicas) * float64(percentage)) / 100.0))
+	surge := target.GetMaxSurge()
+	var maxSurge int32
+	if surge.Type == intstr.Int {
+		maxSurge = surge.IntVal
+	} else if surge.Type == intstr.String {
+		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
+		percentage, err := strconv.Atoi(percentageStr)
+		if err != nil {
+			//todo add name?
+			log.FromContext(ctx).Error(err, "invalid surge")
 		}
+		maxSurge = int32(math.Ceil((float64(minrepicas) * float64(percentage)) / 100.0))
+	} else {
+		panic("must be string or int")
 	}
+
 	return minrepicas + maxSurge
 }
 

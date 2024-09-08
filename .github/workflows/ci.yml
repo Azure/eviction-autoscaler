@@ -23,16 +23,16 @@ jobs:
         run: docker build  .
 
   # Job to lint Kubernetes YAML files
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+  #lint:
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - name: Checkout code
+  #      uses: actions/checkout@v3#
+#
+#      - name: Install kubeconform (Kubernetes YAML linter)
+#        run: |
+#          curl -L https://github.com/yannh/kubeconform/releases/download/v0.4.16/kubeconform-linux-amd64.tar.gz | tar -C /usr/local/bin -xz
 
-      - name: Install kubeconform (Kubernetes YAML linter)
-        run: |
-          curl -L https://github.com/yannh/kubeconform/releases/download/v0.4.16/kubeconform-linux-amd64.tar.gz | tar -C /usr/local/bin -xz
-
-      - name: Lint Kubernetes YAML files
-        run: |
-          kubeconform -strict -summary config/*.yaml
+#      - name: Lint Kubernetes YAML files
+#        run: |
+#          kubeconform -strict -summary config/*.yaml

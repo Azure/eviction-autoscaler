@@ -8,7 +8,7 @@ metadata:
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: controller-manager-clusterrole
+  name: manager-role
 subjects:
 - kind: ServiceAccount
   name: controller-manager

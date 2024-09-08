@@ -14,6 +14,15 @@ rules:
   - update
   - watch
 - apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - get
+  - list
+  - update
+  - watch
+- apiGroups:
   - apps.mydomain.com
   resources:
   - pdbwatchers
@@ -39,6 +48,13 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
 - apiGroups:
   - policy
   resources:

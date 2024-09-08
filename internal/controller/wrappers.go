@@ -77,9 +77,9 @@ func (s *StatefulSetWrapper) GetMaxSurge() intstr.IntOrString {
 
 func GetSurger(kind string) (Surger, error) {
 	if kind == deploymentKind {
-		return &DeploymentWrapper{obj:&v1.Deployment{}}, nil
+		return &DeploymentWrapper{obj: &v1.Deployment{}}, nil
 	} else if kind == statefulSetKind {
-		return &StatefulSetWrapper{obj:&v1.StatefulSet{}}, nil
+		return &StatefulSetWrapper{obj: &v1.StatefulSet{}}, nil
 	} else {
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}

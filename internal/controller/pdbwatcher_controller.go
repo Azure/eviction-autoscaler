@@ -164,7 +164,8 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Watch for changes in PDB to revert to original state
 	if target.GetReplicas() != pdbWatcher.Status.MinReplicas {
 
-		// Revert Deployment to the original state
+		// Revert Target to the original state
+		// This is bad if its a statefulset because scale down removes non zero replicas first even if zero isn't ready
 		target.SetReplicas(pdbWatcher.Status.MinReplicas)
 		err = r.Update(ctx, target.Obj())
 		if err != nil {

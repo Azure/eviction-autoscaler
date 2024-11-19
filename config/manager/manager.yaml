@@ -102,3 +102,26 @@ spec:
       - name: webhook-tls
         secret:
           secretName: webhook-server-tls
+---
+kind: PodDisruptionBudget
+metadata:
+  name: controller-manager-pdb
+  namespace: default
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      control-plane: controller-manager
+      app.kubernetes.io/name: k8s-pdb-autoscaler
+      app.kubernetes.io/managed-by: kustomize
+---
+apiVersion: apps.mydomain.com/v1
+kind: PDBWatcher
+metadata:
+  name: controller-manager-pdb-watcher
+  namespace: default
+spec:
+  pdbName: controller-manager-pdb-pdb
+  targetName: controller-manager
+  targetKind: Deployment
+---

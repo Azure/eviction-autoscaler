@@ -30,9 +30,10 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	logger.Info("Received eviction request", "namespace", req.Namespace, "podname", req.Name)
 
 	// Log eviction request
-	evictionLog := pdbautoscaler.Eviction{
+	now := time.Now()
+	currentEviction := pdbautoscaler.Eviction{
 		PodName:      req.Name,
-		EvictionTime: time.Now().Format(time.RFC3339),
+		EvictionTime: now.Format(time.RFC3339), //is there a guid or time on request we could use?
 	}
 
 	// Fetch the pod to get its labels
@@ -43,7 +44,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
-	// List all PDBWatchers in the namespace
+	// List all PDBWatchers in the namespace. Is this expensive for every eviction are we cacching this list and pdbs?
 	pdbWatcherList := &pdbautoscaler.PDBWatcherList{}
 	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
 	if err != nil {
@@ -82,17 +83,33 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	logger.Info("Found pdbwatcher", "name", applicablePDBWatcher.Name)
 
-	//TODO only update if we're 1 minute since last eviction to avoid swarms.
+	/* Can't do this because we might miss our last eviction
+	//only update if we're 1 minute since last eviction to avoid swarms.
+	//impolite to mutex here as it would block api server. Could have a single channel and channel read updates
 
-	applicablePDBWatcher.Spec.LastEviction = evictionLog
+	if applicablePDBWatcher.Spec.LastEviction.EvictionTime != "" {
+		evictionTime, err := time.Parse(time.RFC3339, applicablePDBWatcher.Spec.LastEviction.EvictionTime)
+		if err != nil {
+			logger.Error(err, "Failed to parse eviction time "+applicablePDBWatcher.Spec.LastEviction.EvictionTime)
+		} else {
+			if now.Sub(evictionTime) < time.Minute { //mak configurable in CRD
+				logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", currentEviction.EvictionTime)
+				return admission.Allowed("eviction ignored")
+			}
+		}
+	}
+	*/
+
+	applicablePDBWatcher.Spec.LastEviction = currentEviction
 
 	err = e.Client.Update(ctx, applicablePDBWatcher)
 	if err != nil {
+		//handle conflics when many evictions happen in parallel? or doesn't matter if we lose the conficts
 		logger.Error(err, "Unable to update PDBWatcher status")
-		return admission.Errored(http.StatusInternalServerError, err) //this might happen if there's alot of evictions... Allow? Retry?
+		return admission.Errored(http.StatusInternalServerError, err) //Is this a problem if webhook doesn't ignore failures?
 	}
 
-	logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", evictionLog.EvictionTime)
+	logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", currentEviction.EvictionTime)
 	return admission.Allowed("eviction allowed")
 }
 

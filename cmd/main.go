@@ -129,14 +129,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&controllers.PodScalingReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Pod Scaler")
+		os.Exit(1)
+	}
+
+	if err = (&controllers.DeploymentPDBReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "Deployment Watcher")
+		os.Exit(1)
+	}
+
 	if err = (&controllers.PDBWatcherReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PDBWatcher")
+		setupLog.Error(err, "unable to create controller", "controller", "Deployment Watcher")
 		os.Exit(1)
 	}
-
 	// +kubebuilder:scaffold:builder
 
 	// Register the webhook handler

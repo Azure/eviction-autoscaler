@@ -64,6 +64,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 
 	// Create a new PDB for the Deployment
 	pdb = &policyv1.PodDisruptionBudget{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "PodDisruptionBudget",
+			APIVersion: "policy/v1",
+		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name + "-pdb",
 			Namespace: deployment.Namespace,

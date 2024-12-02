@@ -58,7 +58,7 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 				Namespace: pdb.Namespace,
 			},
 			Spec: types.PDBWatcherSpec{
-				PDBName: pdb.Name,
+				TargetName: pdb.Name,
 			},
 		}
 

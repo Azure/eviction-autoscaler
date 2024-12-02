@@ -118,10 +118,9 @@ spec:
 apiVersion: apps.mydomain.com/v1
 kind: PDBWatcher
 metadata:
-  name: controller-manager-pdb-watcher
+  name: controller-manager-pdb
   namespace: default
 spec:
-  pdbName: controller-manager-pdb
   targetName: controller-manager
   targetKind: Deployment
 ---

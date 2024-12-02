@@ -12,7 +12,7 @@ type Eviction struct {
 
 // PDBWatcherSpec defines the desired state of PDBWatcher
 type PDBWatcherSpec struct {
-	PDBName      string   `json:"pdbName"`
+	//todo make this mirror horizontalpodautoscaler's target reference
 	TargetName   string   `json:"targetName"`
 	TargetKind   string   `json:"targetKind"` //deployment or statefulset (anything with an update statedgy)
 	LastEviction Eviction `json:"lastEviction,omitempty"`

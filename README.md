@@ -88,14 +88,7 @@ Here's a drain of  Node on a to node cluster that is running the [aks store demo
 
 
 ## TODO 
-
-###  Tactical 
-- Make the webhook cheaper. 
-- Stateful set scaledown. 
-- e2e
-- kustomize
-- cert manager. 
-- controller to add pdbs/pdbwatchers consider https://github.com/mikkeloscar/pdb-controller
+Mostly see issues. 
 
 - Add these sections to the readme
   

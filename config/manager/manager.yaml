@@ -121,7 +121,6 @@ metadata:
   name: controller-manager-pdb-watcher
   namespace: default
 spec:
-  pdbName: controller-manager-pdb
-  targetName: controller-manager
+  targetName: controller-manager-pdb
   targetKind: Deployment
 ---

@@ -8,11 +8,8 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -66,21 +63,8 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if pdbWatcher.Spec.TargetName == "" {
-		//move away from doing this. Have another controller that watches pdbs and creates/updates pdbwatchers
-		deploymentName, err := r.discoverDeployment(ctx, pdb) //move this out of thie controller to a controller that watches pdbs
-		if err != nil {
-			//better error on notfound
-			return ctrl.Result{}, err // Error fetching PDB
-		}
-		pdbWatcher.Spec.TargetName = deploymentName
-		pdbWatcher.Spec.TargetKind = deploymentKind
-		err = r.Update(ctx, pdbWatcher)
-		if err != nil {
-			logger.Error(err, "Failed to update PDBWatcher deployment")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
-
+		//better error on notfound
+		return ctrl.Result{}, fmt.Errorf("PDBWatcher %s/%s has no targetName", pdbWatcher.Namespace, pdbWatcher.Name)
 	}
 
 	// Fetch the Deployment or Statefulset
@@ -168,12 +152,12 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
-	} // else log nothing to do or too noisy?
+	}
+	// else log nothing to do or too noisy?
 
 	// Save ResourceVersion to PDBWatcher status this will cause another reconcile.
 	pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
 	pdbWatcher.Status.LastEviction = pdbWatcher.Spec.LastEviction //we could still keep a log here if thats useful
-	//should we clear evictions?
 	err = r.Status().Update(ctx, pdbWatcher)
 	if err != nil {
 		logger.Error(err, "Failed to update PDBWatcher status")
@@ -181,45 +165,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// discoverDeployment is for lazy users who don't specify a targetName. Its just goin to pick the deployment owned by the first pod it finds
-// matcing
-func (r *PDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
-	logger := log.FromContext(ctx)
-	// Check if PDB overlaps with multiple deployments
-	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
-	if err != nil {
-		return "", err // Error converting label selector
-	}
-
-	podList := &corev1.PodList{}
-	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace, LabelSelector: selector, Limit: 1})
-	if err != nil {
-		return "", err // Error listing pods
-	}
-
-	for _, pod := range podList.Items {
-		for _, ownerRef := range pod.OwnerReferences {
-			if ownerRef.Kind == "ReplicaSet" {
-				replicaSet := &appsv1.ReplicaSet{}
-				err = r.Get(ctx, types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
-				if err != nil {
-					return "", err // Error fetching ReplicaSet
-				}
-
-				// Get the Deployment that owns this ReplicaSet
-				for _, rsOwnerRef := range replicaSet.OwnerReferences {
-					if rsOwnerRef.Kind == "Deployment" {
-						logger.Info(fmt.Sprintf("Determined Deployment name: %s->%s", pdb.Name, rsOwnerRef.Name))
-						return rsOwnerRef.Name, nil
-					}
-				}
-			}
-			//todo handle stateful sets? Too dangersous?
-		}
-	}
-	return "", fmt.Errorf("PDB %s/%s overlaps with zero deployments", pdb.Namespace, pdb.Name)
 }
 
 func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -131,7 +131,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	} else if target.GetReplicas() != pdbWatcher.Status.MinReplicas {
 		//don't scale down immediately as eviction and scaledown might remove all good pods.
 		//instead give a cool off time?
-		evictionTime, err := time.Parse(time.RFC3339, pdbWatcher.Status.LastEviction.EvictionTime)
+		evictionTime, err := time.Parse(time.RFC3339, pdbWatcher.Spec.LastEviction.EvictionTime)
 		if err != nil {
 			logger.Error(err, "Failed to parse eviction time")
 			return ctrl.Result{}, err

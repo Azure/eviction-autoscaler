@@ -16,14 +16,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// DeploymentPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
-type DeploymentPDBReconciler struct {
+// DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
+type DeploymentToPDBReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
-func (r *DeploymentPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
 	// Fetch the Deployment instance
@@ -43,7 +43,7 @@ func (r *DeploymentPDBReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 }
 
 // handleDeploymentCreation creates a PodDisruptionBudget when a Deployment is created or updated.
-func (r *DeploymentPDBReconciler) handleDeploymentCreation(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
+func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 	// Check if PDB already exists for this Deployment
 	pdb := &policyv1.PodDisruptionBudget{}
@@ -69,7 +69,7 @@ func (r *DeploymentPDBReconciler) handleDeploymentCreation(ctx context.Context, 
 			Namespace: deployment.Namespace,
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &intstr.IntOrString{IntVal: 1},
+			MinAvailable: &intstr.IntOrString{IntVal: *deployment.Spec.Replicas},
 			Selector:     &metav1.LabelSelector{MatchLabels: deployment.Spec.Selector.MatchLabels},
 		},
 	}
@@ -84,7 +84,7 @@ func (r *DeploymentPDBReconciler) handleDeploymentCreation(ctx context.Context, 
 }
 
 // handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
-func (r *DeploymentPDBReconciler) handleDeploymentDeletion(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
+func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 
 	// Try to get the associated PDB
@@ -111,7 +111,7 @@ func (r *DeploymentPDBReconciler) handleDeploymentDeletion(ctx context.Context, 
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *DeploymentPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).

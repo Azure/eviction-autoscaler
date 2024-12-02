@@ -129,7 +129,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.PodScalingReconciler{
+	if err = (&controllers.PDBWatcherReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
@@ -137,19 +137,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.DeploymentPDBReconciler{
+	if err = (&controllers.DeploymentToPDBReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Deployment Watcher")
+		setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 		os.Exit(1)
 	}
 
-	if err = (&controllers.PDBWatcherReconciler{
+	if err = (&controllers.PDBToPDBWatcherReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Deployment Watcher")
+		setupLog.Error(err, "unable to create controller", "controller", "PDBToPDBWatcherReconciler")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

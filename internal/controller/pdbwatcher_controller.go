@@ -185,7 +185,7 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 
 	surge := target.GetMaxSurge()
 	if surge.Type == intstr.Int {
-		return minrepicas
+		return minrepicas + surge.IntVal
 	}
 
 	if surge.Type == intstr.String {

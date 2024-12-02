@@ -46,16 +46,22 @@ var _ = Describe("PDBWatcher Controller", func() {
 			}
 
 			By("creating a Deployment resource")
+			surge := intstr.FromInt(1)
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "example-deployment",
 					Namespace: namespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: int32Ptr(1),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"app": "example",
+						},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge: &surge,
 						},
 					},
 					Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
@@ -93,6 +99,9 @@ var _ = Describe("PDBWatcher Controller", func() {
 						},
 					},
 				},
+				Status: policyv1.PodDisruptionBudgetStatus{
+					DisruptionsAllowed: 0,
+				},
 			}
 			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
 		})
@@ -128,6 +137,55 @@ var _ = Describe("PDBWatcher Controller", func() {
 			pdbwatcher := &v1.PDBWatcher{}
 			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
+			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
+
+			// run it twice so we hit unhandled eviction == false
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			//Should not have scaled.
+			deployment := &appsv1.Deployment{}
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: "example-deployment", Namespace: namespace}, deployment)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(1))) // Change as needed to verify scaling
+		})
+
+		It("should deal with an eviction", func() {
+			By("scaling up on reconcile")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// run it once to populate target genration
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify PDBWatcher resource
+			pdbwatcher := &v1.PDBWatcher{}
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			pdbwatcher.Spec.LastEviction = v1.Eviction{
+				PodName:      "somepod", //
+				EvictionTime: time.Now().Format(time.RFC3339),
+			}
+			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
 
 			// Verify Deployment scaling if necessary
 			deployment := &appsv1.Deployment{}
@@ -135,6 +193,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
 		})
+
+		//TODO scaledown
+		//TODO reset on deployment change
+		//TODO do noting on old eviction
 	})
 })
 

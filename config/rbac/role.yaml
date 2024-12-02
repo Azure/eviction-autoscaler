@@ -60,3 +60,4 @@ rules:
   verbs:
   - get
   - list
+  - create

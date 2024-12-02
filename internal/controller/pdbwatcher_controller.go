@@ -55,17 +55,14 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
 
-	//only do this on create? kill off by sharing name?
-	if err := r.conflicts(ctx, pdbWatcher); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Fetch the PDB
+	// Fetch the PDB using a 1:1 name mapping
 	pdb := &policyv1.PodDisruptionBudget{}
-	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
+	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Name, Namespace: pdbWatcher.Namespace}, pdb)
 	if err != nil {
-		//better error on notfound
-		return ctrl.Result{}, err // Error fetching PDB
+		if errors.IsNotFound(err) {
+			return ctrl.Result{}, fmt.Errorf("pdb watcher does not have corresponding pdb: %w", err) // Error fetching PDB
+		}
+		return ctrl.Result{}, err
 	}
 
 	if pdbWatcher.Spec.TargetName == "" {
@@ -155,7 +152,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			logger.Error(err, "Failed to parse eviction time")
 			return ctrl.Result{}, err
 		}
-		cooldown := 10 * time.Second //this is trcky how long do we wate for eviction to proccess. Let pdbwatcher set this?
+		cooldown := 10 * time.Second //this is trcky how long do we wate for eviction to process. Let pdbwatcher set this?
 		if time.Since(evictionTime) < cooldown {
 
 			logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, evictionTime))
@@ -184,27 +181,6 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	return ctrl.Result{}, nil
-}
-
-// does this go away if we force the pdb watcher name to be same as pdb?
-func (r *PDBWatcherReconciler) conflicts(ctx context.Context, pdbWatcher *myappsv1.PDBWatcher) error {
-	// Check for conflicts with other PDBWatchers
-	conflictWatcherList := &myappsv1.PDBWatcherList{}
-	err := r.List(ctx, conflictWatcherList, &client.ListOptions{Namespace: pdbWatcher.Namespace})
-	if err != nil {
-		return err // Error listing PDBWatchers
-	}
-
-	for _, watcher := range conflictWatcherList.Items {
-		if watcher.Name != pdbWatcher.Name && watcher.Spec.PDBName == pdbWatcher.Spec.PDBName {
-			// Conflict detected
-			err := fmt.Errorf("PDB %s is already being watched by another PDBWatcher %s", pdbWatcher.Spec.PDBName, watcher.Name)
-			log.FromContext(ctx).Error(err, "conflict!")
-			r.Recorder.Event(pdbWatcher, corev1.EventTypeWarning, "Conflict", err.Error())
-			return err
-		}
-	}
-	return nil
 }
 
 // discoverDeployment is for lazy users who don't specify a targetName. Its just goin to pick the deployment owned by the first pod it finds

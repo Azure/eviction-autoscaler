@@ -36,7 +36,8 @@ var _ = Describe("PDBWatcher Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: v1.PDBWatcherSpec{
-					// Add relevant spec fields if any
+					TargetName: "example-deployment",
+					TargetKind: "deployment",
 				},
 			}
 			err := k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
@@ -79,7 +80,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			By("creating a PDB resource")
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "example-pdb",
+					Name:      resourceName,
 					Namespace: namespace,
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
@@ -108,7 +109,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 
 			deleteResource(&v1.PDBWatcher{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
 			deleteResource(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "example-deployment", Namespace: namespace}})
-			deleteResource(&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: "example-pdb", Namespace: namespace}})
+			deleteResource(&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
 		})
 
 		It("should successfully reconcile the resource", func() {

@@ -50,14 +50,13 @@ spec:
                 - evictionTime
                 - podName
                 type: object
-              pdbName:
-                type: string
               targetKind:
                 type: string
               targetName:
+                description: todo make this mirror horizontalpodautoscaler's target
+                  reference
                 type: string
             required:
-            - pdbName
             - targetKind
             - targetName
             type: object

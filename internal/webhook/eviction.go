@@ -55,18 +55,19 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	// Find the applicable PDBWatcher
 	var applicablePDBWatcher *pdbautoscaler.PDBWatcher
 	for _, pdbWatcher := range pdbWatcherList.Items {
+		pdbWatcher := pdbWatcher
 		// Fetch the associated PDB
 		pdb := &policyv1.PodDisruptionBudget{}
-		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.PDBName, Namespace: pdbWatcher.Namespace}, pdb)
+		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Name, Namespace: pdbWatcher.Namespace}, pdb)
 		if err != nil {
-			logger.Error(err, "Error: Unable to fetch PDB:", "pdbname", pdbWatcher.Spec.PDBName)
+			logger.Error(err, "Error: Unable to fetch PDB:", "pdbname", pdbWatcher.Name)
 			continue
 		}
 
 		// Check if the PDB selector matches the evicted pod's labels
 		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 		if err != nil {
-			logger.Error(err, "Error: Invalid PDB selector", "pdbname", pdbWatcher.Spec.PDBName)
+			logger.Error(err, "Error: Invalid PDB selector", "pdbname", pdbWatcher.Name)
 			continue
 		}
 
@@ -104,7 +105,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	err = e.Client.Update(ctx, applicablePDBWatcher)
 	if err != nil {
-		//handle conflics when many evictions happen in parallel? or doesn't matter if we lose the conficts
+		//handle conflicts when many evictions happen in parallel? or doesn't matter if we lose the conficts
 		logger.Error(err, "Unable to update PDBWatcher status")
 		return admission.Errored(http.StatusInternalServerError, err) //Is this a problem if webhook doesn't ignore failures?
 	}

@@ -35,10 +35,9 @@ EOF
 apiVersion: apps.mydomain.com/v1
 kind: PDBWatcher
 metadata:
-  name: ${deploy}-pdb-watcher
+  name: ${deploy}-pdb
   namespace: $NAMESPACE
 spec:
-  pdbName: ${deploy}-pdb
   targetName: $deploy
   targetKind: $kind
 EOF

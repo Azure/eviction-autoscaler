@@ -120,6 +120,6 @@ metadata:
   name: controller-manager-pdb
   namespace: default
 spec:
-  targetName: controller-manager-pdb
+  targetName: controller-manager
   targetKind: deployment
 ---

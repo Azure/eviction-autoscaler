@@ -8,6 +8,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -19,7 +20,8 @@ import (
 // PDBToPDBWatcherReconciler reconciles a PodDisruptionBudget object.
 type PDBToPDBWatcherReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 }
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes PDBWatchers accordingly.

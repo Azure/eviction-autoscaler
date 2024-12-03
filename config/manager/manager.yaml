@@ -113,14 +113,13 @@ spec:
   selector:
     matchLabels:
       control-plane: controller-manager
-      app.kubernetes.io/name: k8s-pdb-autoscaler
 ---
 apiVersion: apps.mydomain.com/v1
 kind: PDBWatcher
 metadata:
-  name: controller-manager-pdb-watcher
+  name: controller-manager-pdb
   namespace: default
 spec:
   targetName: controller-manager-pdb
-  targetKind: Deployment
+  targetKind: deployment
 ---

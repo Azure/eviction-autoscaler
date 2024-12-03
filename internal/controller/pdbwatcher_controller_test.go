@@ -21,14 +21,15 @@ import (
 )
 
 var _ = Describe("PDBWatcher Controller", func() {
-	Context("When reconciling a resource", func() {
-		const resourceName = "test-resource"
-		const namespace = "default"
-		const deploymentName = "example-deployment"
+	const resourceName = "test-resource"
+	const namespace = "default"
+	const deploymentName = "example-deployment"
 
-		ctx := context.Background()
-		typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: namespace}
-		deploymentNamespacedName := types.NamespacedName{Name: deploymentName, Namespace: namespace}
+	ctx := context.Background()
+	typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: namespace}
+	deploymentNamespacedName := types.NamespacedName{Name: deploymentName, Namespace: namespace}
+
+	Context("When reconciling a resource", func() {
 
 		BeforeEach(func() {
 			By("creating the custom resource for the Kind PDBWatcher")
@@ -141,6 +142,9 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
 			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("DeploymentSpecChange"))
 
 			// run it twice so we hit unhandled eviction == false
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -153,6 +157,14 @@ var _ = Describe("PDBWatcher Controller", func() {
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1))) // Change as needed to verify scaling
+
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
+			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("Reconciled"))
 		})
 
 		It("should deal with an eviction when allowedDisruptions == 0", func() {
@@ -317,6 +329,168 @@ var _ = Describe("PDBWatcher Controller", func() {
 
 		//TODO do noting on old eviction
 		//TODO test a statefulset.
+
+	})
+
+	Context("when reconciling bad crds", func() {
+		It("should deal with no pdb", func() {
+			By("by updating condition to degraded")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			pdbwatcher := &v1.PDBWatcher{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: v1.PDBWatcherSpec{
+					TargetName: deploymentName,
+					TargetKind: "deployment",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			defer k8sClient.Delete(ctx, pdbwatcher)
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("NoPdb"))
+		})
+	})
+
+	It("should deal with no target ", func() {
+		By("by updating condition to degraded")
+		controllerReconciler := &PDBWatcherReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		pdbwatcher := &v1.PDBWatcher{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+			Spec: v1.PDBWatcherSpec{
+				TargetName: "", //intentionally empty
+				TargetKind: "deployment",
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdbwatcher)
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdb)
+
+		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: typeNamespacedName,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify PDBWatcher resource
+		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("EmptyTarget"))
+	})
+
+	It("should deal with bad target kind", func() {
+		By("by updating condition to degraded")
+		controllerReconciler := &PDBWatcherReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		pdbwatcher := &v1.PDBWatcher{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+			Spec: v1.PDBWatcherSpec{
+				TargetName: "something",
+				TargetKind: "notavalidtarget",
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdbwatcher)
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdb)
+
+		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: typeNamespacedName,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify PDBWatcher resource
+		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("InvalidTarget"))
+	})
+
+	It("should deal with missing target", func() {
+		By("by updating condition to degraded")
+		controllerReconciler := &PDBWatcherReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+		}
+
+		pdbwatcher := &v1.PDBWatcher{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+			Spec: v1.PDBWatcherSpec{
+				TargetName: "somethingmissing", //not found
+				TargetKind: "deployment",
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdbwatcher)
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      resourceName,
+				Namespace: namespace,
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		defer k8sClient.Delete(ctx, pdb)
+
+		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: typeNamespacedName,
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		// Verify PDBWatcher resource
+		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("MissingTarget"))
 	})
 })
 

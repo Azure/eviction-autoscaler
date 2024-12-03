@@ -20,9 +20,10 @@ type PDBWatcherSpec struct {
 
 // PDBWatcherStatus defines the observed state of PDBWatcher
 type PDBWatcherStatus struct {
-	LastEviction     Eviction `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
-	MinReplicas      int32    `json:"minReplicas"`            // Minimum number of replicas to maintain
-	TargetGeneration int64    `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
+	LastEviction     Eviction           `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
+	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
+	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
+	Conditions       []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true

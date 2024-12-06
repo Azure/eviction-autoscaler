@@ -3,7 +3,6 @@ package webhook
 import (
 	"context"
 	"net/http"
-	"time"
 
 	pdbautoscaler "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -29,11 +28,9 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	logger.Info("Received eviction request", "namespace", req.Namespace, "podname", req.Name)
 
-	// Log eviction request
-	now := time.Now()
 	currentEviction := pdbautoscaler.Eviction{
 		PodName:      req.Name,
-		EvictionTime: now.Format(time.RFC3339), //is there a guid or time on request we could use?
+		EvictionTime: metav1.Now(),
 	}
 
 	// Fetch the pod to get its labels

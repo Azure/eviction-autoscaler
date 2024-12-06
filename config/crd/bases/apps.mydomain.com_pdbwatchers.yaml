@@ -43,12 +43,10 @@ spec:
                 description: EvictionLog defines a log entry for pod evictions
                 properties:
                   evictionTime:
+                    format: date-time
                     type: string
                   podName:
                     type: string
-                required:
-                - evictionTime
-                - podName
                 type: object
               targetKind:
                 type: string
@@ -139,12 +137,10 @@ spec:
                 description: EvictionLog defines a log entry for pod evictions
                 properties:
                   evictionTime:
+                    format: date-time
                     type: string
                   podName:
                     type: string
-                required:
-                - evictionTime
-                - podName
                 type: object
               minReplicas:
                 format: int32

@@ -105,7 +105,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, pdbWatcher.Status.MinReplicas))
 
 	// Check if there are recent evictions
-	if !unhandledEviction(ctx, *pdbWatcher) {
+	if !unhandledEviction(*pdbWatcher) {
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
 		ready(&pdbWatcher.Status.Conditions, "Reconciled", "no unhandled eviction")
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
@@ -131,15 +131,10 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	} else if target.GetReplicas() != pdbWatcher.Status.MinReplicas {
 		//don't scale down immediately as eviction and scaledown might remove all good pods.
 		//instead give a cool off time?
-		evictionTime, err := time.Parse(time.RFC3339, pdbWatcher.Spec.LastEviction.EvictionTime)
-		if err != nil {
-			logger.Error(err, "Failed to parse eviction time")
-			return ctrl.Result{}, err
-		}
 		cooldown := 10 * time.Second //this is trcky how long do we wate for eviction to process. Let pdbwatcher set this?
-		if time.Since(evictionTime) < cooldown {
+		if time.Since(pdbWatcher.Spec.LastEviction.EvictionTime.Time) < cooldown {
 
-			logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, evictionTime))
+			logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, pdbWatcher.Spec.LastEviction.EvictionTime))
 			return ctrl.Result{RequeueAfter: cooldown / 2}, nil
 		}
 
@@ -208,8 +203,9 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
 		percentage, err := strconv.Atoi(percentageStr)
 		if err != nil {
-			//todo add name?
+			//return an error? so we can set degraded?
 			log.FromContext(ctx).Error(err, "invalid surge")
+			return minrepicas
 		}
 		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0))
 	}
@@ -219,22 +215,12 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 }
 
 // should these be guids rather than times?
-func unhandledEviction(ctx context.Context, watcher myappsv1.PDBWatcher) bool {
-	logger := log.FromContext(ctx)
-	lastevict := watcher.Spec.LastEviction
-	if lastevict.EvictionTime == "" {
+func unhandledEviction(watcher myappsv1.PDBWatcher) bool {
+	lastEvict := watcher.Spec.LastEviction
+
+	if lastEvict == watcher.Status.LastEviction {
 		return false
 	}
 
-	if lastevict == watcher.Status.LastEviction {
-		return false
-	}
-
-	evictionTime, err := time.Parse(time.RFC3339, lastevict.EvictionTime)
-	if err != nil {
-		logger.Error(err, "Failed to parse eviction time")
-		return false
-	}
-
-	return time.Since(evictionTime) < 5*time.Minute //TODO let user set in spec
+	return time.Since(lastEvict.EvictionTime.Time) < 5*time.Minute //TODO let user set in spec
 }

@@ -59,13 +59,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Name, Namespace: pdbWatcher.Namespace}, pdb)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-				Type:               "Degraded",
-				Status:             metav1.ConditionTrue,
-				Reason:             "NoPdb",
-				Message:            "PDB of same name not found",
-				LastTransitionTime: metav1.Now(),
-			})
+			degraded(&pdbWatcher.Status.Conditions, "NoPdb", "PDB of same name not found")
 			logger.Error(err, "no matching pdb", "namespace", pdbWatcher.Namespace, "name", pdbWatcher.Name)
 			return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 		}
@@ -73,13 +67,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	if pdbWatcher.Spec.TargetName == "" {
-		meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-			Type:               "Degraded",
-			Status:             metav1.ConditionTrue,
-			Reason:             "EmptyTarget",
-			Message:            "Target Name not found",
-			LastTransitionTime: metav1.Now(),
-		})
+		degraded(&pdbWatcher.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", pdbWatcher.Spec.TargetName)
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 	}
@@ -89,26 +77,14 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	target, err := GetSurger(pdbWatcher.Spec.TargetKind)
 	if err != nil {
 		logger.Error(err, "invalid target kind", "kind", pdbWatcher.Spec.TargetKind)
-		meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-			Type:               "Degraded",
-			Status:             metav1.ConditionTrue,
-			Reason:             "InvalidTarget",
-			Message:            "Invalid Target Kind: " + pdbWatcher.Spec.TargetKind,
-			LastTransitionTime: metav1.Now(),
-		})
+		degraded(&pdbWatcher.Status.Conditions, "InvalidTarget", "Invalid Target Kind: "+pdbWatcher.Spec.TargetKind)
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 	}
 	err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Spec.TargetName, Namespace: pdbWatcher.Namespace}, target.Obj())
 	if err != nil {
 		if errors.IsNotFound(err) {
 			logger.Error(err, "pdb watcher target does not exist", "kind", pdbWatcher.Spec.TargetKind, "targetname", pdbWatcher.Spec.TargetName)
-			meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-				Type:               "Degraded",
-				Status:             metav1.ConditionTrue,
-				Reason:             "MissingTarget",
-				Message:            "Misssing  Target " + pdbWatcher.Spec.TargetName,
-				LastTransitionTime: metav1.Now(),
-			})
+			degraded(&pdbWatcher.Status.Conditions, "MissingTarget", "Misssing  Target "+pdbWatcher.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 		}
 		return ctrl.Result{}, err // Error fetching Deployment
@@ -121,14 +97,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
 		pdbWatcher.Status.MinReplicas = target.GetReplicas()
-		meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			Reason:             "DeploymentSpecChange",
-			Message:            fmt.Sprintf("resetting min replicas to %d", pdbWatcher.Status.MinReplicas),
-			LastTransitionTime: metav1.Now(),
-		})
-		meta.RemoveStatusCondition(&pdbWatcher.Status.Conditions, "Degraded")
+		ready(&pdbWatcher.Status.Conditions, "DeploymentSpecChange", fmt.Sprintf("resetting min replicas to %d", pdbWatcher.Status.MinReplicas))
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
 
@@ -138,14 +107,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Check if there are recent evictions
 	if !unhandledEviction(ctx, *pdbWatcher) {
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
-		meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			Reason:             "Reconciled",
-			Message:            "no unhandled eviction",
-			LastTransitionTime: metav1.Now(),
-		})
-		meta.RemoveStatusCondition(&pdbWatcher.Status.Conditions, "Degraded")
+		ready(&pdbWatcher.Status.Conditions, "Reconciled", "no unhandled eviction")
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 	}
 
@@ -196,15 +158,29 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// Save ResourceVersion to PDBWatcher status this will cause another reconcile.
 	pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
 	pdbWatcher.Status.LastEviction = pdbWatcher.Spec.LastEviction //we could still keep a log here if thats useful
-	meta.SetStatusCondition(&pdbWatcher.Status.Conditions, metav1.Condition{
+	ready(&pdbWatcher.Status.Conditions, "Reconciled", "eviction handled")
+	return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher) //should we go rety in case there is also an eviction or just wait till the next eviction
+}
+
+func ready(conditions *[]metav1.Condition, reason string, message string) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
-		Reason:             "Reconciled",
-		Message:            "eviction handled",
+		Reason:             reason,
+		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
-	meta.RemoveStatusCondition(&pdbWatcher.Status.Conditions, "Degraded")
-	return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher) //should we go rety in case there is also an eviction or just wait till the next eviction
+	meta.RemoveStatusCondition(conditions, "Degraded")
+}
+
+func degraded(conditions *[]metav1.Condition, reason string, message string) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
+		Type:               "Degraded",
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	})
 }
 
 func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {

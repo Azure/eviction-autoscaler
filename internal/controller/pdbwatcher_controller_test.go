@@ -208,6 +208,85 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
 		})
 
+		It("should deal with an eviction when allowedDisruptions == 0 for statefulset!", func() {
+
+			By("creating a Deployment resource")
+			statefulSet := &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: appsv1.StatefulSetSpec{
+					Replicas: int32Ptr(1),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "example",
+						},
+					},
+					/*Strategy: appsv1.StatefulSetStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge: &surge,
+						},
+					},*/
+					Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "example",
+							},
+						},
+						Spec: corev1.PodSpec{ // Use corev1.PodSpec
+							Containers: []corev1.Container{ // Use corev1.Container
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
+
+			By("scaling up on reconcile")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
+
+			// run it once to populate target genration
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Log an eviction (webhook would do this in e2e)
+			pdbwatcher := &v1.PDBWatcher{}
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			pdbwatcher.Spec.LastEviction = v1.Eviction{
+				PodName:      "somepod", //
+				EvictionTime: time.Now().Format(time.RFC3339),
+			}
+			pdbwatcher.Spec.TargetKind = "statefulset"
+			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
+
+			// Verify Deployment scaling if necessary
+			err = k8sClient.Get(ctx, deploymentNamespacedName, statefulSet)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(*statefulSet.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
+		})
+
 		//should this be merged with above?
 		It("should deal with an eviction when allowedDisruptions > 0 ", func() {
 			By("waiting on first on reconcile")

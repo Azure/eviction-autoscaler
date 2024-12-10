@@ -6,6 +6,7 @@ import (
 
 	pdbautoscaler "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -41,6 +42,8 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
 
+	podObj := pod.DeepCopy()
+
 	// List all PDBWatchers in the namespace. Is this expensive for every eviction are we cacching this list and pdbs?
 	pdbWatcherList := &pdbautoscaler.PDBWatcherList{}
 	err = e.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
@@ -58,7 +61,7 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 		err := e.Client.Get(ctx, types.NamespacedName{Name: pdbWatcher.Name, Namespace: pdbWatcher.Namespace}, pdb)
 		if err != nil {
 			logger.Error(err, "Error: Unable to fetch PDB:", "pdbname", pdbWatcher.Name)
-			continue
+			return admission.Errored(http.StatusInternalServerError, err)
 		}
 
 		// Check if the PDB selector matches the evicted pod's labels
@@ -81,22 +84,23 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	logger.Info("Found pdbwatcher", "name", applicablePDBWatcher.Name)
 
-	/* Can't do this because we might miss our last eviction
-	//only update if we're 1 minute since last eviction to avoid swarms.
-	//impolite to mutex here as it would block api server. Could have a single channel and channel read updates
-
-	if applicablePDBWatcher.Spec.LastEviction.EvictionTime != "" {
-		evictionTime, err := time.Parse(time.RFC3339, applicablePDBWatcher.Spec.LastEviction.EvictionTime)
-		if err != nil {
-			logger.Error(err, "Failed to parse eviction time "+applicablePDBWatcher.Spec.LastEviction.EvictionTime)
-		} else {
-			if now.Sub(evictionTime) < time.Minute { //mak configurable in CRD
-				logger.Info("Eviction logged successfully", "podName", req.Name, "evictionTime", currentEviction.EvictionTime)
-				return admission.Allowed("eviction ignored")
-			}
+	updatedpod := updatePodCondition(&podObj.Status, &v1.PodCondition{
+		Type:    v1.DisruptionTarget,
+		Status:  v1.ConditionTrue,
+		Reason:  "EvictionAttempt",
+		Message: "eviction attempt recorded by eviction webhook",
+	})
+	if updatedpod {
+		if err := e.Client.Status().Update(ctx, podObj); err != nil {
+			logger.Error(err, "Error: Unable to update Pod status")
+			//don't fail yet still want to try and update the pdbwatcher
 		}
 	}
-	*/
+
+	// want to rate limit on mass evictions but also if we slow down too much we may miss last eviction and not scale down.
+	//if applicablePDBWatcher.Spec.LastEviction.EvictionTime.Time.Sub(currentEviction.EvictionTime.Time) < time.Second {
+	//	return admission.Allowed("eviction allowed")
+	//}
 
 	applicablePDBWatcher.Spec.LastEviction = currentEviction
 
@@ -115,4 +119,51 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 func (e *EvictionHandler) InjectDecoder(d *admission.Decoder) error {
 	e.decoder = d
 	return nil
+}
+
+func updatePodCondition(status *v1.PodStatus, condition *v1.PodCondition) bool {
+	condition.LastTransitionTime = metav1.Now()
+	// Try to find this pod condition.
+	conditionIndex, oldCondition := getPodCondition(status, condition.Type)
+
+	if oldCondition == nil {
+		// We are adding new pod condition.
+		status.Conditions = append(status.Conditions, *condition)
+		return true
+	}
+	// We are updating an existing condition, so we need to check if it has changed.
+	if condition.Status == oldCondition.Status {
+		condition.LastTransitionTime = oldCondition.LastTransitionTime
+	}
+
+	isEqual := condition.Status == oldCondition.Status &&
+		condition.Reason == oldCondition.Reason &&
+		condition.Message == oldCondition.Message &&
+		condition.LastProbeTime.Equal(&oldCondition.LastProbeTime) &&
+		condition.LastTransitionTime.Equal(&oldCondition.LastTransitionTime)
+
+	status.Conditions[conditionIndex] = *condition
+	// Return true if one of the fields have changed.
+	return !isEqual
+}
+
+func getPodCondition(status *v1.PodStatus, conditionType v1.PodConditionType) (int, *v1.PodCondition) {
+	if status == nil {
+		return -1, nil
+	}
+	return getPodConditionFromList(status.Conditions, conditionType)
+}
+
+// GetPodConditionFromList extracts the provided condition from the given list of condition and
+// returns the index of the condition and the condition. Returns -1 and nil if the condition is not present.
+func getPodConditionFromList(conditions []v1.PodCondition, conditionType v1.PodConditionType) (int, *v1.PodCondition) {
+	if conditions == nil {
+		return -1, nil
+	}
+	for i := range conditions {
+		if conditions[i].Type == conditionType {
+			return i, &conditions[i]
+		}
+	}
+	return -1, nil
 }

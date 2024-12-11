@@ -89,17 +89,17 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			degraded(&pdbWatcher.Status.Conditions, "MissingTarget", "Misssing  Target "+pdbWatcher.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher)
 		}
-		return ctrl.Result{}, err // Error fetching Deployment
+		return ctrl.Result{}, err
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if pdbWatcher.Status.TargetGeneration == 0 || pdbWatcher.Status.TargetGeneration != target.Obj().GetGeneration() {
-		logger.Info("Deployment resource version changed reseting min replicas")
-		// The resource version has changed, which means someone else has modified the Deployment.
+		logger.Info("Target resource version changed reseting min replicas")
+		// The resource version has changed, which means someone else has modified the Target.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		pdbWatcher.Status.TargetGeneration = target.Obj().GetGeneration()
 		pdbWatcher.Status.MinReplicas = target.GetReplicas()
-		ready(&pdbWatcher.Status.Conditions, "DeploymentSpecChange", fmt.Sprintf("resetting min replicas to %d", pdbWatcher.Status.MinReplicas))
+		ready(&pdbWatcher.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", pdbWatcher.Status.MinReplicas))
 		return ctrl.Result{}, r.Status().Update(ctx, pdbWatcher) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
 
@@ -117,19 +117,17 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if pdb.Status.DisruptionsAllowed == 0 {
 		//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
 
-		// Handle nil Deployment Strategy and MaxSurge
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
-		// Scale up the Deployment
 		newReplicas := calculateSurge(ctx, target, pdbWatcher.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
-			logger.Error(err, "failed to update deployment")
+			logger.Error(err, "failed to update Target", "kind", pdbWatcher.Spec.TargetKind, "targetname", pdbWatcher.Spec.TargetName)
 			return ctrl.Result{}, err
 		}
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled up Deployment %s/%s to %d replicas", target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
+		logger.Info(fmt.Sprintf("Scaled up %s  %s/%s to %d replicas", pdbWatcher.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
 	} else if target.GetReplicas() != pdbWatcher.Status.MinReplicas {
 		//don't scale down immediately as eviction and scaledown might remove all good pods.
 		//instead give a cool off time?
@@ -148,7 +146,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Reverted Deployment %s/%s to %d replicas", target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
+		logger.Info(fmt.Sprintf("Reverted %s %s/%s to %d replicas", pdbWatcher.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
 	}
 	// else log nothing to do or too noisy?
 
@@ -193,7 +191,6 @@ func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 // TODO Unittest
-// TODO don't do anything if they don't have a max surge
 func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 {
 
 	surge := target.GetMaxSurge()

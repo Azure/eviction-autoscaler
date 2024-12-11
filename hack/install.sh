@@ -95,7 +95,7 @@ create_namespace $NAMESPACE
 
 # uncomment for new clusters .
 # Generate certificates
-# generate_certificates
+generate_certificates
 
 # Apply CRD
 apply_yaml $CRD_FILE

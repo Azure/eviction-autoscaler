@@ -21,9 +21,12 @@ import (
 )
 
 var _ = Describe("PDBWatcher Controller", func() {
-	const resourceName = "test-resource"
-	const namespace = "default"
-	const deploymentName = "example-deployment"
+	const (
+		resourceName    = "test-resource"
+		namespace       = "default"
+		deploymentName  = "example-deployment"
+		statefulSetName = "example-statefulset"
+	)
 
 	ctx := context.Background()
 	typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: namespace}
@@ -144,7 +147,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
 			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
 			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("DeploymentSpecChange"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("TargetSpecChange"))
 
 			// run it twice so we hit unhandled eviction == false
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -213,7 +216,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			By("creating a Deployment resource")
 			statefulSet := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName,
+					Name:      statefulSetName,
 					Namespace: namespace,
 				},
 				Spec: appsv1.StatefulSetSpec{
@@ -247,6 +250,13 @@ var _ = Describe("PDBWatcher Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
 
+			pdbwatcher := &v1.PDBWatcher{}
+			err := k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			pdbwatcher.Spec.TargetName = statefulSetName
+			pdbwatcher.Spec.TargetKind = "statefulset"
+			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+
 			By("scaling up on reconcile")
 			controllerReconciler := &PDBWatcherReconciler{
 				Client: k8sClient,
@@ -254,20 +264,18 @@ var _ = Describe("PDBWatcher Controller", func() {
 			}
 
 			// run it once to populate target genration
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Log an eviction (webhook would do this in e2e)
-			pdbwatcher := &v1.PDBWatcher{}
 			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
 			pdbwatcher.Spec.LastEviction = v1.Eviction{
 				PodName:      "somepod", //
 				EvictionTime: metav1.Now(),
 			}
-			pdbwatcher.Spec.TargetKind = "statefulset"
 			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
 
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -282,7 +290,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
 
 			// Verify Deployment scaling if necessary
-			err = k8sClient.Get(ctx, deploymentNamespacedName, statefulSet)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: statefulSetName, Namespace: namespace}, statefulSet)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*statefulSet.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
 		})

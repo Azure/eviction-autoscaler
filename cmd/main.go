@@ -21,6 +21,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -100,7 +101,7 @@ func main() {
 		CertDir: "/etc/webhook/tls",
 		TLSOpts: tlsOpts,
 	})
-
+	shutdown := time.Duration(-1) //wait until pod termination grace period sends sig kill or webhook shuts down
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -108,10 +109,11 @@ func main() {
 			SecureServing: secureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		WebhookServer:          hookServer,
-		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "d482b936.mydomain.com",
+		WebhookServer:           hookServer,
+		GracefulShutdownTimeout: &shutdown,
+		HealthProbeBindAddress:  probeAddr,
+		LeaderElection:          enableLeaderElection,
+		LeaderElectionID:        "d482b936.mydomain.com",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

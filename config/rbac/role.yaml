@@ -12,6 +12,7 @@ rules:
   - get
   - list
   - update
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -20,6 +21,7 @@ rules:
   - get
   - list
   - update
+  - watch
 - apiGroups:
   - apps.mydomain.com
   resources:
@@ -53,6 +55,13 @@ rules:
   verbs:
   - get
   - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - pods/status
+  verbs:
+  - put
 - apiGroups:
   - policy
   resources:
@@ -60,3 +69,4 @@ rules:
   verbs:
   - get
   - list
+  - watch

@@ -61,7 +61,7 @@ rules:
   resources:
   - pods/status
   verbs:
-  - put
+  - update
 - apiGroups:
   - policy
   resources:

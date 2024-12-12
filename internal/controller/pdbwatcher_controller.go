@@ -39,7 +39,7 @@ type PDBWatcherReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
-// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=put
+// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
 
 func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)

@@ -165,6 +165,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
 			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
+
 			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
 			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
 			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("Reconciled"))
@@ -202,7 +203,8 @@ var _ = Describe("PDBWatcher Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
+			//we don't update status of last eviction till
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
 
 			// Verify Deployment scaling if necessary
 			deployment := &appsv1.Deployment{}
@@ -335,7 +337,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
-			Expect(result.RequeueAfter).To(Equal(5 * time.Second))
+			Expect(result.RequeueAfter).To(Equal(cooldown))
 
 			// Deployment is not changed yet
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
@@ -346,13 +348,14 @@ var _ = Describe("PDBWatcher Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
 
 			By("scaling down after cooldown")
 			//okay lets say the eviction is older though
 			//TODO make cooldown const/configurable
-			pdbwatcher.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-15 * time.Second))
+			pdbwatcher.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))
 			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
 
 			//second reconcile should scaledown.
 			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -365,6 +368,15 @@ var _ = Describe("PDBWatcher Controller", func() {
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1))) // Change as needed to verify scaling
+
+			// pdbwatcher should be ready and
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("Reconciled"))
+
 		})
 
 		//TODO reset on deployment change

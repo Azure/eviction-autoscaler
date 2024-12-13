@@ -12,6 +12,7 @@ rules:
   - get
   - list
   - update
+  - watch
 - apiGroups:
   - apps
   resources:
@@ -53,6 +54,7 @@ rules:
   verbs:
   - get
   - list
+  - watch
 - apiGroups:
   - policy
   resources:
@@ -62,3 +64,4 @@ rules:
   - list
   - create
   - watch
+  - update

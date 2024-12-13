@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	types "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -48,7 +49,13 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 	// If the PDB exists, create a corresponding PDBWatcher if it does not exist
 	var pdbWatcher types.PDBWatcher
 	err = r.Get(ctx, req.NamespacedName, &pdbWatcher)
+
 	if err != nil {
+		deploymentName, e := r.getDeploymentName(pdb.Name)
+		if e != nil {
+			return reconcile.Result{}, e
+		}
+
 		// Create a new PDBWatcher
 		pdbWatcher = types.PDBWatcher{
 			TypeMeta: metav1.TypeMeta{
@@ -58,9 +65,14 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
+				Annotations: map[string]string{
+					"createdBy": "PDBToPDBWatcherController",
+					"target":    deploymentName,
+				},
 			},
 			Spec: types.PDBWatcherSpec{
-				TargetName: pdb.Name,
+				TargetName: deploymentName,
+				TargetKind: deploymentKind,
 			},
 		}
 
@@ -84,6 +96,10 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Only trigger for Create and Delete events
 			CreateFunc: func(e event.CreateEvent) bool {
 				// Handle create event (this will be true for all create events)
+				//should we create pdbwatchers for customer created pdbs?
+				if _, err := r.getDeploymentName(e.Object.GetName()); err != nil {
+					return false
+				}
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
@@ -93,4 +109,20 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}).
 		Owns(&types.PDBWatcher{}). // Watch PDBs for ownership
 		Complete(r)
+}
+
+// getDeploymentName extracts deployment name form pdb name,
+// will return err if pdbName doesn't contain "-pdb" as it's not created by PDBToPDBWatcherController
+func (r *PDBToPDBWatcherReconciler) getDeploymentName(pdbName string) (string, error) {
+
+	parts := strings.Split(pdbName, "-")
+
+	// Check if the last part is "pdb"
+	if len(parts) >= 2 && parts[len(parts)-1] == "pdb" {
+		// Join the parts except the last one (the "pdb")
+		extracted := strings.Join(parts[:len(parts)-1], "-")
+		return extracted, nil
+	} else {
+		return "", fmt.Errorf("invalid format: string does not end with '-pdb'")
+	}
 }

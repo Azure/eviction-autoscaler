@@ -112,7 +112,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
-
+	logger.Info(fmt.Sprintf("pdbwatcher is at generation %d, Target generation is at %d", pdbWatcher.Status.TargetGeneration, target.Obj().GetGeneration()))
 	// Check if the resource version has changed or if it's empty (initial state)
 	if pdbWatcher.Status.TargetGeneration == 0 || pdbWatcher.Status.TargetGeneration != target.Obj().GetGeneration() {
 		logger.Info("Deployment resource version changed reseting min replicas")

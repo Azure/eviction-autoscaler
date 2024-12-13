@@ -25,6 +25,7 @@ type DeploymentToPDBReconciler struct {
 }
 
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
+// creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -32,15 +33,19 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		log.Error(err, "unable to fetch Deployment")
-		return ctrl.Result{}, client.IgnoreNotFound(err) // Ignore if the deployment is not found (i.e., deleted)
-	}
 
-	// If the Deployment is deleted, ensure the associated PDB is also deleted
-	if deployment.DeletionTimestamp != nil {
-		return r.handleDeploymentDeletion(ctx, &deployment)
-	}
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, err // Ignore if the deployment is not found (i.e., deleted)
+		}
 
-	// If the Deployment is created or updated, ensure a PDB exists
+		_, e := r.handleDeploymentDeletion(ctx, &deployment)
+		if e != nil {
+			return ctrl.Result{}, e
+		}
+
+	}
+	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
+	// If the Deployment is created, ensure a PDB exists
 	return r.handleDeploymentCreation(ctx, &deployment)
 }
 
@@ -57,6 +62,12 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 	if err == nil {
 		// PDB already exists, nothing to do
 		log.Info("PodDisruptionBudget already exists", "namespace", deployment.Namespace, "name", deployment.Name)
+		//if pdb.Spec.MinAvailable.IntVal != *deployment.Spec.Replicas {
+		//	pdb.Spec.MinAvailable.IntVal = *deployment.Spec.Replicas
+		//	if err := r.Update(ctx, pdb); err != nil {
+		//		return reconcile.Result{}, err
+		//	}
+		//}
 		return reconcile.Result{}, nil
 	} else if client.IgnoreNotFound(err) != nil {
 		// If there was an error fetching the PDB (other than NotFound), log and return
@@ -71,8 +82,12 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 			APIVersion: "policy/v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      deployment.Name + "-pdb",
+			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
+			Annotations: map[string]string{
+				"createdBy": "DeploymentToPDBController",
+				"target":    deployment.Name,
+			},
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			MinAvailable: &intstr.IntOrString{IntVal: *deployment.Spec.Replicas},
@@ -87,6 +102,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 	}
 
 	return reconcile.Result{}, nil
+}
+
+func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
+	return deploymentName + "-pdb"
 }
 
 // handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
@@ -118,18 +137,34 @@ func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			// Only trigger for Create and Delete events
 			CreateFunc: func(e event.CreateEvent) bool {
+				logger.Info("Create event detected, pdb will be created if not exists")
 				// Handle create event (this will be true for all create events)
-				return true
+				//creationTime, _ := time.Parse(time.RFC3339, e.Object.GetCreationTimestamp().String())
+				//if time.Since(creationTime) < 5*time.Minute {
+				//	return false // Ignore create if it's an existing resource (e.g., by checking timestamp)
+				//}
+				return true // Allow to create for new resources
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
+				logger.Info("Delete event detected, pdb will be deleted if exists")
 				// Handle delete event (this will be true for all delete events)
 				return true
+			},
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				logger.Info("Update event detected, no action will be taken")
+				// No need to handle update event
+				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+			},
+			GenericFunc: func(e event.GenericEvent) bool {
+				logger.Info("Generic event detected, no action will be taken")
+				return false
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

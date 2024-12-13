@@ -63,7 +63,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: paulgmiller/k8s-pdb-autoscaler:latest
+        image: skuchipudi10/k8s-pdb-autoscaler:watchdeployemnts
         name: manager
         imagePullPolicy: Always
         securityContext:

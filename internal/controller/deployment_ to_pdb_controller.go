@@ -160,6 +160,8 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				logger.Info("Update event detected, no action will be taken")
 				// No need to handle update event
+				//ToDo: distinguish scales from our pdbwatcher from scales from other owners and keep minA	vailable up near replicas.
+				// Like if I start a deployment at 3 but then later say this is popular let me bump it to 5 should our pdb change.
 				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 			},
 			GenericFunc: func(e event.GenericEvent) bool {

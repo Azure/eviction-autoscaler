@@ -106,6 +106,11 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				// Handle delete event (this will be true for all delete events)
 				return true
 			},
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				//ToDo: theoretically you could have a pdb update and change
+				// its label selectors in which case you might need to update the deployment target?
+				return false
+			},
 		}).
 		Owns(&types.PDBWatcher{}). // Watch PDBs for ownership
 		Complete(r)

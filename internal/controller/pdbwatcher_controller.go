@@ -143,14 +143,12 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	//Cool down time makes sure we're not still getting more evictions
 	//we could substantially reduce this if we looked at pods and knew that none remaining (not already evicted) had been an eviction target but that means tracking more data in pdbwatcher
 	// or using pod conditons which we're not doing.....yet
-	//instead give a cool off time?
 	if time.Since(pdbWatcher.Spec.LastEviction.EvictionTime.Time) < cooldown {
 		logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, pdbWatcher.Spec.LastEviction.EvictionTime))
 		return ctrl.Result{RequeueAfter: cooldown}, nil
 	}
 
 	//still at a scaled out state check if we can scale back down
-	//BUG we miss if a evict turns into a delete. Do we have to watch pods for that
 	if target.GetReplicas() > pdbWatcher.Status.MinReplicas { //would we ever be below min replicas
 
 		//okay we aren't at allowed disruptions Revert Target to the original state

@@ -34,15 +34,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		log.Error(err, "unable to fetch Deployment")
 
-		if client.IgnoreNotFound(err) != nil {
-			return ctrl.Result{}, err // Ignore if the deployment is not found (i.e., deleted)
-		}
-
-		_, e := r.handleDeploymentDeletion(ctx, &deployment)
+		_, e := r.handleDeploymentDeletion(ctx, req)
 		if e != nil {
 			return ctrl.Result{}, e
 		}
-
+		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
 	// If the Deployment is created, ensure a PDB exists
@@ -69,10 +65,6 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 		//	}
 		//}
 		return reconcile.Result{}, nil
-	} else if client.IgnoreNotFound(err) != nil {
-		// If there was an error fetching the PDB (other than NotFound), log and return
-		log.Error(err, "unable to fetch PDB")
-		return ctrl.Result{}, err
 	}
 
 	// Create a new PDB for the Deployment
@@ -109,19 +101,19 @@ func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) strin
 }
 
 // handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
-func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
+func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 
 	// Try to get the associated PDB
 	pdb := &policyv1.PodDisruptionBudget{}
 	err := r.Get(ctx, client.ObjectKey{
-		Namespace: deployment.Namespace,
-		Name:      deployment.Name + "-pdb",
+		Namespace: req.NamespacedName.Namespace,
+		Name:      r.generatePDBName(req.NamespacedName.Name),
 	}, pdb)
 
 	if err != nil {
 		// If there's no PDB or it can't be fetched, just return
-		log.Info("PodDisruptionBudget does not exist or error fetching", "namespace", deployment.Namespace, "name", deployment.Name)
+		log.Info("PodDisruptionBudget does not exist or error fetching", "namespace", req.NamespacedName.Namespace, "name", req.NamespacedName.Name)
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 

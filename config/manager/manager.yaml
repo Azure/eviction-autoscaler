@@ -92,16 +92,16 @@ spec:
           requests:
             cpu: 10m
             memory: 64Mi
-        volumeMounts:
-        - name: webhook-tls
-          mountPath: /etc/webhook/tls
-          readOnly: true
+       # volumeMounts:
+       # - name: webhook-tls
+       #   mountPath: /etc/webhook/tls
+       #   readOnly: true
       serviceAccountName: controller-manager
-      terminationGracePeriodSeconds: 10
-      volumes:
-      - name: webhook-tls
-        secret:
-          secretName: webhook-server-tls
+      terminationGracePeriodSeconds: 30
+      #volumes:
+      #- name: webhook-tls
+      #  secret:
+      #    secretName: webhook-server-tls
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

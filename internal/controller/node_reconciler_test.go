@@ -1,4 +1,4 @@
-package webhook
+package controllers
 
 import (
 	"context"
@@ -7,11 +7,11 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/api/errors"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1 "k8s.io/api/core/v1" // Import corev1 package
 	policyv1 "k8s.io/api/policy/v1"
@@ -20,14 +20,16 @@ import (
 	v1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 )
 
-var _ = Describe("Evictions webhook", func() {
+var _ = Describe("Node Controller", func() {
 	const resourceName = "test-resource"
 	const namespace = "default"
 	const podName = "example-pod"
+	const nodeName = "mynode"
 
 	ctx := context.Background()
 	typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: namespace}
 	podNamespacedName := types.NamespacedName{Name: podName, Namespace: namespace}
+	nodeNamespacedName := types.NamespacedName{Name: nodeName}
 
 	Context("When reconciling a resource", func() {
 
@@ -64,6 +66,7 @@ var _ = Describe("Evictions webhook", func() {
 							Image: "nginx:latest",
 						},
 					},
+					NodeName: nodeName,
 				},
 			}
 			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
@@ -105,45 +108,60 @@ var _ = Describe("Evictions webhook", func() {
 				ObservedGeneration: 1,
 			}
 			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			By("creating a Node resource")
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: nodeName,
+				},
+				Spec: corev1.NodeSpec{},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
 		})
 
 		AfterEach(func() {
 			By("cleaning up resources")
 			deleteResource := func(obj client.Object) {
-				Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
+				//no clue why we need to set GracePeriodSeconds 0 here but not in eviction_test.go
+				//if we don't set it we get a
+				Expect(k8sClient.Delete(ctx, obj, &client.DeleteOptions{GracePeriodSeconds: int64Ptr(0)})).To(Succeed())
 				Eventually(func() bool {
 					err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)
 					return errors.IsNotFound(err)
-				}, time.Second*10, time.Millisecond*250).Should(BeTrue())
+				}, time.Second*10, time.Millisecond*250).Should(BeTrue(), "Failed to delete resource "+obj.GetName())
 			}
 
 			deleteResource(&v1.PDBWatcher{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
-			deleteResource(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: namespace}})
 			deleteResource(&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
+			deleteResource(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: podName, Namespace: namespace}})
+			deleteResource(&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}})
 		})
 
-		It("should handle an eviction", func() {
-
-			By("checking pod  start ")
-			pod := &corev1.Pod{}
-			err := k8sClient.Get(ctx, podNamespacedName, pod)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pod.Status.Conditions).To(HaveLen(1))
-			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
-
-			clientset, err := kubernetes.NewForConfig(cfg)
-			Expect(err).NotTo(HaveOccurred())
-
-			err = clientset.PolicyV1().Evictions(namespace).Evict(ctx, &policyv1.Eviction{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      podName,
-					Namespace: namespace,
-				},
+		It("should handle cordon by updating pod and pdbwatcher", func() {
+			nodeReconciler := &NodeReconciler{
+				Client: k8sClient,
+				Scheme: scheme.Scheme,
+			}
+			_, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(apierrors.IsTooManyRequests(err)).To(BeTrue())
-			By("updating pdb watcher ")
+			Expect(err).NotTo(HaveOccurred())
 
+			node := &corev1.Node{}
+			err = k8sClient.Get(ctx, nodeNamespacedName, node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+
+			err = k8sClient.Update(ctx, node)
+			Expect(err).NotTo(HaveOccurred())
+			result, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown))
+
+			By("updating pdb watcher ")
 			pdbwatcher := &v1.PDBWatcher{}
 			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
@@ -152,6 +170,7 @@ var _ = Describe("Evictions webhook", func() {
 
 			By("checking pod condition ")
 
+			pod := &corev1.Pod{}
 			err = k8sClient.Get(ctx, podNamespacedName, pod)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pod.Status.Conditions).To(HaveLen(2))
@@ -159,5 +178,50 @@ var _ = Describe("Evictions webhook", func() {
 			Expect(pod.Status.Conditions[1].Type).To(Equal(corev1.DisruptionTarget))
 
 		})
+
+		It("should handle cordon with no targetable pod", func() {
+			nodeReconciler := &NodeReconciler{
+				Client: k8sClient,
+				Scheme: scheme.Scheme,
+			}
+			_, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			pod := &corev1.Pod{}
+			err = k8sClient.Get(ctx, podNamespacedName, pod)
+			Expect(err).NotTo(HaveOccurred())
+			pod.Labels = map[string]string{
+				"app": "notexample",
+			}
+			err = k8sClient.Update(ctx, pod)
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			err = k8sClient.Get(ctx, nodeNamespacedName, node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+
+			err = k8sClient.Update(ctx, node)
+			Expect(err).NotTo(HaveOccurred())
+			result, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			By("checking pod condition ")
+			err = k8sClient.Get(ctx, podNamespacedName, pod)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			//First is still ready ignore it
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
+
+		})
 	})
 })
+
+func int64Ptr(i int64) *int64 {
+	return &i
+}

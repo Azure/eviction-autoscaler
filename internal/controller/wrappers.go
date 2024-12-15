@@ -17,6 +17,7 @@ type Surger interface {
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 }
 
+// Todo change casing to match k8s?
 const (
 	deploymentKind  = "deployment"
 	statefulSetKind = "statefulset"

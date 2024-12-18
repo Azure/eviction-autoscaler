@@ -93,10 +93,6 @@ docker push $IMAGE
 # Create namespace
 create_namespace $NAMESPACE
 
-# uncomment for new clusters .
-# Generate certificates
-generate_certificates
-
 # Apply CRD
 apply_yaml $CRD_FILE
 
@@ -116,12 +112,16 @@ apply_yaml config/rbac/leader_election_role.yaml
 # Apply Deployment for Controller/webhook
 apply_yaml $DEPLOYMENT_FILE
 
+#need an if statement for webhook or not
+
+# Generate certificates
+#generate_certificates
 
 # Apply Webhook Configuration
-apply_yaml $WEBHOOK_CONFIGURATION_FILE
+#apply_yaml $WEBHOOK_CONFIGURATION_FILE
 
 # Apply Webhook svc
-apply_yaml $WEBHOOK_SVC_FILE
+#apply_yaml $WEBHOOK_SVC_FILE
 
 
 echo "Installation completed."

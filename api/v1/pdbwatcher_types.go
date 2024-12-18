@@ -6,8 +6,8 @@ import (
 
 // EvictionLog defines a log entry for pod evictions
 type Eviction struct {
-	PodName      string `json:"podName"`
-	EvictionTime string `json:"evictionTime"`
+	PodName      string      `json:"podName,omitempty"`
+	EvictionTime metav1.Time `json:"evictionTime,omitempty"`
 }
 
 // PDBWatcherSpec defines the desired state of PDBWatcher

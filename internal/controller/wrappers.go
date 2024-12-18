@@ -17,6 +17,7 @@ type Surger interface {
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 }
 
+// Todo change casing to match k8s?
 const (
 	deploymentKind  = "deployment"
 	statefulSetKind = "statefulset"
@@ -40,6 +41,7 @@ func (d *DeploymentWrapper) GetReplicas() int32 {
 }
 
 func (d *DeploymentWrapper) SetReplicas(replicas int32) {
+	d.obj = d.obj.DeepCopy() //don't mutate the cache
 	d.obj.Spec.Replicas = &replicas
 }
 
@@ -68,6 +70,7 @@ func (s *StatefulSetWrapper) GetReplicas() int32 {
 }
 
 func (s *StatefulSetWrapper) SetReplicas(replicas int32) {
+	s.obj = s.obj.DeepCopy() //don't mutate the cache
 	s.obj.Spec.Replicas = &replicas
 }
 

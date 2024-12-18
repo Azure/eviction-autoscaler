@@ -92,7 +92,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		// Create the PDB with a deletion timestamp set
 		pdb := &policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      deploymentName + "-pdb",
+				Name:      deploymentName,
 				Namespace: namespace,
 			},
 		}
@@ -118,12 +118,12 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			pdb := &policyv1.PodDisruptionBudget{}
 			err = r.Client.Get(context.Background(), client.ObjectKey{
 				Namespace: namespace,
-				Name:      deploymentName + "-pdb",
+				Name:      deploymentName,
 			}, pdb)
 			Expect(err).To(BeNil())
 
-			Expect(pdb.Name).To(Equal(deploymentName + "-pdb"))
-			Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(3)))
+			Expect(pdb.Name).To(Equal(deploymentName))
+			Expect((*pdb.Spec.MinAvailable).IntVal).To(Equal(int32(3)))
 		})
 	})
 
@@ -149,7 +149,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			pdb := &policyv1.PodDisruptionBudget{}
 			err = r.Client.Get(context.Background(), client.ObjectKey{
 				Namespace: namespace,
-				Name:      deploymentName + "-pdb",
+				Name:      deploymentName,
 			}, pdb)
 			Expect(err).To(HaveOccurred()) // Should return an error (not found)
 		})
@@ -160,8 +160,14 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			// Create the PDB first
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName + "-pdb",
+					Name:      deploymentName,
 					Namespace: namespace,
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app": "example",
+					},
+					},
 				},
 			}
 			err := r.Client.Create(context.Background(), pdb)

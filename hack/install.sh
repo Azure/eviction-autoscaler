@@ -4,8 +4,8 @@ set -e
 #that will make image and namespace simpler first then cert manger should make the webhook ca bundle easier.
 
 # Define variables
-IMAGE="paulgmiller/k8s-pdb-autoscaler:latest" 
-#WEBHOOK_IMAGE="paulgmiller/k8s-pdb-autoscaler:webhookv1"
+IMAGE="skuchipudi10/k8s-pdb-autoscaler:watchdeployemnts"
+#WEBHOOK_IMAGE="skuchipudi10/k8s-pdb-autoscaler:webhookv1"
 NAMESPACE="default"
 DEPLOYMENT_FILE="config/manager/manager.yaml"
 #lot of extra files in rbac. Condense?
@@ -13,7 +13,7 @@ SERVICE_ACCOUNT_FILE="config/rbac/service_account.yaml"
 ROLE_BINDING_FILE="config/rbac/role_binding.yaml"
 CLUSTER_ROLE_FILE="config/rbac/role.yaml"
 
-CRD_FILE="config/crd/bases/apps.mydomain.com_pdbwatchers.yaml "
+CRD_FILE="config/crd/bases/apps.mydomain.com_pdbwatchers.yaml"
 WEBHOOK_CONFIGURATION_FILE="config/webhook/manifests/webhook_configuration.yaml"
 WEBHOOK_SVC_FILE="config/webhook/manifests/webhook_svc.yaml"
 
@@ -58,19 +58,19 @@ generate_certificates() {
   openssl genrsa -out .certs/webhook-server.key 2048
 
   # Create a certificate signing request (CSR)
-  openssl req -new -key .certs/webhook-server.key -out .certs/webhook-server.csr --config config/webhook/manifests/cert.conf  
+  openssl req -new -key .certs/webhook-server.key -out .certs/webhook-server.csr --config config/webhook/manifests/cert.conf
 
   # Create a self-signed certificate
   openssl x509 -req -in .certs/webhook-server.csr -signkey .certs/webhook-server.key -out .certs/webhook-server.crt -days 365 -extensions v3_req -extfile config/webhook/manifests/cert.conf
-  
+
   #not idenpotennt
   kubectl create secret tls webhook-server-tls \
     --cert=.certs/webhook-server.crt \
-    --key=.certs/webhook-server.key 
+    --key=.certs/webhook-server.key
 
   echo "Injecting CA Bundle into webhook configuration..."
   CA_BUNDLE=$(cat .certs/webhook-server.crt  | base64 | tr -d '\n')
-  sed -i "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
+  sed -i '' "s/\${CA_BUNDLE}/${CA_BUNDLE}/g" $WEBHOOK_CONFIGURATION_FILE
   echo $CA_BUNDLE
 
     #openssl req -new -newkey rsa:2048 -nodes -keyout $WEBHOOK_KEY_FILE -out $WEBHOOK_CSR_FILE -config $CSR_CONF_FILE
@@ -95,7 +95,7 @@ create_namespace $NAMESPACE
 
 # uncomment for new clusters .
 # Generate certificates
-# generate_certificates
+generate_certificates
 
 # Apply CRD
 apply_yaml $CRD_FILE
@@ -110,8 +110,8 @@ apply_yaml $CLUSTER_ROLE_FILE
 apply_yaml $ROLE_BINDING_FILE
 
 #leases aren't at cluster level but are name space specific
-apply_yaml config/rbac/leader_election_role_binding.yaml 
-apply_yaml config/rbac/leader_election_role.yaml 
+apply_yaml config/rbac/leader_election_role_binding.yaml
+apply_yaml config/rbac/leader_election_role.yaml
 
 # Apply Deployment for Controller/webhook
 apply_yaml $DEPLOYMENT_FILE

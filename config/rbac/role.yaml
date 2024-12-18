@@ -54,14 +54,12 @@ rules:
   verbs:
   - get
   - list
-  - watch
 - apiGroups:
   - policy
   resources:
   - poddisruptionbudgets
   verbs:
+  - create
   - get
   - list
-  - create
   - watch
-  - update

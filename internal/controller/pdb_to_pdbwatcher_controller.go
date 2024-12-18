@@ -3,12 +3,14 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	types "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8s_types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +26,8 @@ type PDBToPDBWatcherReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 }
+
+// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes PDBWatchers accordingly.
 func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -51,7 +55,7 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 	err = r.Get(ctx, req.NamespacedName, &pdbWatcher)
 
 	if err != nil {
-		deploymentName, e := r.getDeploymentName(pdb.Name)
+		deploymentName, e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
 			return reconcile.Result{}, e
 		}
@@ -66,8 +70,8 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"createdBy": "PDBToPDBWatcherController",
-					"target":    deploymentName,
+					"controlledBy": "PDBToPDBWatcherController",
+					"target":       deploymentName,
 				},
 			},
 			Spec: types.PDBWatcherSpec{
@@ -96,10 +100,7 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			// Only trigger for Create and Delete events
 			CreateFunc: func(e event.CreateEvent) bool {
 				// Handle create event (this will be true for all create events)
-				//should we create pdbwatchers for customer created pdbs?
-				if _, err := r.getDeploymentName(e.Object.GetName()); err != nil {
-					return false
-				}
+				//should we create pdbwatchers for customer created pdbs
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool {
@@ -116,18 +117,55 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// getDeploymentName extracts deployment name form pdb name,
-// will return err if pdbName doesn't contain "-pdb" as it's not created by PDBToPDBWatcherController
-func (r *PDBToPDBWatcherReconciler) getDeploymentName(pdbName string) (string, error) {
+// discoverDeployment is for lazy users who don't specify a targetName.
+// Its just going to pick the deployment owned by the first pod it finds matching
+func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
+	logger := log.FromContext(ctx)
 
-	parts := strings.Split(pdbName, "-")
-
-	// Check if the last part is "pdb"
-	if len(parts) >= 2 && parts[len(parts)-1] == "pdb" {
-		// Join the parts except the last one (the "pdb")
-		extracted := strings.Join(parts[:len(parts)-1], "-")
-		return extracted, nil
-	} else {
-		return "", fmt.Errorf("invalid format: string does not end with '-pdb'")
+	// Check if PDB overlaps with multiple deployments
+	_, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return "", err // Error converting label selector
 	}
+	for k, v := range pdb.Spec.Selector.MatchLabels {
+		logger.Info("selectors ", k, v)
+	}
+
+	deployments := &appsv1.DeploymentList{}
+	err = r.List(ctx, deployments, &client.ListOptions{Namespace: pdb.Namespace})
+	if err != nil {
+		return "", err // Error listing pods
+	}
+	for _, deployment := range deployments.Items {
+		logger.Info("looking at deployment", "name", deployment.Name)
+	}
+
+	podList := &corev1.PodList{}
+	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace})
+	if err != nil {
+		return "", err // Error listing pods
+	}
+	logger.Info("number of pods", "#", len(podList.Items))
+	for _, pod := range podList.Items {
+		logger.Info("looking at pod ", "name", pod.Name)
+		for _, ownerRef := range pod.OwnerReferences {
+			if ownerRef.Kind == "ReplicaSet" {
+				replicaSet := &appsv1.ReplicaSet{}
+				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
+				if err != nil {
+					return "", err // Error fetching ReplicaSet
+				}
+
+				// Get the Deployment that owns this ReplicaSet
+				for _, rsOwnerRef := range replicaSet.OwnerReferences {
+					if rsOwnerRef.Kind == "Deployment" {
+						logger.Info(fmt.Sprintf("Determined Deployment name: %s->%s", pdb.Name, rsOwnerRef.Name))
+						return rsOwnerRef.Name, nil
+					}
+				}
+			}
+			//ToDo: handle stateful sets? Too dangerous?
+		}
+	}
+	return "", fmt.Errorf("PDB %s/%s overlaps with zero deployments", pdb.Namespace, pdb.Name)
 }

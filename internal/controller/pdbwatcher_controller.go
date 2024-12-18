@@ -34,9 +34,7 @@ type PDBWatcherReconciler struct {
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps.mydomain.com,resources=pdbwatchers/finalizers,verbs=update
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;update
-// +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=get;list
 
 func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -112,7 +110,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err // Error fetching Deployment
 	}
-	logger.Info(fmt.Sprintf("pdbwatcher is at generation %d, Target generation is at %d", pdbWatcher.Status.TargetGeneration, target.Obj().GetGeneration()))
+
 	// Check if the resource version has changed or if it's empty (initial state)
 	if pdbWatcher.Status.TargetGeneration == 0 || pdbWatcher.Status.TargetGeneration != target.Obj().GetGeneration() {
 		logger.Info("Deployment resource version changed reseting min replicas")

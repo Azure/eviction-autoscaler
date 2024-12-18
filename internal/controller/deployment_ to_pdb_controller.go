@@ -24,6 +24,8 @@ type DeploymentToPDBReconciler struct {
 	Recorder record.EventRecorder
 }
 
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
+
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -33,10 +35,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		log.Error(err, "unable to fetch Deployment")
-
-		_, e := r.handleDeploymentDeletion(ctx, req)
-		if e != nil {
-			return ctrl.Result{}, e
+		if client.IgnoreNotFound(err) == nil {
+			_, e := r.handleDeploymentDeletion(ctx, req)
+			if e != nil {
+				return ctrl.Result{}, e
+			}
 		}
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
@@ -52,7 +55,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 	pdb := &policyv1.PodDisruptionBudget{}
 	err := r.Get(ctx, client.ObjectKey{
 		Namespace: deployment.Namespace,
-		Name:      deployment.Name + "-pdb",
+		Name:      r.generatePDBName(deployment.Name),
 	}, pdb)
 
 	if err == nil {
@@ -69,10 +72,6 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 
 	// Create a new PDB for the Deployment
 	pdb = &policyv1.PodDisruptionBudget{
-		TypeMeta: metav1.TypeMeta{
-			Kind:       "PodDisruptionBudget",
-			APIVersion: "policy/v1",
-		},
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
@@ -97,7 +96,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 }
 
 func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
-	return deploymentName + "-pdb"
+	return deploymentName
 }
 
 // handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
@@ -152,13 +151,12 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				logger.Info("Update event detected, no action will be taken")
 				// No need to handle update event
-				//ToDo: distinguish scales from our pdbwatcher from scales from other owners and keep minA	vailable up near replicas.
+				//ToDo: distinguish scales from our pdbwatcher from scales from other owners and keep minAvailable up near replicas.
 				// Like if I start a deployment at 3 but then later say this is popular let me bump it to 5 should our pdb change.
+				//oldDeployment := e.ObjectOld.(*v1.Deployment)
+				//newDeployment := e.ObjectNew.(*v1.Deployment)
+				//return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
 				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
-			},
-			GenericFunc: func(e event.GenericEvent) bool {
-				logger.Info("Generic event detected, no action will be taken")
-				return false
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

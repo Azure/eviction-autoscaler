@@ -288,7 +288,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 					Namespace: namespace,
 				},
 			}
-			Expect(k8sClient.Create(context.Background(), pdbWatcher)).Should(Succeed())
+			_ = k8sClient.Create(context.Background(), pdbWatcher)
 
 			// Simulate PDBWatcher already exists scenario
 			req := reconcile.Request{

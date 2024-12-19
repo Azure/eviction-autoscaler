@@ -46,11 +46,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
 	// If the Deployment is created, ensure a PDB exists
-	return r.handleDeploymentCreation(ctx, &deployment)
+	return r.handleDeploymentReconcile(ctx, &deployment)
 }
 
-// handleDeploymentCreation creates a PodDisruptionBudget when a Deployment is created or updated.
-func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
+// handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
+func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 	// Check if PDB already exists for this Deployment
 	pdb := &policyv1.PodDisruptionBudget{}
@@ -59,8 +59,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentCreation(ctx context.Context
 		Name:      r.generatePDBName(deployment.Name),
 	}, pdb)
 
-	//ToDo: use pdb.DeletionTimestamp instead to determine if pdb got deleted
-	if apierrors.IsNotFound(err) {
+	if err == nil {
 		// PDB already exists, nothing to do
 		log.Info("PodDisruptionBudget already exists", "namespace", deployment.Namespace, "name", deployment.Name)
 		//if pdb.Spec.MinAvailable.IntVal != *deployment.Spec.Replicas {
@@ -114,6 +113,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context
 		Name:      r.generatePDBName(req.NamespacedName.Name),
 	}, pdb)
 
+	//ToDo: use pdb.DeletionTimestamp instead to determine if pdb got deleted
 	if apierrors.IsNotFound(err) {
 		// If there's no PDB or it can't be fetched, just return
 		log.Info("PodDisruptionBudget does not exist or error fetching", "namespace", req.NamespacedName.Namespace, "name", req.NamespacedName.Name)

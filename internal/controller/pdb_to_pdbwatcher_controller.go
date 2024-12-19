@@ -41,7 +41,7 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 		// First, check if the PDBWatcher exists
 		var pdbWatcher types.PDBWatcher
 		err := r.Get(ctx, req.NamespacedName, &pdbWatcher)
-		if apierrors.IsNotFound(err) {
+		if err == nil {
 			// Delete PDBWatcher if PDB is deleted
 			// possibility of a leak here if controller stops working...
 			// and also we're not using finalizers/ownerrefs yet
@@ -136,10 +136,10 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 	if err != nil {
 		return "", fmt.Errorf("error listing pods: %v", err)
 	}
-	logger.Info("Number of pods found", "count", len(podList.Items))
+	logger.Info("Number of pods found", "count", "namespace", "pdb", len(podList.Items), pdb.Namespace, pdb.Name)
 
 	if len(podList.Items) == 0 {
-		return "", fmt.Errorf("no pods found matching the PDB selector %s", pdb.Name)
+		return "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
 	}
 
 	// Iterate through each pod
@@ -173,16 +173,16 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 				)
 
 			}
-			// Optional: Handle StatefulSets if necessary
-			if ownerRef.Kind == "StatefulSet" {
-				statefulSet := &appsv1.StatefulSet{}
-				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, statefulSet)
-				if apierrors.IsNotFound(err) {
-					return "", fmt.Errorf("error fetching StatefulSet: %v", err)
-				}
-				logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)
-				// Handle StatefulSet logic if required
-			}
+			//// Optional: Handle StatefulSets if necessary
+			//if ownerRef.Kind == "StatefulSet" {
+			//	statefulSet := &appsv1.StatefulSet{}
+			//	err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, statefulSet)
+			//	if apierrors.IsNotFound(err) {
+			//		return "", fmt.Errorf("error fetching StatefulSet: %v", err)
+			//	}
+			//	logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)
+			//	// Handle StatefulSet logic if required
+			//}
 		}
 	}
 

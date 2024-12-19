@@ -17,10 +17,9 @@ limitations under the License.
 package controllers
 
 import (
-	"context"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"fmt"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -63,8 +62,8 @@ var _ = BeforeSuite(func() {
 		// default path defined in controller-runtime which is /usr/local/kubebuilder/.
 		// Note that you must have the required binaries setup under the bin directory to perform
 		// the tests directly. When we run make test it will be setup and used automatically.
-		//BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s",
-		//	fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
+		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s",
+			fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
 	}
 
 	var err error
@@ -86,12 +85,6 @@ var _ = BeforeSuite(func() {
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
-	namespaceObj := &corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "test",
-		},
-	}
-	k8sClient.Delete(context.Background(), namespaceObj)
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })

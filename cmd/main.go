@@ -141,6 +141,25 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBWatcher")
 		os.Exit(1)
 	}
+	setupLog.Info("PDBWatcherReconciler  setup completed")
+
+	if err = (&controllers.DeploymentToPDBReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
+		os.Exit(1)
+	}
+	setupLog.Info("DeploymentToPDBReconciler  setup completed")
+
+	if err = (&controllers.PDBToPDBWatcherReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "PDBToPDBWatcherReconciler")
+		os.Exit(1)
+	}
+	setupLog.Info("PDBToPDBWatcherReconciler  setup completed")
 
 	if err = (&controllers.NodeReconciler{
 		Client: mgr.GetClient(),

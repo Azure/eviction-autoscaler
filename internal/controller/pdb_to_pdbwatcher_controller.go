@@ -8,8 +8,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8s_types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,13 +36,15 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 	// Fetch the PodDisruptionBudget object based on the reconcile request
 	var pdb policyv1.PodDisruptionBudget
 	err := r.Get(ctx, req.NamespacedName, &pdb)
-	if err != nil {
+	if apierrors.IsNotFound(err) {
 		// If the PDB is deleted, we should delete the corresponding PDBWatcher.
 		// First, check if the PDBWatcher exists
 		var pdbWatcher types.PDBWatcher
 		err := r.Get(ctx, req.NamespacedName, &pdbWatcher)
-		if err == nil {
+		if apierrors.IsNotFound(err) {
 			// Delete PDBWatcher if PDB is deleted
+			// possibility of a leak here if controller stops working...
+			// and also we're not using finalizers/ownerrefs yet
 			err := r.Delete(ctx, &pdbWatcher)
 			if err != nil {
 				return reconcile.Result{}, fmt.Errorf("unable to delete PDBWatcher: %v", err)
@@ -54,9 +58,9 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 	var pdbWatcher types.PDBWatcher
 	err = r.Get(ctx, req.NamespacedName, &pdbWatcher)
 
-	if err != nil {
+	if apierrors.IsNotFound(err) {
 		deploymentName, e := r.discoverDeployment(ctx, &pdb)
-		if e != nil {
+		if !apierrors.IsNotFound(err) {
 			return reconcile.Result{}, e
 		}
 
@@ -113,7 +117,7 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return false
 			},
 		}).
-		Owns(&types.PDBWatcher{}). // Watch PDBs for ownership
+		Owns(&types.PDBWatcher{}). // Watch PDBWatchers for ownership
 		Complete(r)
 }
 
@@ -147,7 +151,7 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 			if ownerRef.Kind == "ReplicaSet" {
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
-				if err != nil {
+				if apierrors.IsNotFound(err) {
 					return "", fmt.Errorf("error fetching ReplicaSet: %v", err)
 				}
 
@@ -161,12 +165,19 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 						return rsOwnerRef.Name, nil
 					}
 				}
+				// If we get here, the ReplicaSet doesn't have a Deployment owner reference
+				// So we return a 'NotFound' error for Deployment not found
+				return "", apierrors.NewNotFound(
+					schema.GroupResource{Group: "apps", Resource: "deployments"},
+					ownerRef.Name,
+				)
+
 			}
 			// Optional: Handle StatefulSets if necessary
 			if ownerRef.Kind == "StatefulSet" {
 				statefulSet := &appsv1.StatefulSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, statefulSet)
-				if err != nil {
+				if apierrors.IsNotFound(err) {
 					return "", fmt.Errorf("error fetching StatefulSet: %v", err)
 				}
 				logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)

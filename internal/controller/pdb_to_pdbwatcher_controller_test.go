@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -11,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	machinery_types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,7 +24,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 		namespace      = "test"
 		deploymentName = "example-deployment"
 	)
-
+	const podName = "example-pod"
 	BeforeEach(func() {
 
 		// Create the Namespace object (from corev1)
@@ -57,7 +57,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 				Replicas: int32Ptr(3),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
-						"app": "example-deployment",
+						"app": deploymentName,
 					},
 				},
 				Strategy: appsv1.DeploymentStrategy{
@@ -68,7 +68,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 				Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
-							"app": "example-deployment",
+							"app": deploymentName,
 						},
 					},
 					Spec: corev1.PodSpec{ // Use corev1.PodSpec
@@ -86,12 +86,89 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 		// Create the deployment
 		_ = reconciler.Client.Create(context.Background(), deployment)
 
-		podList := &corev1.PodList{}
-		_ = reconciler.List(context.Background(), podList, &client.ListOptions{Namespace: namespace})
-		fmt.Printf("number of pods %d", len(podList.Items))
-		for _, pod := range podList.Items {
-			fmt.Printf("looking at pod %s", pod.Name)
+		// Define the ReplicaSet
+		rs := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName, // ReplicaSet name should match the deployment name or whatever identifier you'd like
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app": deploymentName,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "apps/v1",    // API version of the owner (e.g., Deployment)
+						Kind:       "Deployment", // The kind of the owner (usually Deployment for replicas)
+						Name:       deploymentName,
+						UID:        machinery_types.UID("some-uid"),
+					},
+				},
+			},
+			Spec: appsv1.ReplicaSetSpec{
+				Replicas: int32Ptr(3), // Define the number of replicas you want
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{
+						"app": deploymentName,
+					},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{
+							"app": deploymentName,
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{
+								Name:  "nginx",
+								Image: "nginx:latest",
+							},
+						},
+					},
+				},
+			},
 		}
+		_ = k8sClient.Create(context.Background(), rs)
+		//Expect(err).To(Equal(nil))
+
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      podName,
+				Namespace: namespace,
+				Labels: map[string]string{
+					"app": deploymentName,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "apps/v1",      // API version of the owner (ReplicaSet)
+						Kind:       "ReplicaSet",   // The kind of the owner (ReplicaSet)
+						Name:       deploymentName, // Indicating that this Pod is controlled by ReplicaSet
+						UID:        machinery_types.UID("some-uid"),
+					},
+				},
+			},
+			Spec: corev1.PodSpec{ // Use corev1.PodSpec
+				Containers: []corev1.Container{ // Use corev1.Container
+					{
+						Name:  "nginx",
+						Image: "nginx:latest",
+					},
+				},
+			},
+		}
+		_ = k8sClient.Create(context.Background(), pod)
+		//Expect(err).To(Equal(nil))
+
+		pod.Status = corev1.PodStatus{ // Use corev1.PodStatus
+			Phase: corev1.PodRunning,
+			Conditions: []corev1.PodCondition{ // Use corev1.PodCondition
+				{
+					Type:   corev1.PodReady,
+					Status: corev1.ConditionTrue,
+				},
+			},
+		}
+		err := k8sClient.Status().Update(context.Background(), pod)
+		Expect(err).To(BeNil())
 	})
 
 	AfterEach(func() {
@@ -117,7 +194,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-						"app": "example-deployment",
+						"app": deploymentName,
 					},
 					},
 				},

@@ -27,6 +27,9 @@ import (
 // Run e2e tests using the Ginkgo runner.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	fmt.Fprintf(GinkgoWriter, "Starting k8s-pdb-autoscaler suite\n")
+	_, err := fmt.Fprintf(GinkgoWriter, "Starting k8s-pdb-autoscaler suite\n")
+	if err != nil {
+		t.Fatal(err.Error())
+	}
 	RunSpecs(t, "e2e suite")
 }

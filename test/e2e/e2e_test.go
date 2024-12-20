@@ -43,7 +43,7 @@ var cleanEnv = true
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
-		//allow to bypass if they ahve one?
+		//allow to bypass if they have one?
 
 		if cleanEnv {
 			By("creating kind cluster")
@@ -118,7 +118,9 @@ var _ = Describe("controller", Ordered, func() {
 			By("validating that the controller-manager pod is running as expected")
 			var nodeName string
 			verifyOneRunningPod := func() error {
-				pods, err := clientset.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{LabelSelector: "control-plane=controller-manager", Limit: 1})
+				pods, err := clientset.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{
+					LabelSelector: "control-plane=controller-manager", Limit: 1,
+				})
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if len(pods.Items) != 1 {
 					return fmt.Errorf("got %d controller pods", len(pods.Items))
@@ -166,7 +168,7 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
 			//verify there is always one running pod? other might be terminating/creating so need different
-			//check that there are two pods temporarily or does that not matter as long as we succesfully evicted?
+			//check that there are two pods temporarily or does that not matter as long as we successfully evicted?
 			By("Verifying we scale back down")
 			verifyDeploymentReplicas := func() error {
 				deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "controller-manager", v1.GetOptions{})

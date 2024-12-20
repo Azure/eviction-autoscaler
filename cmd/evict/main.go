@@ -73,7 +73,6 @@ func main() {
 		}
 
 	} else if *node != "" {
-		var podsmeta []v1.ObjectMeta
 		namespaces, err := clientset.CoreV1().Namespaces().List(ctx, v1.ListOptions{})
 		if err != nil {
 			panic(err.Error())
@@ -88,7 +87,6 @@ func main() {
 				podsmeta = append(podsmeta, p.ObjectMeta)
 			}
 		}
-
 	} else if *pod == "" {
 		//get all the pods
 		pods, err := clientset.CoreV1().Pods(*namespace).List(ctx, v1.ListOptions{})

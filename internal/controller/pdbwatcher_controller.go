@@ -53,7 +53,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		}
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
-	pdbWatcher = pdbWatcher.DeepCopy() //don't mutate teh cache
+	pdbWatcher = pdbWatcher.DeepCopy() //don't mutate the cache
 
 	// Fetch the PDB using a 1:1 name mapping
 	pdb := &policyv1.PodDisruptionBudget{}

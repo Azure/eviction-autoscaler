@@ -24,23 +24,21 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Lint
+        run: make lint
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
       - name: Build Docker image
         run: docker build  .
 
-  # Job to lint Kubernetes YAML files
-  #lint:
-  #  runs-on: ubuntu-latest
-  #  steps:
-  #    - name: Checkout code
-  #      uses: actions/checkout@v3#
-#
-#      - name: Install kubeconform (Kubernetes YAML linter)
-#        run: |
-#          curl -L https://github.com/yannh/kubeconform/releases/download/v0.4.16/kubeconform-linux-amd64.tar.gz | tar -C /usr/local/bin -xz
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://github.com/kubernetes-sigs/kind/releases/download/v0.24.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
 
-#      - name: Lint Kubernetes YAML files
-#        run: |
-#          kubeconform -strict -summary config/*.yaml
+      - name: e2e
+        run: make test-e2e
+

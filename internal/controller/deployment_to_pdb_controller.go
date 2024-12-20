@@ -3,7 +3,7 @@ package controllers
 import (
 	"context"
 
-	"k8s.io/api/apps/v1"
+	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,12 +37,10 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		log.Error(err, "unable to fetch Deployment")
 		if apierrors.IsNotFound(err) {
-			_, e := r.handleDeploymentDeletion(ctx, req)
-			if e != nil {
-				return ctrl.Result{}, e
-			}
+			e := r.handleDeploymentDeletion(ctx, req)
+			return ctrl.Result{}, client.IgnoreNotFound(e)
 		}
-		return reconcile.Result{}, client.IgnoreNotFound(err)
+		return reconcile.Result{}, err
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
 	// If the Deployment is created, ensure a PDB exists
@@ -103,7 +101,7 @@ func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) strin
 // handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
 // we can leak here if controller stops working
 // Ironically leaking pdbs would block our current upgrade logic we had to toggle off wher expected pods == 0
-func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, req ctrl.Request) (reconcile.Result, error) {
+func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, req ctrl.Request) error {
 	log := log.FromContext(ctx)
 
 	// Try to get the associated PDB
@@ -112,12 +110,11 @@ func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context
 		Namespace: req.NamespacedName.Namespace,
 		Name:      r.generatePDBName(req.NamespacedName.Name),
 	}, pdb)
-
 	//ToDo: use pdb.DeletionTimestamp instead to determine if pdb got deleted
-	if apierrors.IsNotFound(err) {
+	if err != nil {
 		// If there's no PDB or it can't be fetched, just return
 		log.Info("PodDisruptionBudget does not exist or error fetching", "namespace", req.NamespacedName.Namespace, "name", req.NamespacedName.Name)
-		return reconcile.Result{}, client.IgnoreNotFound(err)
+		return err
 	}
 
 	// ToDo: only delete if it has createdby/ownerref
@@ -125,10 +122,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context
 	log.Info("Deleting PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 	if err := r.Delete(ctx, pdb); err != nil {
 		log.Error(err, "unable to delete PDB")
-		return reconcile.Result{}, err
+		return err
 	}
 
-	return reconcile.Result{}, nil
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.

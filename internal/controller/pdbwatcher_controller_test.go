@@ -448,7 +448,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-			defer k8sClient.Delete(ctx, pdbwatcher)
+			defer func() {
+				err := k8sClient.Delete(ctx, pdbwatcher)
+				Expect(err).NotTo(HaveOccurred())
+			}()
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -482,7 +485,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdbwatcher)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		pdb := &policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
@@ -491,7 +497,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdb)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdb)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: typeNamespacedName,
@@ -524,7 +533,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdbwatcher)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		pdb := &policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
@@ -533,7 +545,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdb)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdb)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: typeNamespacedName,
@@ -566,7 +581,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdbwatcher)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdbwatcher)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		pdb := &policyv1.PodDisruptionBudget{
 			ObjectMeta: metav1.ObjectMeta{
@@ -575,7 +593,10 @@ var _ = Describe("PDBWatcher Controller", func() {
 			},
 		}
 		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer k8sClient.Delete(ctx, pdb)
+		defer func() {
+			err := k8sClient.Delete(ctx, pdb)
+			Expect(err).NotTo(HaveOccurred())
+		}()
 
 		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 			NamespacedName: typeNamespacedName,

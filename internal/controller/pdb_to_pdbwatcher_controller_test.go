@@ -168,7 +168,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 			},
 		}
 		err := k8sClient.Status().Update(context.Background(), pod)
-		Expect(err).To(BeNil())
+		Expect(err).ToNot(HaveOccurred())
 	})
 
 	AfterEach(func() {

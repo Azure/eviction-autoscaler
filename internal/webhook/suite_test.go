@@ -169,8 +169,7 @@ webhooks:
 	}
 	ctx, cancel = context.WithCancel(context.Background())
 	go func() {
-		mgr.Start(ctx)
-
+		Expect(mgr.Start(ctx)).NotTo(HaveOccurred())
 	}()
 
 	// Wait for the cache to sync

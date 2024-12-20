@@ -112,7 +112,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Call the reconciler
 			_, err := r.Reconcile(context.Background(), req)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Check if PDB is created
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -120,7 +120,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 				Namespace: namespace,
 				Name:      deploymentName,
 			}, pdb)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			Expect(pdb.Name).To(Equal(deploymentName))
 			Expect((*pdb.Spec.MinAvailable).IntVal).To(Equal(int32(3)))
@@ -132,7 +132,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Now delete the deployment
 			err := r.Client.Delete(context.Background(), deployment)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -143,7 +143,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Reconcile should delete the PDB
 			_, err = r.Reconcile(context.Background(), req)
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 
 			// Check if PDB was deleted
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -170,18 +170,18 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 					},
 				},
 			}
-			_ = r.Client.Create(context.Background(), pdb)
-			//Expect(err).To(BeNil())
+			err := r.Client.Create(context.Background(), pdb)
+			Expect(err).ToNot(HaveOccurred())
 
 			// Reconcile should not take any further action since the PDB already exists
-			_, err := r.Reconcile(context.Background(), reconcile.Request{
+			_, err = r.Reconcile(context.Background(), reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: namespace,
 					Name:      deploymentName,
 				},
 			})
 
-			Expect(err).To(BeNil())
+			Expect(err).ToNot(HaveOccurred())
 		})
 	})
 })

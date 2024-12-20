@@ -95,7 +95,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			}
 
 			if selector.Matches(labels.Set(pod.Labels)) {
-				applicablePDBWatcher = &pdbWatcher
+				applicablePDBWatcher = pdbWatcher.DeepCopy()
 				break
 			}
 		}

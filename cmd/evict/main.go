@@ -73,6 +73,7 @@ func main() {
 		}
 
 	} else if *node != "" {
+		var podsmeta []v1.ObjectMeta
 		namespaces, err := clientset.CoreV1().Namespaces().List(ctx, v1.ListOptions{})
 		if err != nil {
 			panic(err.Error())
@@ -117,7 +118,7 @@ func main() {
 			defer wg.Done()
 
 			for ctx.Err() == nil {
-				err = clientset.PolicyV1().Evictions(*namespace).Evict(ctx, &policy.Eviction{
+				err = clientset.PolicyV1().Evictions(meta.Namespace).Evict(ctx, &policy.Eviction{
 					ObjectMeta: meta,
 				})
 				if err == nil {

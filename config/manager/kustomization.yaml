@@ -4,5 +4,5 @@ resources:
 - manager.yaml
 images:
 - name: controller
-  newName: example.com/k8s-pdb-autoscaler
-  newTag: v0.0.1
+  newName: paulgmiller/k8s-pdb-autoscaler
+  newTag: latest

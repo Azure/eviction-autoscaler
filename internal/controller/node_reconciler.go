@@ -48,12 +48,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 		return ctrl.Result{}, err // Error fetching PDBWatcher
 	}
-	node = node.DeepCopy() //don't mutate the cache
-	logger.Info("Reconciling node", "name", node.Name, "unschedulable", node.Spec.Unschedulable)
 
 	if !node.Spec.Unschedulable {
 		return ctrl.Result{}, err
-
 	}
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
@@ -103,7 +100,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			continue
 		}
 
-		logger.Info("Found pdbwatcher for pod", "name", applicablePDBWatcher.Name, "namespace", pod.Namespace, "podname", pod.Name)
+		logger.Info("Found pdbwatcher for pod", "name", applicablePDBWatcher.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
 		updatedpod := podutil.UpdatePodCondition(&pod.Status, &v1.PodCondition{
 			Type:    v1.DisruptionTarget,

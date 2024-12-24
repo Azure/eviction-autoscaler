@@ -35,7 +35,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
-		log.Error(err, "unable to fetch Deployment")
 		if apierrors.IsNotFound(err) {
 			e := r.handleDeploymentDeletion(ctx, req)
 			return ctrl.Result{}, client.IgnoreNotFound(e)
@@ -85,11 +84,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		},
 	}
 
-	log.Info("Creating PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 	if err := r.Create(ctx, pdb); err != nil {
-		log.Error(err, "unable to create PDB")
 		return reconcile.Result{}, err
 	}
+	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 
 	return reconcile.Result{}, nil
 }
@@ -102,30 +100,11 @@ func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) strin
 // we can leak here if controller stops working
 // Ironically leaking pdbs would block our current upgrade logic we had to toggle off wher expected pods == 0
 func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, req ctrl.Request) error {
-	log := log.FromContext(ctx)
-
-	// Try to get the associated PDB
-	pdb := &policyv1.PodDisruptionBudget{}
-	err := r.Get(ctx, client.ObjectKey{
-		Namespace: req.NamespacedName.Namespace,
-		Name:      r.generatePDBName(req.NamespacedName.Name),
-	}, pdb)
-	//ToDo: use pdb.DeletionTimestamp instead to determine if pdb got deleted
-	if err != nil {
-		// If there's no PDB or it can't be fetched, just return
-		log.Info("PodDisruptionBudget does not exist or error fetching", "namespace", req.NamespacedName.Namespace, "name", req.NamespacedName.Name)
-		return err
-	}
-
+	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: r.generatePDBName(req.Name), Namespace: req.Namespace}}
 	// ToDo: only delete if it has createdby/ownerref
 	// If the PDB exists, delete it
-	log.Info("Deleting PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
-	if err := r.Delete(ctx, pdb); err != nil {
-		log.Error(err, "unable to delete PDB")
-		return err
-	}
-
-	return nil
+	log.FromContext(ctx).Info("Deleting PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
+	return r.Delete(ctx, pdb)
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -136,21 +115,6 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
-			// Only trigger for Create and Delete events
-			CreateFunc: func(e event.CreateEvent) bool {
-				logger.Info("Create event detected, pdb will be created if not exists")
-				// Handle create event (this will be true for all create events)
-				//creationTime, _ := time.Parse(time.RFC3339, e.Object.GetCreationTimestamp().String())
-				//if time.Since(creationTime) < 5*time.Minute {
-				//	return false // Ignore create if it's an existing resource (e.g., by checking timestamp)
-				//}
-				return true // Allow to create for new resources
-			},
-			DeleteFunc: func(e event.DeleteEvent) bool {
-				logger.Info("Delete event detected, pdb will be deleted if exists")
-				// Handle delete event (this will be true for all delete events)
-				return true
-			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				logger.Info("Update event detected, no action will be taken")
 				// No need to handle update event

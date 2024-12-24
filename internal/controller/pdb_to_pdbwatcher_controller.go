@@ -11,7 +11,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	k8s_types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -22,6 +21,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+var errOwnerNotFound error = fmt.Errorf("owner not found")
+
 // PDBToPDBWatcherReconciler reconciles a PodDisruptionBudget object.
 type PDBToPDBWatcherReconciler struct {
 	client.Client
@@ -30,37 +31,39 @@ type PDBToPDBWatcherReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;update;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes PDBWatchers accordingly.
 func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.WithValues("pdb", req.Name, "namespace", req.Namespace)
+	ctx = log.IntoContext(ctx, logger)
 	// Fetch the PodDisruptionBudget object based on the reconcile request
 	var pdb policyv1.PodDisruptionBudget
 	err := r.Get(ctx, req.NamespacedName, &pdb)
-	if apierrors.IsNotFound(err) {
-		// If the PDB is deleted, we should delete the corresponding PDBWatcher.
-		// First, check if the PDBWatcher exists
-		var pdbWatcher types.PDBWatcher
-		err := r.Get(ctx, req.NamespacedName, &pdbWatcher)
-		if err == nil {
-			// Delete PDBWatcher if PDB is deleted
-			// possibility of a leak here if controller stops working...
-			// and also we're not using finalizers/ownerrefs yet
-			err := r.Delete(ctx, &pdbWatcher)
-			if err != nil {
-				return reconcile.Result{}, fmt.Errorf("unable to delete PDBWatcher: %v", err)
-			}
-			log.Log.Info("Deleted PDBWatcher", "name", req.NamespacedName)
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			err := r.Delete(ctx, &types.PDBWatcher{ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: req.Namespace}})
+			logger.Info("Deleted PDBWatcher")
+			return reconcile.Result{}, client.IgnoreNotFound(err)
 		}
-		return reconcile.Result{}, nil
+		return reconcile.Result{}, err
 	}
 
 	// If the PDB exists, create a corresponding PDBWatcher if it does not exist
 	var pdbWatcher types.PDBWatcher
 	err = r.Get(ctx, req.NamespacedName, &pdbWatcher)
-
-	if apierrors.IsNotFound(err) {
-		deploymentName, e := r.discoverDeployment(ctx, &pdb)
+	if err != nil {
 		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+
+		deploymentName, e := r.discoverDeployment(ctx, &pdb)
+		if e != nil {
+			if e == errOwnerNotFound {
+				return reconcile.Result{}, nil
+			}
 			return reconcile.Result{}, e
 		}
 
@@ -88,9 +91,8 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to create PDBWatcher: %v", err)
 		}
-		log.Log.Info("Created PDBWatcher", "name", pdb.Name)
+		logger.Info("Created PDBWatcher")
 	}
-
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
 }
@@ -102,15 +104,6 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&policyv1.PodDisruptionBudget{}).
 		WithEventFilter(predicate.Funcs{
 			// Only trigger for Create and Delete events
-			CreateFunc: func(e event.CreateEvent) bool {
-				// Handle create event (this will be true for all create events)
-				//should we create pdbwatchers for customer created pdbs
-				return true
-			},
-			DeleteFunc: func(e event.DeleteEvent) bool {
-				// Handle delete event (this will be true for all delete events)
-				return true
-			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				//ToDo: theoretically you could have a pdb update and change
 				// its label selectors in which case you might need to update the deployment target?
@@ -136,7 +129,7 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 	if err != nil {
 		return "", fmt.Errorf("error listing pods: %v", err)
 	}
-	logger.Info("Number of pods found", "count", "namespace", "pdb", len(podList.Items), pdb.Namespace, pdb.Name)
+	logger.Info("Number of pods found", "count", len(podList.Items))
 
 	if len(podList.Items) == 0 {
 		return "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
@@ -144,8 +137,6 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 
 	// Iterate through each pod
 	for _, pod := range podList.Items {
-		logger.Info("Examining pod", "pod", pod.Name)
-
 		// Check the OwnerReferences of each pod
 		for _, ownerRef := range pod.OwnerReferences {
 			if ownerRef.Kind == "ReplicaSet" {
@@ -165,13 +156,7 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 						return rsOwnerRef.Name, nil
 					}
 				}
-				// If we get here, the ReplicaSet doesn't have a Deployment owner reference
-				// So we return a 'NotFound' error for Deployment not found
-				return "", apierrors.NewNotFound(
-					schema.GroupResource{Group: "apps", Resource: "deployments"},
-					ownerRef.Name,
-				)
-
+				// no replicaset owner just move on and see if any other pods have have something.
 			}
 			//// Optional: Handle StatefulSets if necessary
 			//if ownerRef.Kind == "StatefulSet" {
@@ -183,8 +168,9 @@ func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb 
 			//	logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)
 			//	// Handle StatefulSet logic if required
 			//}
+
 		}
 	}
-
-	return "", fmt.Errorf("PDB %s/%s overlaps with zero deployments", pdb.Namespace, pdb.Name)
+	logger.Info("No Deployment owner found")
+	return "", errOwnerNotFound
 }

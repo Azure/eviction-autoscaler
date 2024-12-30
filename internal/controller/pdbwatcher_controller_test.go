@@ -14,25 +14,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 var _ = Describe("PDBWatcher Controller", func() {
 	const (
 		resourceName    = "test-resource"
-		namespace       = "default"
 		deploymentName  = "example-deployment"
 		statefulSetName = "example-statefulset"
 	)
 
-	ctx := context.Background()
-	typeNamespacedName := types.NamespacedName{Name: resourceName, Namespace: namespace}
-	deploymentNamespacedName := types.NamespacedName{Name: deploymentName, Namespace: namespace}
+	var namespace string
 
+	ctx := context.Background()
+	var typeNamespacedName, deploymentNamespacedName types.NamespacedName
 	Context("When reconciling a resource", func() {
 
 		BeforeEach(func() {
+
+			namespaceObj := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test",
+				},
+			}
+
+			// create the namespace using the controller-runtime client
+			Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+			namespace = namespaceObj.Name
+			typeNamespacedName = types.NamespacedName{Name: resourceName, Namespace: namespace}
+			deploymentNamespacedName = types.NamespacedName{Name: deploymentName, Namespace: namespace}
+
 			By("creating the custom resource for the Kind PDBWatcher")
 			pdbwatcher := &v1.PDBWatcher{
 				ObjectMeta: metav1.ObjectMeta{
@@ -111,18 +122,6 @@ var _ = Describe("PDBWatcher Controller", func() {
 		})
 
 		AfterEach(func() {
-			By("cleaning up resources")
-			deleteResource := func(obj client.Object) {
-				Expect(k8sClient.Delete(ctx, obj)).To(Succeed())
-				Eventually(func() bool {
-					err := k8sClient.Get(ctx, client.ObjectKeyFromObject(obj), obj)
-					return errors.IsNotFound(err)
-				}, time.Second*10, time.Millisecond*250).Should(BeTrue())
-			}
-
-			deleteResource(&v1.PDBWatcher{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
-			deleteResource(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: namespace}})
-			deleteResource(&policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace}})
 		})
 
 		It("should successfully reconcile the resource", func() {
@@ -430,6 +429,20 @@ var _ = Describe("PDBWatcher Controller", func() {
 	})
 
 	Context("when reconciling bad crds", func() {
+		BeforeEach(func() {
+
+			namespaceObj := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test",
+				},
+			}
+
+			// create the namespace using the controller-runtime client
+			Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+			namespace = namespaceObj.Name
+			typeNamespacedName = types.NamespacedName{Name: resourceName, Namespace: namespace}
+		})
+
 		It("should deal with no pdb", func() {
 			By("by updating condition to degraded")
 			controllerReconciler := &PDBWatcherReconciler{
@@ -448,10 +461,6 @@ var _ = Describe("PDBWatcher Controller", func() {
 				},
 			}
 			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-			defer func() {
-				err := k8sClient.Delete(ctx, pdbwatcher)
-				Expect(err).NotTo(HaveOccurred())
-			}()
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -465,150 +474,124 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
 			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("NoPdb"))
 		})
-	})
 
-	It("should deal with no target ", func() {
-		By("by updating condition to degraded")
-		controllerReconciler := &PDBWatcherReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-		}
+		It("should deal with no target ", func() {
+			By("by updating condition to degraded")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
 
-		pdbwatcher := &v1.PDBWatcher{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-			Spec: v1.PDBWatcherSpec{
-				TargetName: "", //intentionally empty
-				TargetKind: "deployment",
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdbwatcher)
+			pdbwatcher := &v1.PDBWatcher{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: v1.PDBWatcherSpec{
+					TargetName: "", //intentionally empty
+					TargetKind: "deployment",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
 			Expect(err).NotTo(HaveOccurred())
-		}()
 
-		pdb := &policyv1.PodDisruptionBudget{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdb)
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
-		}()
-
-		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: typeNamespacedName,
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("EmptyTarget"))
 		})
-		Expect(err).NotTo(HaveOccurred())
 
-		// Verify PDBWatcher resource
-		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("EmptyTarget"))
-	})
+		It("should deal with bad target kind", func() {
+			By("by updating condition to degraded")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
 
-	It("should deal with bad target kind", func() {
-		By("by updating condition to degraded")
-		controllerReconciler := &PDBWatcherReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-		}
+			pdbwatcher := &v1.PDBWatcher{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: v1.PDBWatcherSpec{
+					TargetName: "something",
+					TargetKind: "notavalidtarget",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
 
-		pdbwatcher := &v1.PDBWatcher{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-			Spec: v1.PDBWatcherSpec{
-				TargetName: "something",
-				TargetKind: "notavalidtarget",
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdbwatcher)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
 			Expect(err).NotTo(HaveOccurred())
-		}()
 
-		pdb := &policyv1.PodDisruptionBudget{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdb)
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
-		}()
-
-		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: typeNamespacedName,
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("InvalidTarget"))
 		})
-		Expect(err).NotTo(HaveOccurred())
 
-		// Verify PDBWatcher resource
-		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("InvalidTarget"))
-	})
+		It("should deal with missing target", func() {
+			By("by updating condition to degraded")
+			controllerReconciler := &PDBWatcherReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+			}
 
-	It("should deal with missing target", func() {
-		By("by updating condition to degraded")
-		controllerReconciler := &PDBWatcherReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-		}
+			pdbwatcher := &v1.PDBWatcher{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+				Spec: v1.PDBWatcherSpec{
+					TargetName: "somethingmissing", //not found
+					TargetKind: "deployment",
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
 
-		pdbwatcher := &v1.PDBWatcher{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-			Spec: v1.PDBWatcherSpec{
-				TargetName: "somethingmissing", //not found
-				TargetKind: "deployment",
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdbwatcher)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: namespace,
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
 			Expect(err).NotTo(HaveOccurred())
-		}()
 
-		pdb := &policyv1.PodDisruptionBudget{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      resourceName,
-				Namespace: namespace,
-			},
-		}
-		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-		defer func() {
-			err := k8sClient.Delete(ctx, pdb)
+			// Verify PDBWatcher resource
+			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
 			Expect(err).NotTo(HaveOccurred())
-		}()
-
-		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-			NamespacedName: typeNamespacedName,
+			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
+			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("MissingTarget"))
 		})
-		Expect(err).NotTo(HaveOccurred())
-
-		// Verify PDBWatcher resource
-		err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-		Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-		Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("MissingTarget"))
 	})
 })
 

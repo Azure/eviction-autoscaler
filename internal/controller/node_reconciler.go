@@ -66,7 +66,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		//}
 
 		pdbWatcherList := &pdbautoscaler.PDBWatcherList{}
-		err = r.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: req.Namespace})
+		err = r.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: pod.Namespace})
 		if err != nil {
 			logger.Error(err, "Error: Unable to list PDBWatchers")
 			return ctrl.Result{}, err
@@ -93,7 +93,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 			if selector.Matches(labels.Set(pod.Labels)) {
 				applicablePDBWatcher = pdbWatcher.DeepCopy()
-				break
+				break //should we keep going to ensure multiple pdbwatchers don't match?
 			}
 		}
 		if applicablePDBWatcher == nil {

@@ -2,11 +2,13 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
@@ -50,26 +52,30 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 	// Check if PDB already exists for this Deployment
-	pdb := &policyv1.PodDisruptionBudget{}
-	err := r.Get(ctx, client.ObjectKey{
-		Namespace: deployment.Namespace,
-		Name:      r.generatePDBName(deployment.Name),
-	}, pdb)
 
-	if err == nil {
-		// PDB already exists, nothing to do
-		log.Info("PodDisruptionBudget already exists", "namespace", deployment.Namespace, "name", deployment.Name)
-		//if pdb.Spec.MinAvailable.IntVal != *deployment.Spec.Replicas {
-		//	pdb.Spec.MinAvailable.IntVal = *deployment.Spec.Replicas
-		//	if err := r.Update(ctx, pdb); err != nil {
-		//		return reconcile.Result{}, err
-		//	}
-		//}
-		return reconcile.Result{}, nil
+	var pdbList policyv1.PodDisruptionBudgetList
+	err := r.List(ctx, &pdbList, &client.ListOptions{
+		Namespace: deployment.Namespace,
+	})
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	for _, pdb := range pdbList.Items {
+		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("error converting label selector: %w", err)
+		}
+
+		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
+
+			// PDB already exists, nothing to do
+			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
+			return reconcile.Result{}, nil
+		}
 	}
 
 	// Create a new PDB for the Deployment
-	pdb = &policyv1.PodDisruptionBudget{
+	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
@@ -88,7 +94,6 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		return reconcile.Result{}, err
 	}
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
-
 	return reconcile.Result{}, nil
 }
 

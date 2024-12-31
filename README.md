@@ -15,37 +15,44 @@
 
 ## Introduction
 
-This originated as an intern project still at github.com/Javier090/k8s-pdb-autoscaler
+This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler).
 
-The general idea is that k8s deployments already have a max surge concept and there's no reason that surge is only for new deployments and not for node maintenance or other situatins where pdb protected pods need to be evicted.
-This project uses node cordons or alteratively an eviction webhook to signal PDBWatcher Custom Resources That maps to a PodDisruptionBudget. A controller will then try and scale up the deployment that corresponds to the poddisruptionbudget.
+The general idea is that Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new deployments and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
+This project uses node cordons or, alternatively, an eviction webhook to signal PDBWatcher Custom Resources that map to a PodDisruptionBudget. A controller then attempts to scale up a deployment that corresponds to the PodDisruptionBudget.
 
 ### Why Not Overprovision?
-Overprovisioning isn't free. Sometimes it makes sense to run as cheap as you can. But you still don't want to be down because there was a cluster upgrade or even a vm maintence event.
-Your app might also just be having a bad time for unrelated reasons and an the same maitence event shouldn't cost you down time if extra replicas can save you.
+
+Overprovisioning isn't free. Sometimes it makes sense to run as cost-effectively as possible, but you still don't want to experience downtime due to a cluster upgrade or even a VM maintenance event.  
+
+Your app might also experience issues for unrelated reasons, and a maintenance event shouldn't result in downtime if adding extra replicas can save you.
+
+
 
 ## Features
 
-- Node Controller that signals all pods on the cordoned nodes selected by pdbs.
-- Optional Web hook that writes evictions to pdb watcher custom resource.
-- PDB Watcher Controller that wathces pdb watchers and if evictions are blocked because watchers PDB's disruptionsAllowed is zero then surge deployment.
-- PDB Watcher Controller Restores deployment to original state after cooldown period if eviction signal stops. 
-- Optionally a PDB Controller will create PDBWatcher Custom Resources for them.
-- Optionally a Deployment Controller will create pdbs for deployments that don't have them.
+- **Node Controller**: Signals PDBWatchers for all pods on cordoned nodes selected by PDBs.
+- **Optional Webhook**: Signals PDBWatcehrs for any pod getting an evicted. See [issue #10](https://github.com/paulgmiller/k8s-pdb-autoscaler/issues/10) for more information.
+- **PDB Watcher Controller**: Watches PDBWatcher resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment.
+- **Scaledown**: The PDB Watcher Controller restores the deployment to its original state after a cooldown period when eviction signals stop.
+- **PDB Controller** (Optional): Automatically creates PDBWatcher Custom Resources for existing PDBs.
+- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them.
+
 
 
 ```mermaid
 graph TD;
+    Cordon[Cordon]
+    NodeController[Cordoned Node Controller]
     Eviction[Eviction]
     Webhook[Admission Webhook]
-    NodeController[Cordoned Node Controller]
     CRD[Custom Resource Definition]
     Controller[Kubernetes Controller]
     Deployment[Deployment or StatefulSet]
 
+    Cordon -->|Triggers| NodeController
+    NodeController -->|writes spec| CRD
     Eviction -->|Triggers| Webhook
     Webhook -->|writes spec| CRD 
-    NodeController -->|writes spec| CRD
     CRD -->|spec watched by| Controller
     Controller -->|surges and shrinks| Deployment
     Controller -->|Writes status| CRD

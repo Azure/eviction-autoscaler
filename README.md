@@ -15,30 +15,42 @@
 
 ## Introduction
 
-This originated as an intern project still at github.com/Javier090/k8s-pdb-autoscaler
+This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler).
 
-The general idea is that k8s deployments already have a max surge concept and there's no reason that surge is only for new deployments and not for node maitence.
-It captures evictions using a webhook and writes them to a PDBWatcher CR if it exists. A controller will then try and temporarily scale up the deployment that corresponds.
+The general idea is that Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new deployments and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
+This project uses node cordons or, alternatively, an eviction webhook to signal PDBWatcher Custom Resources that map to a PodDisruptionBudget. A controller then attempts to scale up a deployment that corresponds to the PodDisruptionBudget.
 
-### Why 
-Overprovisioning isn't free. Sometimes it makes sense to run as cheap as you can. But you still don't want to be down because there was a cluster upgrade or even a vm maintence event.
-Your app might also just be having a bad time for unrelated reasons and an the same maitence event shouldn't cost you down time if extra replicas can save you.
+### Why Not Overprovision?
+
+Overprovisioning isn't free. Sometimes it makes sense to run as cost-effectively as possible, but you still don't want to experience downtime due to a cluster upgrade or even a VM maintenance event.  
+
+Your app might also experience issues for unrelated reasons, and a maintenance event shouldn't result in downtime if adding extra replicas can save you.
+
+
 
 ## Features
 
-- Web hook that writes evictions to pdb watcher custom resource.
-- Controller that wathces pdb watchers and if evictions are blocked because watchers PDB's disruptionsAllowed is zero then surge deployment.
-- Controller Restores deployment when evictions go through with 
+- **Node Controller**: Signals PDBWatchers for all pods on cordoned nodes selected by PDBs.
+- **Optional Webhook**: Signals PDBWatcehrs for any pod getting an evicted. See [issue #10](https://github.com/paulgmiller/k8s-pdb-autoscaler/issues/10) for more information.
+- **PDB Watcher Controller**: Watches PDBWatcher resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment.
+- **Scaledown**: The PDB Watcher Controller restores the deployment to its original state after a cooldown period when eviction signals stop.
+- **PDB Controller** (Optional): Automatically creates PDBWatcher Custom Resources for existing PDBs.
+- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them.
+
 
 
 ```mermaid
 graph TD;
+    Cordon[Cordon]
+    NodeController[Cordoned Node Controller]
     Eviction[Eviction]
     Webhook[Admission Webhook]
     CRD[Custom Resource Definition]
     Controller[Kubernetes Controller]
     Deployment[Deployment or StatefulSet]
 
+    Cordon -->|Triggers| NodeController
+    NodeController -->|writes spec| CRD
     Eviction -->|Triggers| Webhook
     Webhook -->|writes spec| CRD 
     CRD -->|spec watched by| Controller
@@ -70,21 +82,25 @@ Here's how to see how this might work.
 ```bash
 kubectl create ns laboratory
 kubectl create deployment -n laboratory piggie --image nginx
-hack/autodeploy.sh laboratory #want to replace this with tagging namespaces.
+# unless disabled there will now be a pdb and a pdbwatcher that map to the deployment
 # show a starting state
-k get pods -n laboratory
-k get pdbwatcher piggie-pdb-watcher -n laboratory -o yaml
-go run ./cmd/evict --label app=piggie -ns laboratory
+kubectl get pods -n laboratory
+kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 0
+kubectl get pdbwatcher piggie -n laboratory -o yaml
+# cordon
+NODE=$(kubectl get pods -n laboratory -l app=piggie -o=jsonpath='{.items[*].spec.nodeName}')
+kubectl cordon $NODE
 # show we've scaled up
-k get pods -n laboratory
-k get pdbwatcher piggie-pdb-watcher -n laboratory -o yaml
-# okay one more eviction to get us back down to one replica
-go run ./cmd/evict --label app=piggie -ns laboratory
+kubectl get pods -n laboratory
+kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 1
+kubectl get pdbwatcher piggie -n laboratory -o yaml
+# actually kick the node off now that pdb isn't at zero.
+kubectl drain $NODE --delete-emptydir-data --ignore-daemonsets
+
 ```
 Here's a drain of  Node on a to node cluster that is running the [aks store demo](https://github.com/Azure-Samples/aks-store-demo) (4 deployments and two stateful sets). You can see the drains being rejected then going through on the left and new pods being surged in on the right.
 
 ![Screenshot 2024-09-07 173336](https://github.com/user-attachments/assets/c7407ae5-6fcd-48d4-900d-32a7c6ca8b08)
-
 
 
 ## TODO 

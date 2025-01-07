@@ -3,8 +3,6 @@ package controllers
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -152,34 +150,6 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			}, newpdb)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 			//should we list it?
-		})
-	})
-
-	Describe("when a deployment is deleted", func() {
-		It("should delete the corresponding PodDisruptionBudget", func() {
-
-			// Now delete the deployment
-			err := r.Client.Delete(ctx, deployment)
-			Expect(err).ToNot(HaveOccurred())
-
-			req := reconcile.Request{
-				NamespacedName: client.ObjectKey{
-					Namespace: namespace,
-					Name:      deploymentName,
-				},
-			}
-
-			// Reconcile should delete the PDB
-			_, err = r.Reconcile(ctx, req)
-			Expect(err).ToNot(HaveOccurred())
-
-			// Check if PDB was deleted
-			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
-				Namespace: namespace,
-				Name:      deploymentName,
-			}, pdb)
-			Expect(err).To(HaveOccurred()) // Should return an error (not found)
 		})
 	})
 

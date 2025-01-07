@@ -43,11 +43,6 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 	var pdb policyv1.PodDisruptionBudget
 	err := r.Get(ctx, req.NamespacedName, &pdb)
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			err := r.Delete(ctx, &types.PDBWatcher{ObjectMeta: metav1.ObjectMeta{Name: req.Name, Namespace: req.Namespace}})
-			logger.Info("Deleted PDBWatcher")
-			return reconcile.Result{}, client.IgnoreNotFound(err)
-		}
 		return reconcile.Result{}, err
 	}
 
@@ -67,6 +62,10 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 			return reconcile.Result{}, e
 		}
 
+		//variables
+		controller := true
+		blockOwnerDeletion := true
+
 		// Create a new PDBWatcher
 		pdbWatcher = types.PDBWatcher{
 			TypeMeta: metav1.TypeMeta{
@@ -77,8 +76,18 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"controlledBy": "PDBToPDBWatcherController",
-					"target":       deploymentName,
+					"createdBy": "PDBToPDBWatcherController",
+					"target":    deploymentName,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					metav1.OwnerReference{
+						APIVersion:         "policy/v1",
+						Kind:               "PodDisruptionBudget",
+						Name:               pdb.Name,
+						UID:                pdb.UID,
+						Controller:         &controller,         // Mark as managed by this controller
+						BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the pdbwatcher until the controller is deleted
+					},
 				},
 			},
 			Spec: types.PDBWatcherSpec{

@@ -6,7 +6,6 @@ import (
 
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -37,10 +36,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
-		if apierrors.IsNotFound(err) {
-			e := r.handleDeploymentDeletion(ctx, req)
-			return ctrl.Result{}, client.IgnoreNotFound(e)
-		}
 		return reconcile.Result{}, err
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
@@ -74,6 +69,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		}
 	}
 
+	//variables
+	controller := true
+	blockOwnerDeletion := true
+
 	// Create a new PDB for the Deployment
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
@@ -82,6 +81,16 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 			Annotations: map[string]string{
 				"createdBy": "DeploymentToPDBController",
 				"target":    deployment.Name,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "apps/v1",
+					Kind:               "Deployment",
+					Name:               deployment.Name,
+					UID:                deployment.UID,
+					Controller:         &controller,         // Mark as managed by this controller
+					BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the PDB until the deployment is deleted
+				},
 			},
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
@@ -99,17 +108,6 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
 	return deploymentName
-}
-
-// handleDeploymentDeletion deletes the associated PDB when the Deployment is deleted
-// we can leak here if controller stops working
-// Ironically leaking pdbs would block our current upgrade logic we had to toggle off wher expected pods == 0
-func (r *DeploymentToPDBReconciler) handleDeploymentDeletion(ctx context.Context, req ctrl.Request) error {
-	pdb := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: r.generatePDBName(req.Name), Namespace: req.Namespace}}
-	// ToDo: only delete if it has createdby/ownerref
-	// If the PDB exists, delete it
-	log.FromContext(ctx).Info("Deleting PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
-	return r.Delete(ctx, pdb)
 }
 
 // SetupWithManager sets up the controller with the Manager.

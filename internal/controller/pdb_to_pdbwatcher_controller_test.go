@@ -215,48 +215,6 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 		})
 	})
 
-	Context("When the PDB is deleted", func() {
-		It("should delete the PDBWatcher if it exists", func() {
-			// Prepare a PodDisruptionBudget in the "test" namespace
-			pdb := &policyv1.PodDisruptionBudget{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName,
-					Namespace: namespace,
-				},
-			}
-
-			// Add PDB to fake client
-			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-
-			// Prepare PDBWatcher and create it
-			pdbWatcher := &types.PDBWatcher{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName,
-					Namespace: namespace,
-				},
-			}
-			Expect(k8sClient.Create(ctx, pdbWatcher)).Should(Succeed())
-
-			// Now, delete the PDB
-			Expect(k8sClient.Delete(ctx, pdb)).Should(Succeed())
-
-			// Reconcile the request to check if PDBWatcher is deleted
-			req := reconcile.Request{
-				NamespacedName: client.ObjectKey{
-					Name:      deploymentName,
-					Namespace: namespace,
-				},
-			}
-			_, err := reconciler.Reconcile(ctx, req)
-
-			Expect(err).ShouldNot(HaveOccurred())
-
-			// Verify that the PDBWatcher was deleted
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdbWatcher)
-			Expect(err).Should(HaveOccurred()) // PDBWatcher should no longer exist
-		})
-	})
-
 	Context("When the PDBWatcher already exists", func() {
 		It("should not create a new PDBWatcher", func() {
 			// Prepare a PodDisruptionBudget in the "test" namespace

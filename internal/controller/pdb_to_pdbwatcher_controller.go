@@ -80,7 +80,7 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 					"target":    deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
-					metav1.OwnerReference{
+					{
 						APIVersion:         "policy/v1",
 						Kind:               "PodDisruptionBudget",
 						Name:               pdb.Name,

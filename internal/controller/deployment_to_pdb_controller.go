@@ -83,7 +83,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 				"target":    deployment.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
-				metav1.OwnerReference{
+				{
 					APIVersion:         "apps/v1",
 					Kind:               "Deployment",
 					Name:               deployment.Name,

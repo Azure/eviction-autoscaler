@@ -197,7 +197,7 @@ func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(predicate.Funcs{
 			// ignore status updates as we make those.
 			UpdateFunc: func(ue event.UpdateEvent) bool {
-				return ue.ObjectOld.GetGeneration() != ue.ObjectNew.GetGeneration()
+				return ue.ObjectOld.Spec.LastEviction != ue.ObjectNew.Spec.LastEviction
 			},
 		}).
 		Complete(r)

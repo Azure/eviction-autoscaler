@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	types "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -65,6 +66,24 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 			// PDB already exists, nothing to do
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
+			var pdbWatcher types.PDBWatcher
+			e := r.Get(ctx, req.NamespacedName, &pdbWatcher)
+			if e == nil {
+				if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
+					//someone else changed deployment num of replicas
+					pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
+					e = r.Update(ctx, req.NamespacedName, &pdb)
+					if e != nil {
+						log.Warning("unable to update pdb minAvailable to deployment replicas ",
+							"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+						return reconcile.Result{}, nil
+					}
+					log.Info("Successfully updated pdb minAvailable to deployment replicas ",
+						"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+				}
+			}
+			// if pdb exists get pdbWatcher --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
+			// update pdb minReplicas to current deployment replicas
 			return reconcile.Result{}, nil
 		}
 	}
@@ -120,13 +139,13 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				logger.Info("Update event detected, no action will be taken")
-				// No need to handle update event
 				//ToDo: distinguish scales from our pdbwatcher from scales from other owners and keep minAvailable up near replicas.
 				// Like if I start a deployment at 3 but then later say this is popular let me bump it to 5 should our pdb change.
-				//oldDeployment := e.ObjectOld.(*v1.Deployment)
-				//newDeployment := e.ObjectNew.(*v1.Deployment)
-				//return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
-				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+				oldDeployment := e.ObjectOld.(*v1.Deployment)
+				newDeployment := e.ObjectNew.(*v1.Deployment)
+
+				return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
+				//return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

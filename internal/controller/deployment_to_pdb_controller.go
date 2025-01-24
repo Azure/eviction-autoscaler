@@ -69,25 +69,27 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 			var pdbWatcher types.PDBWatcher
 			e := r.Get(ctx, req.NamespacedName, &pdbWatcher)
 			if e == nil {
+				// if pdb exists get pdbWatcher --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
+				// update pdb minReplicas to current deployment replicas
 				if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
 					if _, exists := deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]; exists &&
-							int32(deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]) != *deployment.Spec.Replicas {
+						int32(deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]) != *deployment.Spec.Replicas {
 
-					//someone else changed deployment num of replicas
-					pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
-					e = r.Update(ctx, req.NamespacedName, &pdb)
-					if e != nil {
-						log.Warning("unable to update pdb minAvailable to deployment replicas ",
+						//someone else changed deployment num of replicas
+						pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
+						e = r.Update(ctx, req.NamespacedName, &pdb)
+						if e != nil {
+							log.Warning("unable to update pdb minAvailable to deployment replicas ",
+								"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+							return reconcile.Result{}, e
+						}
+						log.Info("Successfully updated pdb minAvailable to deployment replicas ",
 							"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
-						return reconcile.Result{}, nil
 					}
-					log.Info("Successfully updated pdb minAvailable to deployment replicas ",
-						"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
 				}
+
+				return reconcile.Result{}, nil
 			}
-			// if pdb exists get pdbWatcher --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
-			// update pdb minReplicas to current deployment replicas
-			return reconcile.Result{}, nil
 		}
 	}
 

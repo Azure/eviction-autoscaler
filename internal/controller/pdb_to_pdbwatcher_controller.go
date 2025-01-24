@@ -103,15 +103,6 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 		logger.Info("Created PDBWatcher")
 	}
 	// Return no error and no requeue
-
-	//update pdb watcher when pdb minReplicas changed; should use Status for updates instead?
-	if pdbWatcher.Status.MinReplicas != pdb.Spec.MinAvailable {
-		pdbWatcher.Status.MinReplicas = pdb.Spec.MinAvailable
-		err = r.Update(ctx, &pdbWatcher)
-		if err != nil {
-			return reconcile.Result{}, fmt.Errorf("unable to update PDBWatcher: %v", err)
-		}
-	}
 	return reconcile.Result{}, nil
 }
 
@@ -125,9 +116,7 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				//ToDo: theoretically you could have a pdb update and change
 				// its label selectors in which case you might need to update the deployment target?
-				oldPDB := e.ObjectOld.(*policyv1.PodDisruptionBudget)
-				newPDB := e.ObjectNew.(*policyv1.PodDisruptionBudget)
-				return oldPDB.Spec.MinAvailable != newPDB.Spec.MinAvailable
+				return false
 			},
 		}).
 		Owns(&types.PDBWatcher{}). // Watch PDBWatchers for ownership

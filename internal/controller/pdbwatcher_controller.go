@@ -119,6 +119,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
 		newReplicas := calculateSurge(ctx, target, pdbWatcher.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
+		target.AddAnnotation("NewReplicasAfterScaledUpByPdbWatcher", string(newReplicas))
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			logger.Error(err, "failed to update Target", "kind", pdbWatcher.Spec.TargetKind, "targetname", pdbWatcher.Spec.TargetName)
@@ -150,6 +151,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		target.SetReplicas(pdbWatcher.Status.MinReplicas)
+		target.AddAnnotation("NewReplicasAfterScaledDownByPdbWatcher", string(pdbWatcher.Status.MinReplicas))
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			return ctrl.Result{}, err
@@ -197,7 +199,7 @@ func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		WithEventFilter(predicate.Funcs{
 			// ignore status updates as we make those.
 			UpdateFunc: func(ue event.UpdateEvent) bool {
-				return ue.ObjectOld.Spec.LastEviction != ue.ObjectNew.Spec.LastEviction
+				return ue.ObjectOld.GetGeneration() != ue.ObjectNew.GetGeneration()
 			},
 		}).
 		Complete(r)

@@ -70,6 +70,9 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 			e := r.Get(ctx, req.NamespacedName, &pdbWatcher)
 			if e == nil {
 				if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
+					if _, exists := deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]; exists &&
+							int32(deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]) != *deployment.Spec.Replicas {
+
 					//someone else changed deployment num of replicas
 					pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
 					e = r.Update(ctx, req.NamespacedName, &pdb)

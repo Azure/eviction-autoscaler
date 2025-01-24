@@ -15,6 +15,7 @@ type Surger interface {
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
+	AddAnnotation(string, string)
 }
 
 // Todo change casing to match k8s?
@@ -50,6 +51,13 @@ func (d *DeploymentWrapper) GetMaxSurge() intstr.IntOrString {
 		return *d.obj.Spec.Strategy.RollingUpdate.MaxSurge
 	}
 	return intstr.FromInt(0)
+}
+
+// AddAnnotation will reset and add new annotation map every time this func is called
+func (d *DeploymentWrapper) AddAnnotation(status, newReplicas string) {
+	//always need to new map to reset the status of deployment and clear previous ones
+	d.obj.Annotations = make(map[string]string)
+	d.obj.Annotations[status] = newReplicas
 }
 
 type StatefulSetWrapper struct {

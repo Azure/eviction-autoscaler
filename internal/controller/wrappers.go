@@ -96,3 +96,10 @@ func GetSurger(kind string) (Surger, error) {
 	}
 
 }
+
+// AddAnnotation will reset and add new annotation map every time this func is called
+func (s *StatefulSetWrapper) AddAnnotation(status, newReplicas string) {
+	//always need to new map to reset the status of deployment and clear previous ones
+	s.obj.Annotations = make(map[string]string)
+	s.obj.Annotations[status] = newReplicas
+}

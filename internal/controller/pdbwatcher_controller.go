@@ -201,7 +201,6 @@ func degraded(conditions *[]metav1.Condition, reason string, message string) {
 }
 
 func (r *PDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	logger := mgr.GetLogger()
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&myappsv1.PDBWatcher{}).
 		WithEventFilter(predicate.Funcs{

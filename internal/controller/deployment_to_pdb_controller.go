@@ -118,7 +118,8 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
 	deployment *v1.Deployment, pdbWatcher *myappsv1.PDBWatcher, pdb policyv1.PodDisruptionBudget) (reconcile.Result, error) {
-	log.Info("deployment replicas got updated", " pdbWatcher.Status.TargetGeneration", pdbWatcher.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
+	logger := log.FromContext(ctx)
+	logger.Info("deployment replicas got updated", " pdbWatcher.Status.TargetGeneration", pdbWatcher.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
 	if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
 		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas

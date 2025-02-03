@@ -123,7 +123,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
 		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
-		// no surge happened but customer already increased deployment replicas, then there wont be either of annotations present
+		// no surge happened but customer already increased deployment replicas, then annotation would not exist
 		if _, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
 			if newReplicas, _ := strconv.ParseInt(deployment.Annotations[EvictionSurgeReplicasAnnotationKey], 0, 32); int32(newReplicas) == *deployment.Spec.Replicas {
 				return reconcile.Result{}, nil

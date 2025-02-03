@@ -133,11 +133,11 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
 		e := r.Update(ctx, &pdb)
 		if e != nil {
-			log.Error(e, "unable to update pdb minAvailable to deployment replicas ",
+			logger.Error(e, "unable to update pdb minAvailable to deployment replicas ",
 				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
 			return reconcile.Result{}, e
 		}
-		log.Info("Successfully updated pdb minAvailable to deployment replicas ",
+		logger.Info("Successfully updated pdb minAvailable to deployment replicas ",
 			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
 	}
 	return reconcile.Result{}, nil

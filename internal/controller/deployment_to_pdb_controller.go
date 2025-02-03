@@ -73,30 +73,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 			if e == nil {
 				// if pdb exists get pdbWatcher --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
 				// update pdb minReplicas to current deployment replicas
-				log.Info("deployment replicas got updated", " pdbWatcher.Status.TargetGeneration", pdbWatcher.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
-				if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
-					_, scaleDownAnnotationExists := deployment.Annotations["NewReplicasAfterScaledDownByPdbWatcher"]
-					_, scaleUpAnnotationExists := deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]
-					// no surge happened but customer already increased deployment replicas, then there wont be either of annotations present
-					if !scaleUpAnnotationExists && scaleDownAnnotationExists {
-						return reconcile.Result{}, nil
-					}
-					if scaleUpAnnotationExists {
-						if newReplicas, _ := strconv.Atoi(deployment.Annotations["NewReplicasAfterScaledUpByPdbWatcher"]); int32(newReplicas) == *deployment.Spec.Replicas {
-							return reconcile.Result{}, nil
-						}
-					}
-					//someone else changed deployment num of replicas
-					pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
-					e = r.Update(ctx, &pdb)
-					if e != nil {
-						log.Error(e, "unable to update pdb minAvailable to deployment replicas ",
-							"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
-						return reconcile.Result{}, e
-					}
-					log.Info("Successfully updated pdb minAvailable to deployment replicas ",
-						"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
-				}
+				return r.updateMinAvailableAsNecessary(ctx, deployment, pdbWatcher, pdb)
 			}
 			return reconcile.Result{}, nil
 		}
@@ -136,6 +113,32 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		return reconcile.Result{}, err
 	}
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
+	return reconcile.Result{}, nil
+}
+
+func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
+	deployment *v1.Deployment, pdbWatcher *myappsv1.PDBWatcher, pdb policyv1.PodDisruptionBudget) (reconcile.Result, error) {
+	log.Info("deployment replicas got updated", " pdbWatcher.Status.TargetGeneration", pdbWatcher.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
+	if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
+		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
+		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
+		// no surge happened but customer already increased deployment replicas, then there wont be either of annotations present
+		if _, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
+			if newReplicas, _ := strconv.ParseInt(deployment.Annotations[EvictionSurgeReplicasAnnotationKey], 0, 32); int32(newReplicas) == *deployment.Spec.Replicas {
+				return reconcile.Result{}, nil
+			}
+		}
+		//someone else changed deployment num of replicas
+		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
+		e := r.Update(ctx, &pdb)
+		if e != nil {
+			log.Error(e, "unable to update pdb minAvailable to deployment replicas ",
+				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+			return reconcile.Result{}, e
+		}
+		log.Info("Successfully updated pdb minAvailable to deployment replicas ",
+			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+	}
 	return reconcile.Result{}, nil
 }
 

@@ -15,6 +15,8 @@ type Surger interface {
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
+	AddAnnotation(string, string)
+	RemoveAnnotation(string)
 }
 
 // Todo change casing to match k8s?
@@ -52,6 +54,22 @@ func (d *DeploymentWrapper) GetMaxSurge() intstr.IntOrString {
 	return intstr.FromInt(0)
 }
 
+// AddAnnotation  add new status annotation
+func (d *DeploymentWrapper) AddAnnotation(status, newReplicas string) {
+	if d.obj.Annotations == nil {
+		d.obj.Annotations = make(map[string]string)
+	}
+	d.obj.Annotations[status] = newReplicas
+}
+
+// RemoveAnnotation will delete specific status annotation
+func (d *DeploymentWrapper) RemoveAnnotation(status string) {
+	//always need to new map to reset the status of deployment and clear previous ones
+	if d.obj.Annotations != nil {
+		delete(d.obj.Annotations, status)
+	}
+}
+
 type StatefulSetWrapper struct {
 	obj *v1.StatefulSet
 }
@@ -87,4 +105,20 @@ func GetSurger(kind string) (Surger, error) {
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}
 
+}
+
+// AddAnnotation will reset and add new annotation map every time this func is called
+func (s *StatefulSetWrapper) AddAnnotation(status, newReplicas string) {
+	if s.obj.Annotations == nil {
+		s.obj.Annotations = make(map[string]string)
+	}
+	s.obj.Annotations[status] = newReplicas
+}
+
+// RemoveAnnotation will delete specific status annotation
+func (s *StatefulSetWrapper) RemoveAnnotation(status string) {
+	//always need to new map to reset the status of deployment and clear previous ones
+	if s.obj.Annotations != nil {
+		delete(s.obj.Annotations, status)
+	}
 }

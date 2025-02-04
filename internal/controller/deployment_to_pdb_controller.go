@@ -3,12 +3,15 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 
+	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -65,6 +68,13 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 			// PDB already exists, nothing to do
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
+			pdbWatcher := &myappsv1.PDBWatcher{}
+			e := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, pdbWatcher)
+			if e == nil {
+				// if pdb exists get pdbWatcher --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
+				// update pdb minReplicas to current deployment replicas
+				return r.updateMinAvailableAsNecessary(ctx, deployment, pdbWatcher, pdb)
+			}
 			return reconcile.Result{}, nil
 		}
 	}
@@ -106,6 +116,33 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 	return reconcile.Result{}, nil
 }
 
+func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
+	deployment *v1.Deployment, pdbWatcher *myappsv1.PDBWatcher, pdb policyv1.PodDisruptionBudget) (reconcile.Result, error) {
+	logger := log.FromContext(ctx)
+	logger.Info("deployment replicas got updated", " pdbWatcher.Status.TargetGeneration", pdbWatcher.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
+	if pdbWatcher.Status.TargetGeneration != deployment.GetGeneration() {
+		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
+		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
+		// no surge happened but customer already increased deployment replicas, then annotation would not exist
+		if _, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
+			if newReplicas, _ := strconv.ParseInt(deployment.Annotations[EvictionSurgeReplicasAnnotationKey], 0, 32); int32(newReplicas) == *deployment.Spec.Replicas {
+				return reconcile.Result{}, nil
+			}
+		}
+		//someone else changed deployment num of replicas
+		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
+		e := r.Update(ctx, &pdb)
+		if e != nil {
+			logger.Error(e, "unable to update pdb minAvailable to deployment replicas ",
+				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+			return reconcile.Result{}, e
+		}
+		logger.Info("Successfully updated pdb minAvailable to deployment replicas ",
+			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+	}
+	return reconcile.Result{}, nil
+}
+
 func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
 	return deploymentName
 }
@@ -119,14 +156,16 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				logger.Info("Update event detected, no action will be taken")
-				// No need to handle update event
+				//logger.Info("Update event detected, no action will be taken")
 				//ToDo: distinguish scales from our pdbwatcher from scales from other owners and keep minAvailable up near replicas.
 				// Like if I start a deployment at 3 but then later say this is popular let me bump it to 5 should our pdb change.
-				//oldDeployment := e.ObjectOld.(*v1.Deployment)
-				//newDeployment := e.ObjectNew.(*v1.Deployment)
-				//return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
-				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
+				if oldDeployment, ok := e.ObjectOld.(*v1.Deployment); ok {
+					newDeployment := e.ObjectNew.(*v1.Deployment)
+					logger.Info("Update event detected, num of replicas changed", "newReplicas", newDeployment.Spec.Replicas)
+					return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
+				}
+				return false
+				//return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	myappsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	//v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -23,6 +24,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
+
+const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 
 // PDBWatcherReconciler reconciles a PDBWatcher object
 type PDBWatcherReconciler struct {
@@ -119,6 +122,11 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
 		newReplicas := calculateSurge(ctx, target, pdbWatcher.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
+		//adding annotations here is an atomic operation;
+		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
+		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
+		// this is to solve customer scaling up deployment manually so pdbWatcher minAvailable needs to be updated
+		target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, string(newReplicas))
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			logger.Error(err, "failed to update Target", "kind", pdbWatcher.Spec.TargetKind, "targetname", pdbWatcher.Spec.TargetName)
@@ -150,6 +158,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		target.SetReplicas(pdbWatcher.Status.MinReplicas)
+		target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			return ctrl.Result{}, err

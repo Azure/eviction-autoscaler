@@ -13,7 +13,7 @@ SERVICE_ACCOUNT_FILE="config/rbac/service_account.yaml"
 ROLE_BINDING_FILE="config/rbac/role_binding.yaml"
 CLUSTER_ROLE_FILE="config/rbac/role.yaml"
 
-CRD_FILE="config/crd/bases/eviction-autoscaler.azure.com_pdbwatchers.yaml "
+CRD_FILE="config/crd/bases/eviction-autoscaler.azure.com_evictionsautoscalers.yaml "
 WEBHOOK_CONFIGURATION_FILE="config/webhook/manifests/webhook_configuration.yaml"
 WEBHOOK_SVC_FILE="config/webhook/manifests/webhook_svc.yaml"
 

@@ -1,4 +1,4 @@
-module github.com/paulgmiller/k8s-pdb-autoscaler
+module github.com/azure/eviction-autoscaler
 
 go 1.23.0
 
@@ -71,4 +71,4 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.5.0 // indirect
 )
 
-replace github.com/paulgmiller/k8s-pdb-autoscaler/config/webhook => ./config/webhook
+replace github.com/azure/eviction-autoscaler/config/webhook => ./config/webhook

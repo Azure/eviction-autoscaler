@@ -41,8 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	appsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
-	controllers "github.com/paulgmiller/k8s-pdb-autoscaler/internal/controller"
+	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
+	controllers "github.com/azure/eviction-autoscaler/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -140,7 +140,7 @@ webhooks:
 	Expect(err).NotTo(HaveOccurred())
 
 	// Add your controller
-	err = (&controllers.PDBWatcherReconciler{
+	err = (&controllers.EvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr)

@@ -1,9 +1,9 @@
 # K8s-pdb-autoscaler
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/paulgmiller/k8s-pdb-autoscaler)](https://goreportcard.com/report/github.com/paulgmiller/k8s-pdb-autoscaler)
-[![GoDoc](https://pkg.go.dev/badge/github.com/paulgmiller/k8s-pdb-autoscaler)](https://pkg.go.dev/github.com/paulgmiller/k8s-pdb-autoscaler)
+[![Go Report Card](https://goreportcard.com/badge/github.com/azure/eviction-autoscaler)](https://goreportcard.com/report/github.com/azure/eviction-autoscaler)
+[![GoDoc](https://pkg.go.dev/badge/github.com/azure/eviction-autoscaler)](https://pkg.go.dev/github.com/azure/eviction-autoscaler)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![CI Pipeline](https://github.com/paulgmiller/k8s-pdb-autoscaler/actions/workflows/ci.yml/badge.svg)](https://github.com/paulgmiller/k8s-pdb-autoscaler/actions/workflows/ci.yml)
+[![CI Pipeline](https://github.com/azure/eviction-autoscaler/actions/workflows/ci.yml/badge.svg)](https://github.com/azure/eviction-autoscaler/actions/workflows/ci.yml)
 
 
 ## Table of Contents
@@ -31,7 +31,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 ## Features
 
 - **Node Controller**: Signals PDBWatchers for all pods on cordoned nodes selected by PDBs.
-- **Optional Webhook**: Signals PDBWatcehrs for any pod getting an evicted. See [issue #10](https://github.com/paulgmiller/k8s-pdb-autoscaler/issues/10) for more information.
+- **Optional Webhook**: Signals PDBWatcehrs for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
 - **PDB Watcher Controller**: Watches PDBWatcher resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment.
 - **Scaledown**: The PDB Watcher Controller restores the deployment to its original state after a cooldown period when eviction signals stop.
 - **PDB Controller** (Optional): Automatically creates PDBWatcher Custom Resources for existing PDBs.
@@ -71,10 +71,12 @@ graph TD;
 Clone the repository and install the dependencies:
 
 ```bash
-git clone https://github.com/paulgmiller/k8s-pdb-autoscaler.git
+git clone https://github.com/azure/eviction-autoscaler.git
 cd k8s-pdb-autoscaler
 hack/install.sh
 ```
+
+TODO Add configuration options.
 
 ## Usage
 Here's how to see how this might work.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
+	v1 "github.com/azure/eviction-autoscaler/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	v1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1" // Import corev1 package
 	policyv1 "k8s.io/api/policy/v1"
@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-var _ = Describe("PDBWatcher Controller", func() {
+var _ = Describe("EvictionAutoScaler Controller", func() {
 	const (
 		resourceName    = "test-resource"
 		deploymentName  = "example-deployment"
@@ -44,20 +44,20 @@ var _ = Describe("PDBWatcher Controller", func() {
 			typeNamespacedName = types.NamespacedName{Name: resourceName, Namespace: namespace}
 			deploymentNamespacedName = types.NamespacedName{Name: deploymentName, Namespace: namespace}
 
-			By("creating the custom resource for the Kind PDBWatcher")
-			pdbwatcher := &v1.PDBWatcher{
+			By("creating the custom resource for the Kind EvictionAutoScaler")
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: deploymentName,
 					TargetKind: "deployment",
 				},
 			}
-			err := k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			err := k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			if err != nil && errors.IsNotFound(err) {
-				Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+				Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 			}
 
 			By("creating a Deployment resource")
@@ -126,7 +126,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 
 		It("should successfully reconcile the resource", func() {
 			By("reconciling the created resource")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -136,15 +136,15 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			pdbwatcher := &v1.PDBWatcher{}
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
-			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("TargetSpecChange"))
+			Expect(EvictionAutoScaler.Status.MinReplicas).To(Equal(int32(1)))
+			Expect(EvictionAutoScaler.Status.TargetGeneration).ToNot(BeZero())
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("TargetSpecChange"))
 
 			// run it twice so we hit unhandled eviction == false
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -158,19 +158,19 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1))) // Change as needed to verify scaling
 
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
-			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
+			Expect(EvictionAutoScaler.Status.MinReplicas).To(Equal(int32(1)))
+			Expect(EvictionAutoScaler.Status.TargetGeneration).ToNot(BeZero())
 
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("Reconciled"))
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("Reconciled"))
 		})
 
 		It("should deal with an eviction when allowedDisruptions == 0", func() {
 			By("scaling up on reconcile")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -182,26 +182,26 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Log an eviction (webhook would do this in e2e)
-			pdbwatcher := &v1.PDBWatcher{}
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			pdbwatcher.Spec.LastEviction = v1.Eviction{
+			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
 				PodName:      "somepod", //
 				EvictionTime: metav1.Now(),
 			}
-			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal("somepod"))
 			//we don't update status of last eviction till
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
 			// Verify Deployment scaling if necessary
 			deployment := &appsv1.Deployment{}
@@ -249,15 +249,15 @@ var _ = Describe("PDBWatcher Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, statefulSet)).To(Succeed())
 
-			pdbwatcher := &v1.PDBWatcher{}
-			err := k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err := k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			pdbwatcher.Spec.TargetName = statefulSetName
-			pdbwatcher.Spec.TargetKind = "statefulset"
-			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+			EvictionAutoScaler.Spec.TargetName = statefulSetName
+			EvictionAutoScaler.Spec.TargetKind = "statefulset"
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 
 			By("scaling up on reconcile")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -269,24 +269,24 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			// Log an eviction (webhook would do this in e2e)
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			pdbwatcher.Spec.LastEviction = v1.Eviction{
+			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
 				PodName:      "somepod", //
 				EvictionTime: metav1.Now(),
 			}
-			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Spec.LastEviction.EvictionTime))
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).To(Equal(EvictionAutoScaler.Spec.LastEviction.EvictionTime))
 
 			// Verify Deployment scaling if necessary
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: statefulSetName, Namespace: namespace}, statefulSet)
@@ -297,7 +297,7 @@ var _ = Describe("PDBWatcher Controller", func() {
 		//should this be merged with above?
 		It("should deal with an eviction when allowedDisruptions > 0 ", func() {
 			By("waiting on first on reconcile")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -310,17 +310,17 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
 
 			// Log an eviction (webhook would do this in e2e)
-			pdbwatcher := &v1.PDBWatcher{}
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			pdbwatcher.Spec.LastEviction = v1.Eviction{
+			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
 				PodName:      "somepod", //
 				EvictionTime: metav1.Now(),
 			}
-			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
-			pdbwatcher.Status.MinReplicas = 1
-			pdbwatcher.Status.TargetGeneration = deployment.Generation
-			Expect(k8sClient.Status().Update(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
+			EvictionAutoScaler.Status.MinReplicas = 1
+			EvictionAutoScaler.Status.TargetGeneration = deployment.Generation
+			Expect(k8sClient.Status().Update(ctx, EvictionAutoScaler)).To(Succeed())
 
 			//have the pdb show it
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -341,18 +341,18 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
 			By("scaling down after cooldown")
 			//okay lets say the eviction is older though
 			//TODO make cooldown const/configurable
-			pdbwatcher.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))
-			Expect(k8sClient.Update(ctx, pdbwatcher)).To(Succeed())
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
+			EvictionAutoScaler.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
 			//second reconcile should scaledown.
 			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -366,20 +366,20 @@ var _ = Describe("PDBWatcher Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1))) // Change as needed to verify scaling
 
-			// pdbwatcher should be ready and
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// EvictionAutoScaler should be ready and
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).To(Equal(pdbwatcher.Status.LastEviction.EvictionTime))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Ready"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("Reconciled"))
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal("somepod"))
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).To(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Ready"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("Reconciled"))
 
 		})
 
 		//TODO reset on deployment change
 		It("should deal with deployment spec change", func() {
 			By("reseting min replicas and target generation")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
@@ -390,13 +390,13 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			pdbwatcher := &v1.PDBWatcher{}
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(1)))
-			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
-			firstGeneration := pdbwatcher.Status.TargetGeneration
+			Expect(EvictionAutoScaler.Status.MinReplicas).To(Equal(int32(1)))
+			Expect(EvictionAutoScaler.Status.TargetGeneration).ToNot(BeZero())
+			firstGeneration := EvictionAutoScaler.Status.TargetGeneration
 
 			// outside user changes deployment
 			deployment := &appsv1.Deployment{}
@@ -410,12 +410,12 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource reset min replicas and target genration
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource reset min replicas and target genration
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.MinReplicas).To(Equal(int32(5)))
-			Expect(pdbwatcher.Status.TargetGeneration).ToNot(BeZero())
-			Expect(pdbwatcher.Status.TargetGeneration).ToNot(Equal(firstGeneration))
+			Expect(EvictionAutoScaler.Status.MinReplicas).To(Equal(int32(5)))
+			Expect(EvictionAutoScaler.Status.TargetGeneration).ToNot(BeZero())
+			Expect(EvictionAutoScaler.Status.TargetGeneration).ToNot(Equal(firstGeneration))
 
 			// Verify Deployment left alone?
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
@@ -445,54 +445,54 @@ var _ = Describe("PDBWatcher Controller", func() {
 
 		It("should deal with no pdb", func() {
 			By("by updating condition to degraded")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			pdbwatcher := &v1.PDBWatcher{
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: deploymentName,
 					TargetKind: "deployment",
 				},
 			}
-			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("NoPdb"))
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("NoPdb"))
 		})
 
 		It("should deal with no target ", func() {
 			By("by updating condition to degraded")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			pdbwatcher := &v1.PDBWatcher{
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: "", //intentionally empty
 					TargetKind: "deployment",
 				},
 			}
-			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
@@ -505,32 +505,32 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("EmptyTarget"))
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("EmptyTarget"))
 		})
 
 		It("should deal with bad target kind", func() {
 			By("by updating condition to degraded")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			pdbwatcher := &v1.PDBWatcher{
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: "something",
 					TargetKind: "notavalidtarget",
 				},
 			}
-			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -544,32 +544,32 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("InvalidTarget"))
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("InvalidTarget"))
 		})
 
 		It("should deal with missing target", func() {
 			By("by updating condition to degraded")
-			controllerReconciler := &PDBWatcherReconciler{
+			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
 
-			pdbwatcher := &v1.PDBWatcher{
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: "somethingmissing", //not found
 					TargetKind: "deployment",
 				},
 			}
-			Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+			Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -585,12 +585,12 @@ var _ = Describe("PDBWatcher Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify PDBWatcher resource
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			// Verify EvictionAutoScaler resource
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Status.Conditions).To(HaveLen(1))
-			Expect(pdbwatcher.Status.Conditions[0].Type).To(Equal("Degraded"))
-			Expect(pdbwatcher.Status.Conditions[0].Reason).To(Equal("MissingTarget"))
+			Expect(EvictionAutoScaler.Status.Conditions).To(HaveLen(1))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Type).To(Equal("Degraded"))
+			Expect(EvictionAutoScaler.Status.Conditions[0].Reason).To(Equal("MissingTarget"))
 		})
 	})
 })

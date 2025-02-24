@@ -6,15 +6,15 @@ domain: mydomain.com
 layout:
 - go.kubebuilder.io/v4
 projectName: k8s-pdb-autoscaler
-repo: github.com/paulgmiller/k8s-pdb-autoscaler
+repo: github.com/azure/eviction-autoscaler
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: mydomain.com
+  domain: azure.com
   group: apps
-  kind: PDBWatcher
-  path: github.com/paulgmiller/k8s-pdb-autoscaler/api/v1
+  kind: eviction-autoscaler
+  path: github.com/azure/eviction-autoscaler/api/v1
   version: v1
 version: "3"

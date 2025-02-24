@@ -32,32 +32,6 @@ rules:
   - update
   - watch
 - apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers
-  verbs:
-  - create
-  - delete
-  - get
-  - list
-  - patch
-  - update
-  - watch
-- apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - apps.mydomain.com
-  resources:
-  - pdbwatchers/status
-  verbs:
-  - get
-  - patch
-  - update
-- apiGroups:
   - ""
   resources:
   - nodes
@@ -78,6 +52,32 @@ rules:
   resources:
   - pods/status
   verbs:
+  - update
+- apiGroups:
+  - eviction-autoscaler.azure.com
+  resources:
+  - EvictionAutoScalers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - eviction-autoscaler.azure.com
+  resources:
+  - EvictionAutoScalers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - eviction-autoscaler.azure.com
+  resources:
+  - EvictionAutoScalers/status
+  verbs:
+  - get
+  - patch
   - update
 - apiGroups:
   - policy

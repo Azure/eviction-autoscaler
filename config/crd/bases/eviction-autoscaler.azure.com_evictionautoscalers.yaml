@@ -4,20 +4,21 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.15.0
-  name: pdbwatchers.apps.mydomain.com
+  name: evictionautoscalers.eviction-autoscaler.azure.com
 spec:
-  group: apps.mydomain.com
+  group: eviction-autoscaler.azure.com
   names:
-    kind: PDBWatcher
-    listKind: PDBWatcherList
-    plural: pdbwatchers
-    singular: pdbwatcher
+    kind: EvictionAutoScaler
+    listKind: EvictionAutoScalerList
+    plural: evictionautoscalers
+    singular: evictionautoscaler
   scope: Namespaced
   versions:
   - name: v1
     schema:
       openAPIV3Schema:
-        description: PDBWatcher is the Schema for the pdbwatchers API
+        description: EvictionAutoScaler is the Schema for the EvictionAutoScalers
+          API
         properties:
           apiVersion:
             description: |-
@@ -37,7 +38,7 @@ spec:
           metadata:
             type: object
           spec:
-            description: PDBWatcherSpec defines the desired state of PDBWatcher
+            description: EvictionAutoScalerSpec defines the desired state of EvictionAutoScaler
             properties:
               lastEviction:
                 description: EvictionLog defines a log entry for pod evictions
@@ -59,7 +60,7 @@ spec:
             - targetName
             type: object
           status:
-            description: PDBWatcherStatus defines the observed state of PDBWatcher
+            description: EvictionAutoScalerStatus defines the observed state of EvictionAutoScaler
             properties:
               conditions:
                 items:

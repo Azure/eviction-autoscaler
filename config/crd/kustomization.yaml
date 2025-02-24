@@ -1,7 +1,7 @@
 # config/crd/kustomization.yaml
 
 resources:
-  - bases/apps.mydomain.com_pdbwatchers.yaml
+  - bases/eviction-autoscaler.azure.com_pdbwatchers.yaml
   # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

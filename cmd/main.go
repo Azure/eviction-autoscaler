@@ -37,9 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
-	appsv1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
-	controllers "github.com/paulgmiller/k8s-pdb-autoscaler/internal/controller"
-	evictinwebhook "github.com/paulgmiller/k8s-pdb-autoscaler/internal/webhook"
+	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
+	controllers "github.com/azure/eviction-autoscaler/internal/controller"
+	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -73,7 +73,7 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&evictionWebhook, "eviction-webhook", false,
-		"create a webhook that intercepts evictions and updates the pdbwatcher, if false will rely on node cordon for signal")
+		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, if false will rely on node cordon for signal")
 
 	opts := zap.Options{
 		Development: true,
@@ -135,14 +135,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.PDBWatcherReconciler{
+	if err = (&controllers.EvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PDBWatcher")
+		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}
-	setupLog.Info("PDBWatcherReconciler  setup completed")
+	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
 
 	/* disable because it was breaking e2e by updating pdb minavailbe to 2
 	if err = (&controllers.DeploymentToPDBReconciler{
@@ -155,20 +155,20 @@ func main() {
 	setupLog.Info("DeploymentToPDBReconciler  setup completed")
 	*/
 
-	if err = (&controllers.PDBToPDBWatcherReconciler{
+	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PDBToPDBWatcherReconciler")
+		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)
 	}
-	setupLog.Info("PDBToPDBWatcherReconciler  setup completed")
+	setupLog.Info("PDBToEvictionAutoScalerReconciler  setup completed")
 
 	if err = (&controllers.NodeReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PDBWatcher")
+		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

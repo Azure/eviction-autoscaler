@@ -88,7 +88,7 @@ var _ = Describe("controller", Ordered, func() {
 			var err error
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = "paulgmiller/k8s-pdb-autoscaler:latest"
+			var projectimage = "evictionautoscaler:e2etest"
 
 			By("building the manager(Operator) image")
 			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))

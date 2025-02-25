@@ -65,7 +65,7 @@ spec:
           - --health-probe-bind-address=:8081
         image: paulgmiller/k8s-pdb-autoscaler:latest
         name: manager
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

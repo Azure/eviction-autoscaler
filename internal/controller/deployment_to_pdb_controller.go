@@ -124,8 +124,15 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
 		// no surge happened but customer already increased deployment replicas, then annotation would not exist
-		if _, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
-			if newReplicas, _ := strconv.ParseInt(deployment.Annotations[EvictionSurgeReplicasAnnotationKey], 0, 32); int32(newReplicas) == *deployment.Spec.Replicas {
+		if surgeReplicas, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
+			newReplicas, err := strconv.Atoi(surgeReplicas)
+			if err != nil {
+				logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
+					"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
+				return reconcile.Result{}, nil
+			}
+
+			if int32(newReplicas) == *deployment.Spec.Replicas {
 				return reconcile.Result{}, nil
 			}
 		}

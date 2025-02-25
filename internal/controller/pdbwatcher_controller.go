@@ -126,7 +126,7 @@ func (r *PDBWatcherReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		//pdbWatcher can fail between updating deployment and pdbWatcher targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
 		// this is to solve customer scaling up deployment manually so pdbWatcher minAvailable needs to be updated
-		target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, string(newReplicas))
+		target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(newReplicas), 10))
 		err = r.Update(ctx, target.Obj())
 		if err != nil {
 			logger.Error(err, "failed to update Target", "kind", pdbWatcher.Spec.TargetKind, "targetname", pdbWatcher.Spec.TargetName)

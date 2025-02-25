@@ -113,13 +113,4 @@ spec:
   selector:
     matchLabels:
       control-plane: controller-manager
----
-apiVersion: apps.mydomain.com/v1
-kind: PDBWatcher
-metadata:
-  name: controller-manager-pdb
-  namespace: default
-spec:
-  targetName: controller-manager
-  targetKind: deployment
----
+

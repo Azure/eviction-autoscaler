@@ -1,4 +1,4 @@
-# K8s-pdb-autoscaler
+# Eviction-Autoscaler
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/azure/eviction-autoscaler)](https://goreportcard.com/report/github.com/azure/eviction-autoscaler)
 [![GoDoc](https://pkg.go.dev/badge/github.com/azure/eviction-autoscaler)](https://pkg.go.dev/github.com/azure/eviction-autoscaler)
@@ -15,10 +15,8 @@
 
 ## Introduction
 
-This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler).
-
-The general idea is that Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new deployments and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
-This project uses node cordons or, alternatively, an eviction webhook to signal PDBWatcher Custom Resources that map to a PodDisruptionBudget. A controller then attempts to scale up a deployment that corresponds to the PodDisruptionBudget.
+Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new rollouts and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
+This project uses node cordons or, alternatively, an eviction webhook to signal eviction-autoscaler Custom Resources that correspond to a PodDisruptionBudget and target a deployment. An eviction autoscaler controller then attempts to scale up a the targeted deployment (or scaleset if you're feeling brave) when the pdb's allowed disruptions is zero and scales down once evictions have stopped.
 
 ### Why Not Overprovision?
 
@@ -30,12 +28,11 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 
 ## Features
 
-- **Node Controller**: Signals PDBWatchers for all pods on cordoned nodes selected by PDBs.
-- **Optional Webhook**: Signals PDBWatcehrs for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
-- **PDB Watcher Controller**: Watches PDBWatcher resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment.
-- **Scaledown**: The PDB Watcher Controller restores the deployment to its original state after a cooldown period when eviction signals stop.
-- **PDB Controller** (Optional): Automatically creates PDBWatcher Custom Resources for existing PDBs.
-- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them.
+- **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
+- **Optional Webhook**: Signals eviction-autoscale for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
+- **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
+- **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs.
+- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler)
 
 
 
@@ -46,7 +43,7 @@ graph TD;
     Eviction[Eviction]
     Webhook[Admission Webhook]
     CRD[Custom Resource Definition]
-    Controller[Kubernetes Controller]
+    Controller[Eviction-Autoscaler Controller]
     Deployment[Deployment or StatefulSet]
 
     Cordon -->|Triggers| NodeController
@@ -76,7 +73,7 @@ cd k8s-pdb-autoscaler
 hack/install.sh
 ```
 
-TODO Add configuration options.
+TODO Add configuration options. Figure out if we want kustomize used for e2e to be installer.
 
 ## Usage
 Here's how to see how this might work.
@@ -104,6 +101,9 @@ Here's a drain of  Node on a to node cluster that is running the [aks store demo
 
 ![Screenshot 2024-09-07 173336](https://github.com/user-attachments/assets/c7407ae5-6fcd-48d4-900d-32a7c6ca8b08)
 
+## Shout out 
+
+This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler). 
 
 ## Contributing
 
@@ -118,6 +118,8 @@ provided by the bot. You will only need to do this once across all repos using o
 This project has adopted the [Microsoft Open Source Code of Conduct](https://opensource.microsoft.com/codeofconduct/).
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
+
+
 
 ## Trademarks
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	pdbautoscaler "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
-	"github.com/paulgmiller/k8s-pdb-autoscaler/internal/podutil"
+	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -22,7 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
-// PDBWatcherReconciler reconciles a PDBWatcher object
+// EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type NodeReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -38,15 +38,15 @@ const NodeNameIndex = "spec.nodeName"
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	// Fetch the PDBWatcher instance
+	// Fetch the EvictionAutoScaler instance
 	node := &corev1.Node{}
 	err := r.Get(ctx, req.NamespacedName, node)
 	if err != nil {
 		//should we use a finalizer to scale back down on deletion?
 		if errors.IsNotFound(err) {
-			return ctrl.Result{}, nil // PDBWatcher not found, could be deleted, nothing to do
+			return ctrl.Result{}, nil // EvictionAutoScaler not found, could be deleted, nothing to do
 		}
-		return ctrl.Result{}, err // Error fetching PDBWatcher
+		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 
 	if !node.Spec.Unschedulable {
@@ -59,26 +59,26 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	podchanged := false
 	for _, pod := range podlist.Items {
-		// TODO group pods by namespace to share list/get of pdbwatchers/pdbs
+		// TODO group pods by namespace to share list/get of EvictionAutoScalers/pdbs
 		// Also  could do this to avoid list/llooku up but need to measure if either helps
 		//if !possibleTarget(pod.GetOwnerReferences()) {
 		//	continue
 		//}
 
-		pdbWatcherList := &pdbautoscaler.PDBWatcherList{}
-		err = r.Client.List(ctx, pdbWatcherList, &client.ListOptions{Namespace: pod.Namespace})
+		EvictionAutoScalerList := &pdbautoscaler.EvictionAutoScalerList{}
+		err = r.Client.List(ctx, EvictionAutoScalerList, &client.ListOptions{Namespace: pod.Namespace})
 		if err != nil {
-			logger.Error(err, "Error: Unable to list PDBWatchers")
+			logger.Error(err, "Error: Unable to list EvictionAutoScalers")
 			return ctrl.Result{}, err
 		}
-		var applicablePDBWatcher *pdbautoscaler.PDBWatcher
-		for _, pdbWatcher := range pdbWatcherList.Items {
+		var applicableEvictionAutoScaler *pdbautoscaler.EvictionAutoScaler
+		for _, EvictionAutoScaler := range EvictionAutoScalerList.Items {
 			// Fetch the PDB using a 1:1 name mapping
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Get(ctx, types.NamespacedName{Name: pdbWatcher.Name, Namespace: pdbWatcher.Namespace}, pdb)
+			err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)
 			if err != nil {
 				if errors.IsNotFound(err) {
-					logger.Error(err, "no matching pdb", "namespace", pdbWatcher.Namespace, "name", pdbWatcher.Name)
+					logger.Error(err, "no matching pdb", "namespace", EvictionAutoScaler.Namespace, "name", EvictionAutoScaler.Name)
 					continue
 				}
 				return ctrl.Result{}, err
@@ -87,20 +87,20 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			// Check if the PDB selector matches the evicted pod's labels
 			selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 			if err != nil {
-				logger.Error(err, "Error: Invalid PDB selector", "pdbname", pdbWatcher.Name)
+				logger.Error(err, "Error: Invalid PDB selector", "pdbname", EvictionAutoScaler.Name)
 				continue
 			}
 
 			if selector.Matches(labels.Set(pod.Labels)) {
-				applicablePDBWatcher = pdbWatcher.DeepCopy()
-				break //should we keep going to ensure multiple pdbwatchers don't match?
+				applicableEvictionAutoScaler = EvictionAutoScaler.DeepCopy()
+				break //should we keep going to ensure multiple EvictionAutoScalers don't match?
 			}
 		}
-		if applicablePDBWatcher == nil {
+		if applicableEvictionAutoScaler == nil {
 			continue
 		}
 
-		logger.Info("Found pdbwatcher for pod", "name", applicablePDBWatcher.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
+		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
 		updatedpod := podutil.UpdatePodCondition(&pod.Status, &v1.PodCondition{
 			Type:    v1.DisruptionTarget,
@@ -115,12 +115,12 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			}
 		}
 
-		applicablePDBWatcher.Spec.LastEviction = pdbautoscaler.Eviction{
+		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
 			PodName:      pod.Name,
 			EvictionTime: metav1.Now(),
 		}
-		if err := r.Update(ctx, applicablePDBWatcher); err != nil {
-			logger.Error(err, "unable to update pdbwatcher", "name", applicablePDBWatcher.Name)
+		if err := r.Update(ctx, applicableEvictionAutoScaler); err != nil {
+			logger.Error(err, "unable to update EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name)
 			return ctrl.Result{}, err
 		}
 		podchanged = true
@@ -128,7 +128,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	///if we updated requeue again so we keep updating (could ignore if there were no pods mathing pdbs)
 	// pods till they get off or node is uncordoned.
-	//TODO pull smallest cooldown from all pdbwatchers if they allow defining it.
+	//TODO pull smallest cooldown from all EvictionAutoScalers if they allow defining it.
 	var cooldownNeeded time.Duration
 	if podchanged {
 		cooldownNeeded = cooldown

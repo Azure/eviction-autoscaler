@@ -17,7 +17,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1 "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	v1 "github.com/azure/eviction-autoscaler/api/v1"
 )
 
 var _ = Describe("Node Controller", func() {
@@ -45,20 +45,20 @@ var _ = Describe("Node Controller", func() {
 			nodeName = rand.String(8)
 			nodeNamespacedName = types.NamespacedName{Name: nodeName}
 
-			By("creating the custom resource for the Kind PDBWatcher")
-			pdbwatcher := &v1.PDBWatcher{
+			By("creating the custom resource for the Kind EvictionAutoScaler")
+			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      resourceName,
 					Namespace: namespace,
 				},
-				Spec: v1.PDBWatcherSpec{
+				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: "exmple-whatever",
 					TargetKind: "deployment",
 				},
 			}
-			err := k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			err := k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			if err != nil && errors.IsNotFound(err) {
-				Expect(k8sClient.Create(ctx, pdbwatcher)).To(Succeed())
+				Expect(k8sClient.Create(ctx, EvictionAutoScaler)).To(Succeed())
 			}
 
 			By("creating a pod resource")
@@ -131,7 +131,7 @@ var _ = Describe("Node Controller", func() {
 
 		})
 
-		It("should handle cordon by updating pod and pdbwatcher", func() {
+		It("should handle cordon by updating pod and EvictionAutoScaler", func() {
 			nodeReconciler := &NodeReconciler{
 				Client: k8sClient,
 				Scheme: scheme.Scheme,
@@ -163,11 +163,11 @@ var _ = Describe("Node Controller", func() {
 			Expect(pod.Status.Conditions[1].Type).To(Equal(corev1.DisruptionTarget))
 
 			By("updating pdb watcher ")
-			pdbwatcher := &v1.PDBWatcher{}
-			err = k8sClient.Get(ctx, typeNamespacedName, pdbwatcher)
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pdbwatcher.Spec.LastEviction.EvictionTime).ToNot(BeZero())
-			Expect(pdbwatcher.Spec.LastEviction.PodName).To(Equal(podName))
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(BeZero())
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal(podName))
 
 		})
 

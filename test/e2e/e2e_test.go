@@ -36,7 +36,7 @@ import (
 )
 
 // SYNC with kustomize file
-const namespace = "k8s-pdb-autoscaler"
+const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true

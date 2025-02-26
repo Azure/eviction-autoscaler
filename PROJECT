@@ -5,7 +5,7 @@
 domain: mydomain.com
 layout:
 - go.kubebuilder.io/v4
-projectName: k8s-pdb-autoscaler
+projectName: eviction-autoscaler
 repo: github.com/azure/eviction-autoscaler
 resources:
 - api:

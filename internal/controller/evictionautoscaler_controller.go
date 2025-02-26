@@ -36,9 +36,9 @@ type EvictionAutoScalerReconciler struct {
 
 const cooldown = 1 * time.Minute
 
-// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=EvictionAutoScalers,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=EvictionAutoScalers/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=EvictionAutoScalers/finalizers,verbs=update
+// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update

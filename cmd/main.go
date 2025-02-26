@@ -73,7 +73,8 @@ func main() {
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.BoolVar(&evictionWebhook, "eviction-webhook", false,
-		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, if false will rely on node cordon for signal")
+		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, "+
+			"if false will rely on node cordon for signal")
 
 	opts := zap.Options{
 		Development: true,
@@ -117,7 +118,7 @@ func main() {
 		GracefulShutdownTimeout: &shutdown,
 		HealthProbeBindAddress:  probeAddr,
 		LeaderElection:          enableLeaderElection,
-		LeaderElectionID:        "d482b936.mydomain.com",
+		LeaderElectionID:        "d482b936.azure.com",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly

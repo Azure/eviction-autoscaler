@@ -56,7 +56,7 @@ rules:
 - apiGroups:
   - eviction-autoscaler.azure.com
   resources:
-  - EvictionAutoScalers
+  - evictionautoscalers
   verbs:
   - create
   - delete
@@ -68,13 +68,13 @@ rules:
 - apiGroups:
   - eviction-autoscaler.azure.com
   resources:
-  - EvictionAutoScalers/finalizers
+  - evictionautoscalers/finalizers
   verbs:
   - update
 - apiGroups:
   - eviction-autoscaler.azure.com
   resources:
-  - EvictionAutoScalers/status
+  - evictionautoscalers/status
   verbs:
   - get
   - patch

@@ -32,11 +32,11 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 
-	"github.com/paulgmiller/k8s-pdb-autoscaler/test/utils"
+	"github.com/azure/eviction-autoscaler/test/utils"
 )
 
 // SYNC with kustomize file
-const namespace = "k8s-pdb-autoscaler"
+const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true

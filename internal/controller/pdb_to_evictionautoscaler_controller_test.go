@@ -3,9 +3,9 @@ package controllers
 import (
 	"context"
 
+	types "github.com/azure/eviction-autoscaler/api/v1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	types "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -17,9 +17,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-var _ = Describe("PDBToPDBWatcherReconciler", func() {
+var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 	var (
-		reconciler *PDBToPDBWatcherReconciler
+		reconciler *PDBToEvictionAutoScalerReconciler
 		// Set the namespace to "test" instead of "default"
 		namespace      string
 		deploymentName = "example-deployment"
@@ -44,7 +44,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 		Expect(appsv1.AddToScheme(s)).To(Succeed())
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 		// Initialize the reconciler with the fake client
-		reconciler = &PDBToPDBWatcherReconciler{
+		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
 		}
@@ -174,7 +174,7 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 	})
 
 	Context("When the PDB exists", func() {
-		It("should create a PDBWatcher if it doesn't already exist", func() {
+		It("should create a EvictionAutoScaler if it doesn't already exist", func() {
 			// Prepare a PodDisruptionBudget in the "test" namespace
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -192,12 +192,12 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 			// Add PDB to fake client
 			Expect(k8sClient.Create(ctx, pdb)).Should(Succeed())
 
-			// Prepare the PDBWatcher object that will be checked if it exists
-			pdbWatcher := &types.PDBWatcher{}
-			err := k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdbWatcher)
-			Expect(err).Should(HaveOccurred()) // PDBWatcher does not exist initially
+			// Prepare the EvictionAutoScaler object that will be checked if it exists
+			EvictionAutoScaler := &types.EvictionAutoScaler{}
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).Should(HaveOccurred()) // EvictionAutoScaler does not exist initially
 
-			// Simulate PDBWatcher creation
+			// Simulate EvictionAutoScaler creation
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Name:      deploymentName,
@@ -209,14 +209,14 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 			_, err = reconciler.Reconcile(ctx, req)
 			Expect(err).ShouldNot(HaveOccurred())
 
-			// Verify that the PDBWatcher was created
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdbWatcher)
-			Expect(err).Should(Succeed()) // PDBWatcher should now exist
+			// Verify that the EvictionAutoScaler was created
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).Should(Succeed()) // EvictionAutoScaler should now exist
 		})
 	})
 
-	Context("When the PDBWatcher already exists", func() {
-		It("should not create a new PDBWatcher", func() {
+	Context("When the EvictionAutoScaler already exists", func() {
+		It("should not create a new EvictionAutoScaler", func() {
 			// Prepare a PodDisruptionBudget in the "test" namespace
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
@@ -227,16 +227,16 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 
 			Expect(k8sClient.Create(ctx, pdb)).Should(Succeed())
 
-			// Prepare the PDBWatcher object that will be created if it doesn't exist
-			pdbWatcher := &types.PDBWatcher{
+			// Prepare the EvictionAutoScaler object that will be created if it doesn't exist
+			EvictionAutoScaler := &types.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deploymentName,
 					Namespace: namespace,
 				},
 			}
-			Expect(k8sClient.Create(ctx, pdbWatcher)).Should(Succeed())
+			Expect(k8sClient.Create(ctx, EvictionAutoScaler)).Should(Succeed())
 
-			// Simulate PDBWatcher already exists scenario
+			// Simulate EvictionAutoScaler already exists scenario
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Name:      deploymentName,
@@ -249,9 +249,9 @@ var _ = Describe("PDBToPDBWatcherReconciler", func() {
 
 			Expect(err).ShouldNot(HaveOccurred())
 
-			// Verify that the PDBWatcher was not created again
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdbWatcher)
-			Expect(err).Should(Succeed()) // PDBWatcher should already exist, not re-created
+			// Verify that the EvictionAutoScaler was not created again
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).Should(Succeed()) // EvictionAutoScaler should already exist, not re-created
 		})
 	})
 })

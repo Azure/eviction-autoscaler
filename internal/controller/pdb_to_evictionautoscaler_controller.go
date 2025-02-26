@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	types "github.com/paulgmiller/k8s-pdb-autoscaler/api/v1"
+	types "github.com/azure/eviction-autoscaler/api/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -23,8 +23,8 @@ import (
 
 var errOwnerNotFound error = fmt.Errorf("owner not found")
 
-// PDBToPDBWatcherReconciler reconciles a PodDisruptionBudget object.
-type PDBToPDBWatcherReconciler struct {
+// PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
+type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
@@ -34,8 +34,8 @@ type PDBToPDBWatcherReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;update;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 
-// Reconcile reads the state of the cluster for a PDB and creates/deletes PDBWatchers accordingly.
-func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+// Reconcile reads the state of the cluster for a PDB and creates/deletes EvictionAutoScalers accordingly.
+func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	logger := log.FromContext(ctx)
 	logger.WithValues("pdb", req.Name, "namespace", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)
@@ -46,9 +46,9 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 		return reconcile.Result{}, err
 	}
 
-	// If the PDB exists, create a corresponding PDBWatcher if it does not exist
-	var pdbWatcher types.PDBWatcher
-	err = r.Get(ctx, req.NamespacedName, &pdbWatcher)
+	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
+	var EvictionAutoScaler types.EvictionAutoScaler
+	err = r.Get(ctx, req.NamespacedName, &EvictionAutoScaler)
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
@@ -66,17 +66,17 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 		controller := true
 		blockOwnerDeletion := true
 
-		// Create a new PDBWatcher
-		pdbWatcher = types.PDBWatcher{
+		// Create a new EvictionAutoScaler
+		EvictionAutoScaler = types.EvictionAutoScaler{
 			TypeMeta: metav1.TypeMeta{
-				Kind:       "PDBWatcher",
-				APIVersion: "apps.mydomain.com/v1",
+				Kind:       "EvictionAutoScaler",
+				APIVersion: "eviction-autoscaler.azure.com/v1",
 			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"createdBy": "PDBToPDBWatcherController",
+					"createdBy": "PDBToEvictionAutoScalerController",
 					"target":    deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
@@ -86,28 +86,28 @@ func (r *PDBToPDBWatcherReconciler) Reconcile(ctx context.Context, req reconcile
 						Name:               pdb.Name,
 						UID:                pdb.UID,
 						Controller:         &controller,         // Mark as managed by this controller
-						BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the pdbwatcher until the controller is deleted
+						BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the EvictionAutoScaler until the controller is deleted
 					},
 				},
 			},
-			Spec: types.PDBWatcherSpec{
+			Spec: types.EvictionAutoScalerSpec{
 				TargetName: deploymentName,
 				TargetKind: deploymentKind,
 			},
 		}
 
-		err := r.Create(ctx, &pdbWatcher)
+		err := r.Create(ctx, &EvictionAutoScaler)
 		if err != nil {
-			return reconcile.Result{}, fmt.Errorf("unable to create PDBWatcher: %v", err)
+			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
 		}
-		logger.Info("Created PDBWatcher")
+		logger.Info("Created EvictionAutoScaler")
 	}
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
@@ -119,11 +119,11 @@ func (r *PDBToPDBWatcherReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return false
 			},
 		}).
-		Owns(&types.PDBWatcher{}). // Watch PDBWatchers for ownership
+		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership
 		Complete(r)
 }
 
-func (r *PDBToPDBWatcherReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
+func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
 	logger := log.FromContext(ctx)
 
 	// Convert PDB label selector to Kubernetes selector

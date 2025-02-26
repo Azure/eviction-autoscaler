@@ -3,7 +3,7 @@ kind: Namespace
 metadata:
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: k8s-pdb-autoscaler
+    app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: kustomize
   name: default
 ---
@@ -14,7 +14,7 @@ metadata:
   namespace: default
   labels:
     control-plane: controller-manager
-    app.kubernetes.io/name: k8s-pdb-autoscaler
+    app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: kustomize
 spec:
   selector:
@@ -113,4 +113,3 @@ spec:
   selector:
     matchLabels:
       control-plane: controller-manager
-

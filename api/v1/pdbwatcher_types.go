@@ -10,16 +10,16 @@ type Eviction struct {
 	EvictionTime metav1.Time `json:"evictionTime,omitempty"`
 }
 
-// PDBWatcherSpec defines the desired state of PDBWatcher
-type PDBWatcherSpec struct {
+// EvictionAutoScalerSpec defines the desired state of EvictionAutoScaler
+type EvictionAutoScalerSpec struct {
 	//todo make this mirror horizontalpodautoscaler's target reference
 	TargetName   string   `json:"targetName"`
 	TargetKind   string   `json:"targetKind"` //deployment or statefulset (anything with an update statedgy)
 	LastEviction Eviction `json:"lastEviction,omitempty"`
 }
 
-// PDBWatcherStatus defines the observed state of PDBWatcher
-type PDBWatcherStatus struct {
+// EvictionAutoScalerStatus defines the observed state of EvictionAutoScaler
+type EvictionAutoScalerStatus struct {
 	LastEviction     Eviction           `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
 	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
 	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
@@ -29,24 +29,24 @@ type PDBWatcherStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 
-// PDBWatcher is the Schema for the pdbwatchers API
-type PDBWatcher struct {
+// EvictionAutoScaler is the Schema for the EvictionAutoScalers API
+type EvictionAutoScaler struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PDBWatcherSpec   `json:"spec,omitempty"`
-	Status PDBWatcherStatus `json:"status,omitempty"`
+	Spec   EvictionAutoScalerSpec   `json:"spec,omitempty"`
+	Status EvictionAutoScalerStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// PDBWatcherList contains a list of PDBWatcher
-type PDBWatcherList struct {
+// EvictionAutoScalerList contains a list of EvictionAutoScaler
+type EvictionAutoScalerList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []PDBWatcher `json:"items"`
+	Items           []EvictionAutoScaler `json:"items"`
 }
 
 func init() {
-	SchemeBuilder.Register(&PDBWatcher{}, &PDBWatcherList{})
+	SchemeBuilder.Register(&EvictionAutoScaler{}, &EvictionAutoScalerList{})
 }

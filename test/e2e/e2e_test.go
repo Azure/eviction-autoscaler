@@ -255,7 +255,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Manually scaling Deployment replicas up")
 			scaleNginxReplicas := func() error {
-				cmd := exec.Command("kubectl", "scale", "deployment", "ingress-nginx-controller", "--replicas", "2", "-n", "ingress-nginx")
+				cmd := exec.Command("kubectl", "scale", "deployment",
+					"ingress-nginx-controller", "--replicas", "2", "-n", "ingress-nginx")
 
 				// Run the command and capture the output
 				output, err := cmd.CombinedOutput()
@@ -291,9 +292,11 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Delete Deployment and verify PDB gets deleted")
 			deleteNginxDeployment := func() error {
-				err = clientset.AppsV1().Deployments("ingress-nginx").Delete(context.TODO(), "ingress-nginx-controller", v1.DeleteOptions{})
+				err = clientset.AppsV1().Deployments("ingress-nginx").
+					Delete(context.TODO(), "ingress-nginx-controller", v1.DeleteOptions{})
 				if err != nil {
-					return fmt.Errorf("Error deleting Deployment %s in namespace %s: %v", "ingress-nginx-controller", "ingress-nginx", err)
+					return fmt.Errorf("Error deleting Deployment %s in namespace %s: %v",
+						"ingress-nginx-controller", "ingress-nginx", err)
 				}
 
 				fmt.Printf("Deployment '%s' deleted successfully in namespace '%s'.\n", "ingress-nginx-controller", "ingress-nginx")

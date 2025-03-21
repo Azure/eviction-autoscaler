@@ -187,27 +187,27 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			verifyPdbWatcherExists := func() error {
+			verifyEvictionAutoScalerExists := func() error {
 				gvr := schema.GroupVersionResource{
-					Group:    "apps.mydomain.com", // API group for your custom resource
-					Version:  "v1",                // API version for the custom resource
-					Resource: "pdbwatchers",       // Resource name (plural form of your custom resource)
+					Group:    "eviction-autoscaler.azure.com", // API group for your custom resource
+					Version:  "v1",                            // API version for the custom resource
+					Resource: "evictionautoscalers",           // Resource name (plural form of your custom resource)
 				}
-				pdbWatcherList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
+				evictionAutoScalerList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
 					v1.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
-				fmt.Printf("found %d pdbwatchers in namespace ingress-nginx \n", len(pdbWatcherList.Items))
-				for _, resource := range pdbWatcherList.Items {
-					fmt.Printf("found pdbwatcher name: %s \n", resource.GetName())
+				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
+				for _, resource := range evictionAutoScalerList.Items {
+					fmt.Printf("found evictionautoscaler name: %s \n", resource.GetName())
 					if resource.GetName() != "ingress-nginx-controller" {
-						return fmt.Errorf("nginx pdbwatcher is not present on cluster")
+						return fmt.Errorf("nginx evictionautoscalers is not present on cluster")
 					}
 					fmt.Printf("custom resource found: %s", resource.GetName())
 				}
 				return nil
 			}
 			EventuallyWithOffset(1, verifyPdbExists, time.Minute, time.Second).Should(Succeed())
-			EventuallyWithOffset(1, verifyPdbWatcherExists, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyEvictionAutoScalerExists, time.Minute, time.Second).Should(Succeed())
 
 			By("By Cordoning " + nodeName)
 			// Cordon and drain the node that the controller-manager pod is running on
@@ -319,23 +319,23 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			verifyPdbWatcherNotExists := func() error {
+			verifyEvictionAutoScalerNotExists := func() error {
 				gvr := schema.GroupVersionResource{
-					Group:    "apps.mydomain.com", // API group for your custom resource
-					Version:  "v1",                // API version for the custom resource
-					Resource: "pdbwatchers",       // Resource name (plural form of your custom resource)
+					Group:    "eviction-autoscaler.azure.com", // API group for your custom resource
+					Version:  "v1",                            // API version for the custom resource
+					Resource: "evictionautoscalers",           // Resource name (plural form of your custom resource)
 				}
-				pdbWatcherList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
+				evictionAutoScalerList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
 					v1.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
-				fmt.Printf("found %d pdbwatchers in namespace ingress-nginx \n", len(pdbWatcherList.Items))
-				if len(pdbWatcherList.Items) != 0 {
-					return fmt.Errorf("nginx pdbwatcher is still present on cluster")
+				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
+				if len(evictionAutoScalerList.Items) != 0 {
+					return fmt.Errorf("nginx evictionautoscaler is still present on cluster")
 				}
 				return nil
 			}
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
-			EventuallyWithOffset(1, verifyPdbWatcherNotExists, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
 		})
 	})
 })

@@ -103,6 +103,12 @@ var _ = Describe("controller", Ordered, func() {
 			err = utils.LoadImageToKindClusterWithName(projectimage, kindClusterName)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
+			By("deploy nginx onto the cluster")
+			cmd = exec.Command("kubectl", "apply", "-f",
+				"https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
 			By("installing CRDs")
 			cmd = exec.Command("make", "install")
 			_, err = utils.Run(cmd)

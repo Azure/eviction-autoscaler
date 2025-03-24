@@ -105,7 +105,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("deploy nginx onto the cluster")
 			cmd = exec.Command("kubectl", "apply", "-f",
-				"https://kind.sigs.k8s.io/examples/ingress/deploy-ingress-nginx.yaml")
+				"test/e2e/deploy-ingress-nginx.yaml")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -126,9 +126,7 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			dynamicClient, err := dynamic.NewForConfig(config)
-			if err != nil {
-				log.Fatalf("Error creating dynamic Kubernetes client: %v", err)
-			}
+			Expect(err).NotTo(HaveOccurred())
 
 			By("validating that the controller-manager pod is running as expected")
 			var nodeName string

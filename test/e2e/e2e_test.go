@@ -142,7 +142,7 @@ var _ = Describe("controller", Ordered, func() {
 					return fmt.Errorf("controller pod in %s status", pods.Items[0].Status.Phase)
 				}
 				fmt.Printf("controller pod %s running on %s\n", pods.Items[0].Name, pods.Items[0].Spec.NodeName)
-				nodeName = pods.Items[0].Spec.NodeName
+
 				return nil
 			}
 			EventuallyWithOffset(1, verifyOneRunningPod, time.Minute, time.Second).Should(Succeed())
@@ -151,7 +151,7 @@ var _ = Describe("controller", Ordered, func() {
 			//var nodeName string
 			verifyOneRunningNginxPod := func() error {
 				pods, err := clientset.CoreV1().Pods("ingress-nginx").List(ctx, v1.ListOptions{
-					LabelSelector: "app.kubernetes.io/component=controller", Limit: 1,
+					Limit: 1,
 				})
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if len(pods.Items) != 1 {
@@ -161,7 +161,7 @@ var _ = Describe("controller", Ordered, func() {
 					return fmt.Errorf("nginx pod in %s status", pods.Items[0].Status.Phase)
 				}
 				fmt.Printf("nginx pod %s running on %s\n", pods.Items[0].Name, pods.Items[0].Spec.NodeName)
-				//nodeName = pods.Items[0].Spec.NodeName
+				nodeName = pods.Items[0].Spec.NodeName
 				return nil
 			}
 			EventuallyWithOffset(1, verifyOneRunningNginxPod, time.Minute, time.Second).Should(Succeed())
@@ -173,7 +173,7 @@ var _ = Describe("controller", Ordered, func() {
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
 					fmt.Printf("found pdb name: %s \n", pdb.Name)
-					if pdb.Name != "ingress-nginx-controller" {
+					if pdb.Name != "ingress-nginx" {
 						return fmt.Errorf("nginx pdb is not present on cluster")
 					}
 					if pdb.Spec.MinAvailable != nil {
@@ -197,10 +197,10 @@ var _ = Describe("controller", Ordered, func() {
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				for _, resource := range evictionAutoScalerList.Items {
 					fmt.Printf("found evictionautoscaler name: %s \n", resource.GetName())
-					if resource.GetName() != "ingress-nginx-controller" {
+					if resource.GetName() != "ingress-nginx" {
 						return fmt.Errorf("nginx evictionautoscalers is not present on cluster")
 					}
-					fmt.Printf("custom resource found: %s", resource.GetName())
+					fmt.Printf("custom resource found: %s\n", resource.GetName())
 				}
 				return nil
 			}
@@ -214,6 +214,19 @@ var _ = Describe("controller", Ordered, func() {
 			node.Spec.Unschedulable = true
 			_, err = clientset.CoreV1().Nodes().Update(ctx, node, v1.UpdateOptions{})
 			Expect(err).NotTo(HaveOccurred())
+
+			By("Verifying annotations are added")
+			verifyAnnotationExists := func() error {
+				deployment, err := clientset.AppsV1().Deployments("ingress-nginx").Get(ctx, "ingress-nginx", v1.GetOptions{})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				if val, ok := deployment.Annotations["evictionSurgeReplicas"]; !ok {
+					return fmt.Errorf("Annotation: \"evictionSurgeReplicas\" is not  added")
+				} else {
+					fmt.Printf("Annotation evictionSurgeReplicas has value %s set\n", val)
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, verifyAnnotationExists, time.Minute, time.Second).Should(Succeed())
 
 			By("By Draining " + nodeName)
 			drain := func() error {
@@ -245,22 +258,45 @@ var _ = Describe("controller", Ordered, func() {
 			//check that there are two pods temporarily or does that not matter as long as we successfully evicted?
 			By("Verifying we scale back down")
 			verifyDeploymentReplicas := func() error {
-				deployment, err := clientset.AppsV1().Deployments(namespace).Get(ctx, "controller-manager", v1.GetOptions{})
+				deployment, err := clientset.AppsV1().Deployments("ingress-nginx").Get(ctx, "ingress-nginx", v1.GetOptions{})
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if *deployment.Spec.Replicas != 1 {
-					return fmt.Errorf("got %d controller replicas", *deployment.Spec.Replicas)
+					return fmt.Errorf("got %d controller replicas\n", *deployment.Spec.Replicas)
+				}
+
+				if _, ok := deployment.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("Annotation \"evictionSurgeReplicas\" is not removed\n")
 				}
 				return nil
 			}
 			//have to wait longer than pdbwatchers cooldown
 			EventuallyWithOffset(1, verifyDeploymentReplicas, 2*time.Minute, time.Second).Should(Succeed())
 			By("Verifying we only have one pod left")
-			EventuallyWithOffset(1, verifyOneRunningPod, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, verifyOneRunningNginxPod, time.Minute, time.Second).Should(Succeed())
+
+			By("Verify PDB MinAvailable is Unchanged")
+			verifyMinAvailableUnchanged := func() error {
+				pdbList, err := clientset.PolicyV1().PodDisruptionBudgets("ingress-nginx").List(ctx,
+					v1.ListOptions{Limit: 1})
+				Expect(err).NotTo(HaveOccurred())
+				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
+				for _, pdb := range pdbList.Items {
+					fmt.Printf("found pdb name: %s \n", pdb.Name)
+					if pdb.Spec.MinAvailable != nil {
+						if val := pdb.Spec.MinAvailable.IntValue(); val != 1 {
+							return fmt.Errorf("PDB '%s' has MinAvailable set to %d (not 1)\n", pdb.Name, val)
+						}
+						fmt.Printf("PDB '%s' has MinAvailable set to 1\n", pdb.Name)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, verifyMinAvailableUnchanged, time.Minute, time.Second).Should(Succeed())
 
 			By("Manually scaling Deployment replicas up")
 			scaleNginxReplicas := func() error {
 				cmd := exec.Command("kubectl", "scale", "deployment",
-					"ingress-nginx-controller", "--replicas", "2", "-n", "ingress-nginx")
+					"ingress-nginx", "--replicas", "2", "-n", "ingress-nginx")
 
 				// Run the command and capture the output
 				output, err := cmd.CombinedOutput()
@@ -270,7 +306,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 
 				// Log the output from the command (success message)
-				log.Printf("Scaled deployment %s to %d replicas: %s\n", "ingress-nginx-controller", 2, output)
+				log.Printf("Scaled deployment %s to %d replicas: %s\n", "ingress-nginx", 2, output)
 				return nil
 			}
 			EventuallyWithOffset(1, scaleNginxReplicas, time.Minute, time.Second).Should(Succeed())
@@ -297,13 +333,13 @@ var _ = Describe("controller", Ordered, func() {
 			By("Delete Deployment and verify PDB gets deleted")
 			deleteNginxDeployment := func() error {
 				err = clientset.AppsV1().Deployments("ingress-nginx").
-					Delete(context.TODO(), "ingress-nginx-controller", v1.DeleteOptions{})
+					Delete(context.TODO(), "ingress-nginx", v1.DeleteOptions{})
 				if err != nil {
 					return fmt.Errorf("Error deleting Deployment %s in namespace %s: %v",
-						"ingress-nginx-controller", "ingress-nginx", err)
+						"ingress-nginx", "ingress-nginx", err)
 				}
 
-				fmt.Printf("Deployment '%s' deleted successfully in namespace '%s'.\n", "ingress-nginx-controller", "ingress-nginx")
+				fmt.Printf("Deployment '%s' deleted successfully in namespace '%s'.\n", "ingress-nginx", "ingress-nginx")
 				return nil
 			}
 			EventuallyWithOffset(1, deleteNginxDeployment, time.Minute, time.Second).Should(Succeed())

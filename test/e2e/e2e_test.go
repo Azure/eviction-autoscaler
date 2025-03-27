@@ -19,7 +19,9 @@ package e2e
 import (
 	"context"
 	"fmt"
-
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +32,12 @@ import (
 	policy "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 
+	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // SYNC with kustomize file
@@ -118,22 +119,25 @@ var _ = Describe("controller", Ordered, func() {
 			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
-
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
 			Expect(err).NotTo(HaveOccurred())
-			// create the clientset
-			clientset, err := kubernetes.NewForConfig(config)
-			Expect(err).NotTo(HaveOccurred())
 
-			dynamicClient, err := dynamic.NewForConfig(config)
+			var scheme = runtime.NewScheme()
+			err = types.AddToScheme(scheme)
+			Expect(err).NotTo(HaveOccurred())
+			// create the clientset
+			clientset, err := client.New(config, client.Options{
+				Scheme: scheme,
+			})
+			//clientset, err := kubernetes.NewForConfig(config)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("validating that the controller-manager pod is running as expected")
 			var nodeName string
 			verifyOneRunningPod := func() error {
-				pods, err := clientset.CoreV1().Pods(namespace).List(ctx, v1.ListOptions{
-					LabelSelector: "control-plane=controller-manager", Limit: 1,
-				})
+				var pods *corev1.PodList
+				err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"control-plane": "controller-manager"}, client.Limit(1))
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if len(pods.Items) != 1 {
 					return fmt.Errorf("got %d controller pods", len(pods.Items))
@@ -150,10 +154,10 @@ var _ = Describe("controller", Ordered, func() {
 			By("validating that the nginx pod is running as expected")
 			//var nodeName string
 			verifyOneRunningNginxPod := func() error {
-				pods, err := clientset.CoreV1().Pods("ingress-nginx").List(ctx, v1.ListOptions{
-					Limit: 1,
-				})
+				var pods *corev1.PodList
+				err := clientset.List(ctx, pods, client.InNamespace("ingress-nginx"), client.Limit(1))
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
 				if len(pods.Items) != 1 {
 					return fmt.Errorf("got %d nginx pods", len(pods.Items))
 				}
@@ -167,8 +171,8 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyOneRunningNginxPod, time.Minute, time.Second).Should(Succeed())
 			By("Verify PDB and PDBWatcher exist")
 			verifyPdbExists := func() error {
-				pdbList, err := clientset.PolicyV1().PodDisruptionBudgets("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var pdbList *policy.PodDisruptionBudgetList
+				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
@@ -186,13 +190,8 @@ var _ = Describe("controller", Ordered, func() {
 				return nil
 			}
 			verifyEvictionAutoScalerExists := func() error {
-				gvr := schema.GroupVersionResource{
-					Group:    "eviction-autoscaler.azure.com", // API group for your custom resource
-					Version:  "v1",                            // API version for the custom resource
-					Resource: "evictionautoscalers",           // Resource name (plural form of your custom resource)
-				}
-				evictionAutoScalerList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var evictionAutoScalerList types.EvictionAutoScalerList
+				err = clientset.List(ctx, &evictionAutoScalerList, client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				for _, resource := range evictionAutoScalerList.Items {
@@ -209,15 +208,17 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("By Cordoning " + nodeName)
 			// Cordon and drain the node that the controller-manager pod is running on
-			node, err := clientset.CoreV1().Nodes().Get(ctx, nodeName, v1.GetOptions{})
+			var node *corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, node, &client.GetOptions{})
 			Expect(err).NotTo(HaveOccurred())
 			node.Spec.Unschedulable = true
-			_, err = clientset.CoreV1().Nodes().Update(ctx, node, v1.UpdateOptions{})
+			err = clientset.Update(ctx, node, &client.UpdateOptions{})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("Verifying annotations are added")
 			verifyAnnotationExists := func() error {
-				deployment, err := clientset.AppsV1().Deployments("ingress-nginx").Get(ctx, "ingress-nginx", v1.GetOptions{})
+				var deployment appsv1.Deployment
+				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, &deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if val, ok := deployment.Annotations["evictionSurgeReplicas"]; !ok {
 					return fmt.Errorf("Annotation: \"evictionSurgeReplicas\" is not  added")
@@ -231,10 +232,12 @@ var _ = Describe("controller", Ordered, func() {
 			By("By Draining " + nodeName)
 			drain := func() error {
 				var podsmeta []v1.ObjectMeta
-				namespaces, err := clientset.CoreV1().Namespaces().List(ctx, v1.ListOptions{})
+				var namespaces corev1.NamespaceList
+				err := clientset.List(ctx, &namespaces)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				for _, ns := range namespaces.Items {
-					pods, err := clientset.CoreV1().Pods(ns.Name).List(ctx, v1.ListOptions{FieldSelector: "spec.nodeName=" + nodeName})
+					var pods *corev1.PodList
+					err := clientset.List(ctx, pods, client.InNamespace(ns.String()), client.MatchingFields{"spec.nodeName": nodeName})
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 					for _, p := range pods.Items {
 						podsmeta = append(podsmeta, p.ObjectMeta)
@@ -242,9 +245,10 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				//todo parallize so
 				for _, meta := range podsmeta {
-					err = clientset.PolicyV1().Evictions(meta.Namespace).Evict(ctx, &policy.Eviction{
+					var eviction = policy.Eviction{
 						ObjectMeta: meta,
-					})
+					}
+					err = clientset.Update(ctx, &eviction)
 					if errors.IsTooManyRequests(err) {
 						return fmt.Errorf("failed to evict %s/%s: %v", meta.Namespace, meta.Name, err)
 					}
@@ -256,9 +260,10 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
 			//verify there is always one running pod? other might be terminating/creating so need different
 			//check that there are two pods temporarily or does that not matter as long as we successfully evicted?
+			var deployment appsv1.Deployment
 			By("Verifying we scale back down")
 			verifyDeploymentReplicas := func() error {
-				deployment, err := clientset.AppsV1().Deployments("ingress-nginx").Get(ctx, "ingress-nginx", v1.GetOptions{})
+				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, &deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if *deployment.Spec.Replicas != 1 {
 					return fmt.Errorf("got %d controller replicas\n", *deployment.Spec.Replicas)
@@ -276,8 +281,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Verify PDB MinAvailable is Unchanged")
 			verifyMinAvailableUnchanged := func() error {
-				pdbList, err := clientset.PolicyV1().PodDisruptionBudgets("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var pdbList *policy.PodDisruptionBudgetList
+				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
@@ -313,8 +318,8 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Verify PDB MinAvailable is 2")
 			verifyMinAvailableUpdated := func() error {
-				pdbList, err := clientset.PolicyV1().PodDisruptionBudgets("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var pdbList *policy.PodDisruptionBudgetList
+				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
@@ -332,8 +337,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Delete Deployment and verify PDB gets deleted")
 			deleteNginxDeployment := func() error {
-				err = clientset.AppsV1().Deployments("ingress-nginx").
-					Delete(context.TODO(), "ingress-nginx", v1.DeleteOptions{})
+				err = clientset.Delete(ctx, &deployment)
 				if err != nil {
 					return fmt.Errorf("Error deleting Deployment %s in namespace %s: %v",
 						"ingress-nginx", "ingress-nginx", err)
@@ -344,8 +348,8 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			EventuallyWithOffset(1, deleteNginxDeployment, time.Minute, time.Second).Should(Succeed())
 			verifyPdbNotExists := func() error {
-				pdbList, err := clientset.PolicyV1().PodDisruptionBudgets("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var pdbList *policy.PodDisruptionBudgetList
+				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				if len(pdbList.Items) != 0 {
@@ -354,13 +358,8 @@ var _ = Describe("controller", Ordered, func() {
 				return nil
 			}
 			verifyEvictionAutoScalerNotExists := func() error {
-				gvr := schema.GroupVersionResource{
-					Group:    "eviction-autoscaler.azure.com", // API group for your custom resource
-					Version:  "v1",                            // API version for the custom resource
-					Resource: "evictionautoscalers",           // Resource name (plural form of your custom resource)
-				}
-				evictionAutoScalerList, err := dynamicClient.Resource(gvr).Namespace("ingress-nginx").List(ctx,
-					v1.ListOptions{Limit: 1})
+				var evictionAutoScalerList types.EvictionAutoScalerList
+				err = clientset.List(ctx, &evictionAutoScalerList, client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				if len(evictionAutoScalerList.Items) != 0 {

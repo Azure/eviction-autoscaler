@@ -157,45 +157,37 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(clientset).NotTo(BeNil())
 
 			By("validating that the controller-manager pod is running as expected")
-			var nodeName string
-			verifyRunningPods := func(namespace string, labels client.MatchingLabels, numberOfPods int) error {
+
+			verifyRunningPods := func(namespace string, labels client.MatchingLabels, numberOfPods int) (string, error) {
 				var pods = &corev1.PodList{}
 				err := clientset.List(ctx, pods, client.InNamespace(namespace),
 					labels, client.Limit(1))
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if len(pods.Items) != numberOfPods {
-					return fmt.Errorf("got %s %d pods", pods.Items[0].Name, len(pods.Items))
+					return "", fmt.Errorf("got %s %d pods", pods.Items[0].Name, len(pods.Items))
 				}
 				if pods.Items[0].Status.Phase != "Running" {
-					return fmt.Errorf("%s pod in %s status", pods.Items[0].Name, pods.Items[0].Status.Phase)
+					return "", fmt.Errorf("%s pod in %s status", pods.Items[0].Name, pods.Items[0].Status.Phase)
 				}
 				fmt.Printf("pod %s running on %s\n", pods.Items[0].Name, pods.Items[0].Spec.NodeName)
 
-				return nil
+				return pods.Items[0].Spec.NodeName, nil
 			}
-			verifyControllerMgrPods := verifyRunningPods(namespace, client.MatchingLabels{
-				"control-plane": "controller-manager",
-			}, 1)
+			verifyControllerMgrPods := func() error {
+				_, e := verifyRunningPods(namespace, client.MatchingLabels{
+					"control-plane": "controller-manager",
+				}, 1)
+				return e
+			}
 			EventuallyWithOffset(1, verifyControllerMgrPods, time.Minute, time.Second).Should(Succeed())
 
 			By("validating that the nginx pod is running as expected")
-			//var nodeName string
-			//verifyOneRunningPod := func() error {
-			//	var pods = &corev1.PodList{}
-			//	err := clientset.List(ctx, pods, client.InNamespace("ingress-nginx"), client.Limit(1))
-			//	ExpectWithOffset(1, err).NotTo(HaveOccurred())
-			//
-			//	if len(pods.Items) != 1 {
-			//		return fmt.Errorf("got %d nginx pods", len(pods.Items))
-			//	}
-			//	if pods.Items[0].Status.Phase != "Running" {
-			//		return fmt.Errorf("nginx pod in %s status", pods.Items[0].Status.Phase)
-			//	}
-			//	fmt.Printf("nginx pod %s running on %s\n", pods.Items[0].Name, pods.Items[0].Spec.NodeName)
-			//	nodeName = pods.Items[0].Spec.NodeName
-			//	return nil
-			//}
-			verifyNginxPods := verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1)
+			var nodeName string
+			verifyNginxPods := func() error {
+				nodeName, err = verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1)
+				return err
+			}
+
 			EventuallyWithOffset(1,
 				verifyNginxPods,
 				time.Minute, time.Second).Should(Succeed())
@@ -269,7 +261,6 @@ var _ = Describe("controller", Ordered, func() {
 				err := clientset.List(ctx, namespaces)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				for _, ns := range namespaces.Items {
-					fmt.Printf("List pods in namespace: %s\n", ns.Name)
 					var pods = &corev1.PodList{}
 					err := clientset.List(ctx, pods, client.InNamespace(ns.Name), client.MatchingFields{"spec.nodeName": nodeName})
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())

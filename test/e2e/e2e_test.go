@@ -20,15 +20,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/utils/pointer"
 	"os/exec"
 	"path/filepath"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -41,9 +34,16 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 )
 
 var scheme = runtime.NewScheme()
@@ -193,7 +193,9 @@ var _ = Describe("controller", Ordered, func() {
 			//	nodeName = pods.Items[0].Spec.NodeName
 			//	return nil
 			//}
-			EventuallyWithOffset(1, verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1), time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1,
+				verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1),
+				time.Minute, time.Second).Should(Succeed())
 
 			//this is different than the eviction-autoscaler manager in that the pdb is generated
 			By("Verify PDB and PDBWatcher exist")
@@ -218,7 +220,8 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			verifyEvictionAutoScalerExists := func() error {
 				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
-				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
+				err = clientset.List(ctx, evictionAutoScalerList,
+					client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				for _, resource := range evictionAutoScalerList.Items {
@@ -329,7 +332,7 @@ var _ = Describe("controller", Ordered, func() {
 			scaleNginxReplicas := func() error {
 				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				deployment.Spec.Replicas = pointer.Int32(2)
+				deployment.Spec.Replicas = ptr.To(int32(2))
 				err = clientset.Update(ctx, deployment, &client.UpdateOptions{})
 				Expect(err).NotTo(HaveOccurred())
 				return nil
@@ -358,7 +361,8 @@ var _ = Describe("controller", Ordered, func() {
 			By("Verify Eviction Autoscaler MinAvailable is not updated")
 			verifyEvictionAutoScalerNotUpdated := func() error {
 				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
-				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
+				err = clientset.List(ctx, evictionAutoScalerList,
+					client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				for _, resource := range evictionAutoScalerList.Items {

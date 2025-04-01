@@ -172,9 +172,10 @@ var _ = Describe("controller", Ordered, func() {
 
 				return nil
 			}
-			EventuallyWithOffset(1, verifyRunningPods(namespace, client.MatchingLabels{
+			verifyControllerMgrPods := verifyRunningPods(namespace, client.MatchingLabels{
 				"control-plane": "controller-manager",
-			}, 1), time.Minute, time.Second).Should(Succeed())
+			}, 1)
+			EventuallyWithOffset(1, verifyControllerMgrPods, time.Minute, time.Second).Should(Succeed())
 
 			By("validating that the nginx pod is running as expected")
 			//var nodeName string
@@ -193,8 +194,9 @@ var _ = Describe("controller", Ordered, func() {
 			//	nodeName = pods.Items[0].Spec.NodeName
 			//	return nil
 			//}
+			verifyNginxPods := verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1)
 			EventuallyWithOffset(1,
-				verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1),
+				verifyNginxPods,
 				time.Minute, time.Second).Should(Succeed())
 
 			//this is different than the eviction-autoscaler manager in that the pdb is generated

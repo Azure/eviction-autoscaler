@@ -149,11 +149,12 @@ var _ = Describe("controller", Ordered, func() {
 			clientset, err := client.New(config, client.Options{
 				Scheme: scheme,
 			})
+			Expect(err).NotTo(HaveOccurred())
 			// To-Do: try to figure out why usig clientset for evictions results in following err
 			// \"no matches for kind "Eviction" in version \"policy/v1\""
 			evictionClient, err := kubernetes.NewForConfig(config)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(clientset).NotTo(Equal(nil))
+			Expect(clientset).NotTo(BeNil())
 
 			By("validating that the controller-manager pod is running as expected")
 			var nodeName string
@@ -309,7 +310,9 @@ var _ = Describe("controller", Ordered, func() {
 			//have to wait longer than pdbwatchers cooldown
 			EventuallyWithOffset(1, verifyDeploymentReplicas, 2*time.Minute, time.Second).Should(Succeed())
 			By("Verifying we only have one pod left")
-			EventuallyWithOffset(1, verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1), time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1,
+				verifyNginxPods,
+				time.Minute, time.Second).Should(Succeed())
 
 			By("Verify PDB MinAvailable is Unchanged")
 			verifyMinAvailableUnchanged := func() error {
@@ -403,7 +406,8 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			verifyEvictionAutoScalerNotExists := func() error {
 				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
-				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
+				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace("ingress-nginx"),
+					&client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				if len(evictionAutoScalerList.Items) != 0 {

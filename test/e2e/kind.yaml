@@ -4,4 +4,6 @@ nodes:
   - role: control-plane
     image: kindest/node:v1.30.2
   - role: worker
+    image: kindest/node:v1.30.2
   - role: worker
+    image: kindest/node:v1.30.2

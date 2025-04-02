@@ -145,7 +145,6 @@ func main() {
 	}
 	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
 
-	/* disable because it was breaking e2e by updating pdb minavailbe to 2
 	if err = (&controllers.DeploymentToPDBReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
@@ -154,7 +153,6 @@ func main() {
 		os.Exit(1)
 	}
 	setupLog.Info("DeploymentToPDBReconciler  setup completed")
-	*/
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),

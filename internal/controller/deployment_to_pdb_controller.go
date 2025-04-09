@@ -45,6 +45,29 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// If the Deployment is created, ensure a PDB exists
 	return r.handleDeploymentReconcile(ctx, &deployment)
 }
+func surgeOnly(d *v1.Deployment) bool {
+	if d.Spec.Strategy.RollingUpdate == nil { //strategy is defaulted on so can't be nil
+		//but it could be recreate
+		return false
+	}
+
+	//can max surge be set to zero when max unavailable is also zero?
+	if d.Spec.Strategy.RollingUpdate.MaxSurge == nil || d.Spec.Strategy.RollingUpdate.MaxSurge.IntValue() == 0 {
+		return false
+	}
+
+	return d.Spec.Strategy.RollingUpdate.MaxUnavailable == nil ||
+		d.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue() == 0
+}
+
+func ownedByDeployUID(pdb *policyv1.PodDisruptionBudget, d *v1.Deployment) bool {
+	for _, o := range pdb.ObjectMeta.OwnerReferences {
+		if o.UID == d.UID {
+			return true
+		}
+	}
+	return false
+}
 
 // handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
 func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
@@ -58,6 +81,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+
 	for _, pdb := range pdbList.Items {
 		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 		if err != nil {
@@ -65,6 +89,13 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		}
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
+
+			if !surgeOnly(deployment) && ownedByDeployUID(&pdb, deployment) {
+				if err := r.Delete(ctx, &pdb); err != nil {
+					log.Error(err, "unable to delete PDB", "namespace", pdb.Namespace, "name", pdb.Name)
+					return reconcile.Result{}, err
+				}
+			}
 
 			// PDB already exists, nothing to do
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)

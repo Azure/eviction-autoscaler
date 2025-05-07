@@ -1,0 +1,215 @@
+version: '3'
+
+# ----- Global vars (can be overridden at the CLI) ---------------------------
+vars:
+  IMG:                       '{{default .IMG "controller:latest"}}'
+  ENVTEST_K8S_VERSION:       '{{default .ENVTEST_K8S_VERSION "1.32.0"}}'
+
+  # Binaries & versions
+  LOCALBIN:                  '{{default .LOCALBIN (printf "%s/bin" .TASKFILE_DIR)}}'
+  KUBECTL:                   '{{default .KUBECTL "kubectl"}}'
+  KUSTOMIZE_VERSION:         '{{default .KUSTOMIZE_VERSION "v5.4.1"}}'
+  KIND_VERSION:              '{{default .KIND "v0.27.0"}}'
+  CONTROLLER_TOOLS_VERSION:  '{{default .CONTROLLER_TOOLS_VERSION "v0.15.0"}}'
+  ENVTEST_VERSION:           '{{default .ENVTEST_VERSION "release-0.19"}}'
+  GOLANGCI_LINT_VERSION:     '{{default .GOLANGCI_LINT_VERSION "v2.1.5"}}'
+  PLATFORMS:                 '{{default .PLATFORMS "linux/arm64,linux/amd64,linux/s390x,linux/ppc64le"}}'
+  CONTAINER_TOOL:            '{{default .CONTAINER_TOOL "docker"}}'
+
+  # Computed tool paths
+  KUSTOMIZE:      '{{.LOCALBIN}}/kustomize-{{.KUSTOMIZE_VERSION}}'
+  KIND:      '{{.LOCALBIN}}/kind-{{.KIND_VERSION}}'
+  CONTROLLER_GEN: '{{.LOCALBIN}}/controller-gen-{{.CONTROLLER_TOOLS_VERSION}}'
+  ENVTEST:        '{{.LOCALBIN}}/setup-envtest-{{.ENVTEST_VERSION}}'
+  GOLANGCI_LINT:  '{{.LOCALBIN}}/golangci-lint-{{.GOLANGCI_LINT_VERSION}}'
+
+  # Common shell flags
+  SHFLAGS:        '-ecuo pipefail'
+
+# Set bash everywhere so recipes match Makefile semantics
+env:
+  SHELL: /usr/bin/env bash
+
+# The default task if you just run `task`
+tasks:
+  default:
+    deps: [build]
+    silent: true
+
+# ----------------------- Development ---------------------------------------
+  help:
+    desc: Display help (Task inherently shows task list with descriptions)
+    cmds: ["task --list-all"]
+
+  manifests:
+    desc: Generate webhook, CRDs, RBAC
+    deps: [controller-gen]
+    cmds:
+      - '{{.CONTROLLER_GEN}} rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases'
+
+  generate:
+    desc: Generate deepcopy code
+    deps: [controller-gen]
+    cmds:
+      - '{{.CONTROLLER_GEN}} object:headerFile="hack/boilerplate.go.txt" paths="./..."'
+
+  fmt:
+    desc: go fmt
+    cmds: ["go fmt ./..."]
+
+  vet:
+    desc: go vet
+    cmds: ["go vet ./..."]
+
+  test:
+    desc: Unit tests
+    deps: [manifests, generate, fmt, vet, envtest]
+    cmds:
+      - |
+        KUBEBUILDER_ASSETS="$({{.ENVTEST}} use {{.ENVTEST_K8S_VERSION}} --bin-dir {{.LOCALBIN}} -p path)" \
+        go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+
+  test-e2e:
+    desc: e2e tests (Kind)
+    deps: [kind]
+    cmds: ["go test ./test/e2e/ -v -ginkgo.v"]
+
+  lint:
+    desc: golangci‑lint
+    deps: [golangci-lint]
+    cmds: ['{{.GOLANGCI_LINT}} run ./...']
+
+  lint-fix:
+    desc: golangci‑lint (auto‑fix)
+    deps: [golangci-lint]
+    cmds: ['{{.GOLANGCI_LINT}} run --fix']
+
+# ----------------------- Build ---------------------------------------------
+  build:
+    desc: Build manager binary
+    deps: [manifests, generate, fmt, vet]
+    cmds: ['go build -o bin/manager cmd/main.go']
+
+  run:
+    desc: Run controller locally
+    deps: [manifests, generate, fmt, vet]
+    cmds: ['go run ./cmd/main.go']
+
+  docker-build:
+    desc: Build image
+    cmds: ['{{.CONTAINER_TOOL}} build -t {{.IMG}} .']
+
+  docker-push:
+    desc: Push image
+    cmds: ['{{.CONTAINER_TOOL}} push {{.IMG}}']
+
+  docker-buildx:
+    desc: Buildx multi‑arch image
+    cmds:
+      - |
+        sed -e '1 s/^FROM/FROM --platform=${BUILDPLATFORM}/' Dockerfile > Dockerfile.cross
+      - "- {{.CONTAINER_TOOL}} buildx create --name k8s-pdb-autoscaler-builder || true"
+      - "{{.CONTAINER_TOOL}} buildx use k8s-pdb-autoscaler-builder"
+      - "{{.CONTAINER_TOOL}} buildx build --push --platform={{.PLATFORMS}} --tag {{.IMG}} -f Dockerfile.cross ."
+      - "{{.CONTAINER_TOOL}} buildx rm k8s-pdb-autoscaler-builder"
+      - rm Dockerfile.cross
+
+  build-installer:
+    desc: Produce dist/install.yaml
+    deps: [manifests, generate, kustomize]
+    cmds:
+      - mkdir -p dist
+      - |
+        cd config/manager && {{.KUSTOMIZE}} edit set image paulgmiller/k8s-pdb-autoscaler={{.IMG}}
+      - '{{.KUSTOMIZE}} build config/default > dist/install.yaml'
+
+# ----------------------- Deployment ----------------------------------------
+  install:
+    desc: Install CRDs
+    deps: [manifests, kustomize]
+    cmds:
+      - '{{.KUSTOMIZE}} build config/crd | {{.KUBECTL}} apply -f -'
+
+  uninstall:
+    desc: Uninstall CRDs (set ignore-not-found=true to ignore missing)
+    deps: [manifests, kustomize]
+    cmds:
+      - |
+        {{.KUSTOMIZE}} build config/crd | \
+        {{.KUBECTL}} delete --ignore-not-found=${ignore-not-found:-false} -f -
+
+  deploy:
+    desc: Deploy controller
+    deps: [manifests, kustomize]
+    cmds:
+      - |
+        cd config/manager && {{.KUSTOMIZE}} edit set image paulgmiller/k8s-pdb-autoscaler={{.IMG}}
+      - '{{.KUSTOMIZE}} build config/default | {{.KUBECTL}} apply -f -'
+
+  undeploy:
+    desc: Remove controller (set ignore-not-found=true to ignore missing)
+    deps: [kustomize]
+    cmds:
+      - |
+        {{.KUSTOMIZE}} build config/default | \
+        {{.KUBECTL}} delete --ignore-not-found=${ignore-not-found:-false} -f -
+
+# ----------------------- Tool Download Helpers -----------------------------
+  kustomize:
+    internal: true
+    deps: [ensure-localbin]
+    status:
+      - test -f "{{.KUSTOMIZE}}"
+    cmds:
+      - |
+        echo "Downloading kustomize {{.KUSTOMIZE_VERSION}}"
+        GOBIN={{.LOCALBIN}} \
+        go install sigs.k8s.io/kustomize/kustomize/v5@{{.KUSTOMIZE_VERSION}}
+      - mv "{{.LOCALBIN}}/kustomize" "{{.KUSTOMIZE}}"
+    
+  kind:
+    internal: true
+    deps: [ensure-localbin]
+    status: ['test -f "{{.KIND}}"']
+    cmds:
+      - |
+        echo "Downloading kind {{.KIND_VERSION}}"
+        GOBIN={{.LOCALBIN}} \
+        go install sigs.k8s.io/kind@{{.KIND_VERSION}}
+      - mv "{{.LOCALBIN}}/kind" "{{.KIND}}"
+
+  controller-gen:
+    internal: true
+    deps: [ensure-localbin]
+    status: ['test -f "{{.CONTROLLER_GEN}}"']
+    cmds:
+      - |
+        echo "Downloading controller-gen {{.CONTROLLER_TOOLS_VERSION}}"
+        GOBIN={{.LOCALBIN}} \
+        go install sigs.k8s.io/controller-tools/cmd/controller-gen@{{.CONTROLLER_TOOLS_VERSION}}
+      - mv "{{.LOCALBIN}}/controller-gen" "{{.CONTROLLER_GEN}}"
+
+  envtest:
+    internal: true
+    deps: [ensure-localbin]
+    status: ['test -f "{{.ENVTEST}}"']
+    cmds:
+      - |
+        echo "Downloading setup-envtest {{.ENVTEST_VERSION}}"
+        GOBIN={{.LOCALBIN}} \
+        go install sigs.k8s.io/controller-runtime/tools/setup-envtest@{{.ENVTEST_VERSION}}
+      - mv "{{.LOCALBIN}}/setup-envtest" "{{.ENVTEST}}"
+
+  golangci-lint:
+    internal: true
+    deps: [ensure-localbin]
+    status: ['test -f "{{.GOLANGCI_LINT}}"']
+    cmds:
+      - |
+        echo "Downloading golangci-lint {{.GOLANGCI_LINT_VERSION}}"
+        curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b {{.LOCALBIN}} {{.GOLANGCI_LINT_VERSION}}
+      - mv "{{.LOCALBIN}}/golangci-lint" "{{.GOLANGCI_LINT}}"
+
+  ensure-localbin:
+    internal: true
+    cmds: ['mkdir -p "{{.LOCALBIN}}"']

@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -60,6 +61,16 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
+
+func getImageFromEnvVars() (string, bool) {
+	img := os.Getenv("IMG")
+	tag := os.Getenv("TAG")
+	registry := os.Getenv("REGISTRY")
+	if img == "" || tag == "" || registry == "" {
+		return "evictionautoscaler:e2etest", false
+	}
+	return fmt.Sprintf("%s/%s:%s", registry, img, tag), true
+}
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
@@ -116,19 +127,21 @@ var _ = Describe("controller", Ordered, func() {
 			var err error
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = "evictionautoscaler:e2etest"
+			var projectimage, imageCreated = getImageFromEnvVars()
 
-			By("building the manager(Operator) image")
-			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
-			_, err = utils.Run(cmd)
-			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			if !imageCreated {
+				By("building the manager(Operator) image")
+				cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
+				_, err = utils.Run(cmd)
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
 
 			By("loading the the manager(Operator) image on Kind")
 			err = utils.LoadImageToKindClusterWithName(projectimage, kindClusterName)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("deploy nginx onto the cluster")
-			cmd = exec.Command("kubectl", "apply", "-f",
+			cmd := exec.Command("kubectl", "apply", "-f",
 				"test/e2e/deploy-ingress-nginx.yaml")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())

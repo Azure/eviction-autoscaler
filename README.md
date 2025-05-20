@@ -73,6 +73,13 @@ cd k8s-pdb-autoscaler
 hack/install.sh
 ```
 
+Alternatively, you can enable the controller to self-install its CRDs by setting the `--install-crds` flag to `true` in the deployment manifest. This simplifies installation by eliminating the need for manual CRD installation, but grants the controller additional privileges.
+
+To enable CRD self-installation, uncomment this line in `config/manager/manager.yaml`:
+```yaml
+# - --install-crds=true
+```
+
 TODO Add configuration options. Figure out if we want kustomize used for e2e to be installer.
 
 ## Usage

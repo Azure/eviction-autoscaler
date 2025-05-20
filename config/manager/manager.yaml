@@ -63,6 +63,8 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          # Uncomment the following line to enable self-installation of CRDs
+          # - --install-crds=true
         image: paulgmiller/k8s-pdb-autoscaler:latest
         name: manager
         imagePullPolicy: IfNotPresent

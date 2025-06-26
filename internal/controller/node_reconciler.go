@@ -5,6 +5,7 @@ import (
 	"time"
 
 	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -52,6 +53,11 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	if !node.Spec.Unschedulable {
 		return ctrl.Result{}, err
 	}
+
+	// Track node cordoning events
+	metrics.IncrementNodeCordoningCount(node.Name, true)
+	logger.Info("Node is cordoned", "node", node.Name)
+
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
 		return ctrl.Result{}, err
@@ -99,6 +105,10 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		if applicableEvictionAutoScaler == nil {
 			continue
 		}
+
+		// Track eviction and node drain events
+		metrics.IncrementEvictionCount(pod.Namespace, pod.Name)
+		metrics.IncrementNodeDrainCount(node.Name, pod.Name, pod.Namespace)
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,22 @@ type DeploymentToPDBReconciler struct {
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 
+// ignoredNamespaces lists namespaces for which the DeploymentToPDBReconciler
+// should NOT attempt to create or manage PodDisruptionBudgets. These typically
+// contain system workloads that already ship with their own PDBs. Creating an
+// additional PDB for them results in the "more than one PodDisruptionBudget"
+// eviction error during drains.
+var ignoredNamespaces = map[string]struct{}{
+	"kube-system":         {},
+	"monitoring":          {},
+	"eviction-autoscaler": {}, // the controller-manager already declares its own PDB via manifests
+}
+
+func isIgnoredNamespace(ns string) bool {
+	_, ok := ignoredNamespaces[ns]
+	return ok
+}
+
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -42,6 +59,17 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, err
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
+
+	// Skip namespaces that are known to manage their own PodDisruptionBudgets.
+	if isIgnoredNamespace(deployment.Namespace) {
+		log.Info("Skipping PDB reconciliation for system namespace", "namespace", deployment.Namespace)
+		return reconcile.Result{}, nil
+	}
+
+	// Update deployment metrics - for simplicity, we'll mark this deployment as can_create_pdb=true
+	// since we're in the flow where we might create a PDB
+	metrics.UpdateDeploymentCount(deployment.Namespace, true, 1)
+
 	// If the Deployment is created, ensure a PDB exists
 	return r.handleDeploymentReconcile(ctx, &deployment)
 }
@@ -112,6 +140,10 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 	if err := r.Create(ctx, pdb); err != nil {
 		return reconcile.Result{}, err
 	}
+
+	// Track PDB creation
+	metrics.IncrementPDBCreationCount(deployment.Namespace, deployment.Name)
+
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 	return reconcile.Result{}, nil
 }

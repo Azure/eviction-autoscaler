@@ -159,6 +159,12 @@ const (
 	PDBNotCreatedByUs = false
 )
 
+// Constants for deployment tracking
+const (
+	CanCreatePDB    = true
+	CannotCreatePDB = false
+)
+
 func init() {
 	// Register metrics with controller-runtime's registry
 	metrics.Registry.MustRegister(

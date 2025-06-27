@@ -60,12 +60,12 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
 func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
-	
+
 	// Check if we've already counted this deployment
 	if _, counted := deployment.Annotations[deploymentCountedAnnotation]; !counted {
 		// First time seeing this deployment (increment)
 		metrics.IncrementDeploymentCount(deployment.Namespace, metrics.CanCreatePDB)
-		
+
 		// Mark it as counted
 		if deployment.Annotations == nil {
 			deployment.Annotations = make(map[string]string)

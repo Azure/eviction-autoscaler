@@ -73,25 +73,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Track the max unavailable value from the PDB
-	maxUnavailable := int32(0)
-	if pdb.Spec.MaxUnavailable != nil {
-		maxUnavailable = pdb.Spec.MaxUnavailable.IntVal
-	}
-	metrics.UpdateMaxUnavailable(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), float64(maxUnavailable))
-
-	// Check if minAvailable equals replicas (indicating PDB might be too strict)
-	minAvailable := int32(0)
-	if pdb.Spec.MinAvailable != nil {
-		minAvailable = pdb.Spec.MinAvailable.IntVal
-	}
-	currentReplicas := target.GetReplicas()
-	if minAvailable == currentReplicas {
-		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 1)
-	} else {
-		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 0)
-	}
-
 	if EvictionAutoScaler.Spec.TargetName == "" {
 		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
@@ -114,6 +95,25 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Track the max unavailable value from the PDB
+	maxUnavailable := int32(0)
+	if pdb.Spec.MaxUnavailable != nil {
+		maxUnavailable = pdb.Spec.MaxUnavailable.IntVal
+	}
+	metrics.UpdateMaxUnavailable(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), float64(maxUnavailable))
+
+	// Check if minAvailable equals replicas (indicating PDB might be too strict)
+	minAvailable := int32(0)
+	if pdb.Spec.MinAvailable != nil {
+		minAvailable = pdb.Spec.MinAvailable.IntVal
+	}
+	currentReplicas := target.GetReplicas()
+	if minAvailable == currentReplicas {
+		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 1)
+	} else {
+		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 0)
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
@@ -144,7 +144,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
 
 		// Track eviction in metrics
-		metrics.IncrementEvictionCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.LastEviction.PodName)
+		metrics.IncrementEvictionCount(EvictionAutoScaler.Namespace)
 
 		// Check pod readiness and age to determine if scaling would help
 		podList := &v1.PodList{}
@@ -172,7 +172,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
 
 		// Track blocked eviction if the PDB is blocking the eviction
-		metrics.IncrementBlockedEvictionCount(EvictionAutoScaler.Namespace, pdb.Name, EvictionAutoScaler.Spec.LastEviction.PodName)
+		metrics.IncrementBlockedEvictionCount(EvictionAutoScaler.Namespace, pdb.Name)
 
 		// Track scaling opportunity
 		metrics.IncrementScalingOpportunityCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_up")

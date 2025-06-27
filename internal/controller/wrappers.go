@@ -70,6 +70,16 @@ func (d *DeploymentWrapper) RemoveAnnotation(status string) {
 	}
 }
 
+// GetSelector returns the label selector for the deployment
+func (d *DeploymentWrapper) GetSelector() *metav1.LabelSelector {
+	return d.obj.Spec.Selector
+}
+
+// GetName returns the name of the deployment
+func (d *DeploymentWrapper) GetName() string {
+	return d.obj.Name
+}
+
 type StatefulSetWrapper struct {
 	obj *v1.StatefulSet
 }
@@ -121,4 +131,14 @@ func (s *StatefulSetWrapper) RemoveAnnotation(status string) {
 	if s.obj.Annotations != nil {
 		delete(s.obj.Annotations, status)
 	}
+}
+
+// GetSelector returns the label selector for the statefulset
+func (s *StatefulSetWrapper) GetSelector() *metav1.LabelSelector {
+	return s.obj.Spec.Selector
+}
+
+// GetName returns the name of the statefulset
+func (s *StatefulSetWrapper) GetName() string {
+	return s.obj.Name
 }

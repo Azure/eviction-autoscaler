@@ -47,14 +47,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		return reconcile.Result{}, err
 	}
 
-	// Update PDB metrics - check if this PDB was created by our deployment controller
-	createdByUs := false
-	if annotations := pdb.GetAnnotations(); annotations != nil {
-		if createdBy, exists := annotations["createdBy"]; exists && createdBy == "DeploymentToPDBController" {
-			createdByUs = true
-		}
+	// Update PDB metrics to check if this PDB was created by our deployment controller
+	createdByUs := metrics.PDBNotCreatedByUs
+	if ann, ok := pdb.Annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
+		createdByUs = metrics.PDBCreatedByUs
 	}
-	metrics.UpdatePDBCount(pdb.Namespace, createdByUs, 1)
+	metrics.IncrementPDBProcessedCount(pdb.Namespace, createdByUs)
 
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
 	var EvictionAutoScaler types.EvictionAutoScaler

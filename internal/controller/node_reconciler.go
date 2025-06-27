@@ -108,7 +108,6 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		// Track eviction and node drain events
 		metrics.IncrementEvictionCount(pod.Namespace, pod.Name)
-		metrics.IncrementNodeDrainCount(node.Name, pod.Name, pod.Namespace)
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
@@ -147,9 +146,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &v1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
 		// Extract the spec.nodeName field
-		pod := rawObj.(*corev1.Pod)
+		pod := rawObj.(*v1.Pod)
 		if pod.Spec.NodeName == "" {
 			return nil // Don't index Pods without a NodeName
 		}
@@ -159,7 +158,7 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&corev1.Node{}).
+		For(&v1.Node{}).
 		WithEventFilter(predicate.Funcs{
 			// ignore status updates as we only care about cordon.
 			UpdateFunc: func(ue event.UpdateEvent) bool {

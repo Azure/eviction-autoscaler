@@ -32,21 +32,7 @@ type DeploymentToPDBReconciler struct {
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 
-// ignoredNamespaces lists namespaces for which the DeploymentToPDBReconciler
-// should NOT attempt to create or manage PodDisruptionBudgets. These typically
-// contain system workloads that already ship with their own PDBs. Creating an
-// additional PDB for them results in the "more than one PodDisruptionBudget"
-// eviction error during drains.
-var ignoredNamespaces = map[string]struct{}{
-	"kube-system":         {},
-	"monitoring":          {},
-	"eviction-autoscaler": {}, // the controller-manager already declares its own PDB via manifests
-}
-
-func isIgnoredNamespace(ns string) bool {
-	_, ok := ignoredNamespaces[ns]
-	return ok
-}
+const deploymentCountedAnnotation = "eviction-autoscaler.azure.com/counted"
 
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
@@ -56,19 +42,16 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
-		return reconcile.Result{}, err
+		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
 
-	// Skip namespaces that are known to manage their own PodDisruptionBudgets.
-	if isIgnoredNamespace(deployment.Namespace) {
-		log.Info("Skipping PDB reconciliation for system namespace", "namespace", deployment.Namespace)
+	// check if deployment is being deleted:
+	if !deployment.DeletionTimestamp.IsZero() {
+		// Deployment is being deleted
+		metrics.DecrementDeploymentCount(deployment.Namespace, metrics.CanCreatePDB)
 		return reconcile.Result{}, nil
 	}
-
-	// Update deployment metrics - for simplicity, we'll mark this deployment as can_create_pdb=true
-	// since we're in the flow where we might create a PDB
-	metrics.UpdateDeploymentCount(deployment.Namespace, true, 1)
 
 	// If the Deployment is created, ensure a PDB exists
 	return r.handleDeploymentReconcile(ctx, &deployment)
@@ -77,8 +60,23 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 // handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
 func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
-	// Check if PDB already exists for this Deployment
+	
+	// Check if we've already counted this deployment
+	if _, counted := deployment.Annotations[deploymentCountedAnnotation]; !counted {
+		// First time seeing this deployment (increment)
+		metrics.IncrementDeploymentCount(deployment.Namespace, metrics.CanCreatePDB)
+		
+		// Mark it as counted
+		if deployment.Annotations == nil {
+			deployment.Annotations = make(map[string]string)
+		}
+		deployment.Annotations[deploymentCountedAnnotation] = "true"
+		if err := r.Update(ctx, deployment); err != nil {
+			return reconcile.Result{}, err
+		}
+	}
 
+	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
 		Namespace: deployment.Namespace,
@@ -93,6 +91,12 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		}
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
+			// Track the PDB (check if it was created by us)
+			createdByUs := metrics.PDBNotCreatedByUs
+			if ann, ok := pdb.Annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
+				createdByUs = metrics.PDBCreatedByUs
+			}
+			metrics.IncrementPDBCount(pdb.Namespace, createdByUs)
 
 			// PDB already exists, nothing to do
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
@@ -142,6 +146,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 	}
 
 	// Track PDB creation
+	metrics.IncrementPDBCount(pdb.Namespace, metrics.PDBCreatedByUs)
 	metrics.IncrementPDBCreationCount(deployment.Namespace, deployment.Name)
 
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)

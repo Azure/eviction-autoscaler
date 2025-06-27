@@ -12,6 +12,7 @@ import (
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 
 	//v1 "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -72,6 +73,25 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	// Track the max unavailable value from the PDB
+	maxUnavailable := int32(0)
+	if pdb.Spec.MaxUnavailable != nil {
+		maxUnavailable = pdb.Spec.MaxUnavailable.IntVal
+	}
+	metrics.UpdateMaxUnavailable(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), float64(maxUnavailable))
+
+	// Check if minAvailable equals replicas (indicating PDB might be too strict)
+	minAvailable := int32(0)
+	if pdb.Spec.MinAvailable != nil {
+		minAvailable = pdb.Spec.MinAvailable.IntVal
+	}
+	currentReplicas := target.GetReplicas()
+	if minAvailable == currentReplicas {
+		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 1)
+	} else {
+		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 0)
+	}
+
 	if EvictionAutoScaler.Spec.TargetName == "" {
 		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
@@ -98,26 +118,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
-		// Check if this change was made by us using the surge annotation
-		annotations := target.Obj().GetAnnotations()
-		surgeAnnotationExists := false
-		if annotations != nil {
-			_, surgeAnnotationExists = annotations[EvictionSurgeReplicasAnnotationKey]
-		}
-
-		if !surgeAnnotationExists {
-			// The resource version has changed and it wasn't our change, which means someone else has modified the Target.
-			// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
-			logger.Info("Target resource version changed by external actor, resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
-			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-			EvictionAutoScaler.Status.MinReplicas = target.GetReplicas()
-			ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
-			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
-		} else {
-			// This was our change, just update the generation without resetting minReplicas
-			logger.Info("Target resource version changed by eviction autoscaler, updating generation", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
-			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		}
+		logger.Info("Target resource version changed reseting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
+		// The resource version has changed, which means someone else has modified the Target.
+		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
+		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+		EvictionAutoScaler.Status.MinReplicas = target.GetReplicas()
+		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
 
 	// Log current state before checks
@@ -130,11 +137,42 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
+	// Check if there's a new eviction that hasn't been processed yet
+	if EvictionAutoScaler.Spec.LastEviction.EvictionTime != EvictionAutoScaler.Status.LastEviction.EvictionTime {
+		logger.Info("Detected new eviction",
+			"podName", EvictionAutoScaler.Spec.LastEviction.PodName,
+			"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
+
+		// Track eviction in metrics
+		metrics.IncrementEvictionCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.LastEviction.PodName)
+
+		// Check pod readiness and age to determine if scaling would help
+		podList := &v1.PodList{}
+		if err := r.List(ctx, podList, client.InNamespace(EvictionAutoScaler.Namespace),
+			client.MatchingLabels(target.GetSelector().MatchLabels)); err == nil {
+
+			oldNotReadyCount := 0
+			for _, pod := range podList.Items {
+				// Check if pod is old and not ready
+				if time.Since(pod.CreationTimestamp.Time) > 5*time.Minute && !isPodReady(&pod) {
+					oldNotReadyCount++
+				}
+			}
+
+			// Determine if scaling would likely help based on the pattern
+			likelyToHelp := oldNotReadyCount > 0 && oldNotReadyCount < len(podList.Items)
+			metrics.UpdateOldNotReadyPods(EvictionAutoScaler.Namespace, target.GetName(), likelyToHelp, float64(oldNotReadyCount))
+		}
+	}
+
 	//if we're not scaled up and theres new evictions we haven't proceesed
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
 		// TODO later. Surge more slowly based on number of evitions (need to move back to capturing them all)
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
+
+		// Track blocked eviction if the PDB is blocking the eviction
+		metrics.IncrementBlockedEvictionCount(EvictionAutoScaler.Namespace, pdb.Name, EvictionAutoScaler.Spec.LastEviction.PodName)
 
 		// Track scaling opportunity
 		metrics.IncrementScalingOpportunityCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_up")
@@ -277,4 +315,13 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 
 	panic("must be string or int")
 
+}
+
+func isPodReady(pod *v1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	return false
 }

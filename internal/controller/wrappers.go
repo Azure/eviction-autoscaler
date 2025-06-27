@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -17,6 +18,8 @@ type Surger interface {
 	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 	AddAnnotation(string, string)
 	RemoveAnnotation(string)
+	GetName() string
+	GetSelector() *metav1.LabelSelector
 }
 
 // Todo change casing to match k8s?

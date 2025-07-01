@@ -1,5 +1,5 @@
 # Adds namespace to all resources.
-namespace: eviction-autoscaler
+namespace: kube-system
 
 # Value of this field is prepended to the
 # names of all resources, e.g. a deployment named
@@ -25,7 +25,7 @@ resources:
 # [CERTMANAGER] To enable cert-manager, uncomment all sections with 'CERTMANAGER'. 'WEBHOOK' components are required.
 #- ../certmanager
 # [PROMETHEUS] To enable prometheus monitor, uncomment all sections with 'PROMETHEUS'.
-- ../prometheus
+#- ../prometheus
 # [METRICS] To enable the controller manager metrics service, uncomment the following line.
 - metrics_service.yaml
 
@@ -34,9 +34,9 @@ patches:
 # [METRICS] The following patch will enable the metrics endpoint. Ensure that you also protect this endpoint.
 # More info: https://book.kubebuilder.io/reference/metrics
 # If you want to expose the metric endpoint of your controller-manager uncomment the following line.
-- path: manager_metrics_patch.yaml
-  target:
-    kind: Deployment
+#- path: manager_metrics_patch.yaml
+#  target:
+#    kind: Deployment
 
   # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
   # +kubebuilder:scaffold:defaultkustomizewebhookpatch

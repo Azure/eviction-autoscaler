@@ -32,8 +32,6 @@ type DeploymentToPDBReconciler struct {
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
 
-const deploymentCountedAnnotation = "eviction-autoscaler.azure.com/counted"
-
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -49,7 +47,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// check if deployment is being deleted:
 	if !deployment.DeletionTimestamp.IsZero() {
 		// Deployment is being deleted
-		metrics.DecrementDeploymentCount(deployment.Namespace, metrics.CanCreatePDB)
+		metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Dec()
 		return reconcile.Result{}, nil
 	}
 
@@ -61,20 +59,8 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 
-	// Check if we've already counted this deployment
-	if _, counted := deployment.Annotations[deploymentCountedAnnotation]; !counted {
-		// First time seeing this deployment (increment)
-		metrics.IncrementDeploymentCount(deployment.Namespace, metrics.CanCreatePDB)
-
-		// Mark it as counted
-		if deployment.Annotations == nil {
-			deployment.Annotations = make(map[string]string)
-		}
-		deployment.Annotations[deploymentCountedAnnotation] = "true"
-		if err := r.Update(ctx, deployment); err != nil {
-			return reconcile.Result{}, err
-		}
-	}
+	// Increment deployment count for metrics
+	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
@@ -92,11 +78,11 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
 			// Track the PDB (check if it was created by us)
-			createdByUs := metrics.PDBNotCreatedByUs
+			createdByUsStr := metrics.PDBNotCreatedByUsStr
 			if ann, ok := pdb.Annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
-				createdByUs = metrics.PDBCreatedByUs
+				createdByUsStr = metrics.PDBCreatedByUsStr
 			}
-			metrics.IncrementPDBCount(pdb.Namespace, createdByUs)
+			metrics.PDBGauge.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
 			// PDB already exists, nothing to do
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
@@ -146,8 +132,8 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 	}
 
 	// Track PDB creation
-	metrics.IncrementPDBCount(pdb.Namespace, metrics.PDBCreatedByUs)
-	metrics.IncrementPDBCreationCount(deployment.Namespace, deployment.Name)
+	metrics.PDBGauge.WithLabelValues(pdb.Namespace, metrics.PDBCreatedByUsStr).Inc()
+	metrics.PDBCreationCounter.WithLabelValues(deployment.Namespace, deployment.Name).Inc()
 
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 	return reconcile.Result{}, nil

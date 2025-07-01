@@ -50,12 +50,15 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 
+	// Track node cordoning events
+	if node.Spec.Unschedulable {
+		metrics.NodeCordoningCounter.Inc()
+	}
+
 	if !node.Spec.Unschedulable {
 		return ctrl.Result{}, err
 	}
 
-	// Track node cordoning events
-	metrics.IncrementNodeCordoningCount(true)
 	logger.Info("Node is cordoned", "node", node.Name)
 
 	var podlist corev1.PodList
@@ -107,7 +110,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		}
 
 		// Track eviction and node drain events
-		metrics.IncrementEvictionCount(pod.Namespace)
+		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()

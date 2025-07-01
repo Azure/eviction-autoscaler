@@ -18,7 +18,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"sigs.k8s.io/controller-runtime/pkg/metrics"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
 var (
@@ -103,43 +103,21 @@ var (
 	)
 
 	// NodeCordoningCounter tracks node cordoning events detected
-	// Labels: cordoned (true/false)
-	NodeCordoningCounter = prometheus.NewCounterVec(
+	NodeCordoningCounter = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Name: "eviction_autoscaler_node_cordoning_total",
 			Help: "Total number of node cordoning events detected by the eviction autoscaler",
 		},
-		[]string{"cordoned"},
 	)
 
-	// OldNotReadyPodsGauge tracks pods that are old and not ready
-	// Labels: namespace, target_name, likely_to_help (true/false)
-	OldNotReadyPodsGauge = prometheus.NewGaugeVec(
+	// PDBInfoGauge tracks various PDB-related metrics
+	// Labels: namespace, pdb_name, target_name, metric_type
+	PDBInfoGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "eviction_autoscaler_old_not_ready_pods",
-			Help: "Number of old pods that are not ready",
+			Name: "eviction_autoscaler_pdb_info",
+			Help: "PDB configuration and status information",
 		},
-		[]string{"namespace", "target_name", "likely_to_help"},
-	)
-
-	// MaxUnavailableGauge tracks the max unavailable value from PDBs
-	// Labels: namespace, pdb_name, target_name
-	MaxUnavailableGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "eviction_autoscaler_max_unavailable",
-			Help: "Max unavailable value from PDB configuration",
-		},
-		[]string{"namespace", "pdb_name", "target_name"},
-	)
-
-	// MinAvailableEqualsReplicasGauge tracks when minAvailable equals replicas (indicating PDB might be too strict)
-	// Labels: namespace, pdb_name, target_name
-	MinAvailableEqualsReplicasGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "eviction_autoscaler_min_available_equals_replicas",
-			Help: "Indicates when minAvailable equals replicas (1 if true, 0 if false)",
-		},
-		[]string{"namespace", "pdb_name", "target_name"},
+		[]string{"namespace", "pdb_name", "target_name", "metric_type"},
 	)
 
 	// PDBCounter tracks the number of PDBs with an increment interface
@@ -155,19 +133,32 @@ var (
 
 // Constants for PDB creation tracking
 const (
-	PDBCreatedByUs    = true
-	PDBNotCreatedByUs = false
+	PDBCreatedByUsStr    = "true"
+	PDBNotCreatedByUsStr = "false"
 )
 
 // Constants for deployment tracking
 const (
-	CanCreatePDB    = true
-	CannotCreatePDB = false
+	CanCreatePDBStr    = "true"
+	CannotCreatePDBStr = "false"
+)
+
+// Constants for PDB info metric types
+const (
+	MaxUnavailableMetric             = "max_unavailable"
+	MinAvailableEqualsReplicasMetric = "min_available_equals_replicas"
+	OldNotReadyPodsMetric            = "old_not_ready_pods"
+)
+
+// Constants for scaling actions
+const (
+	ScaleUpAction   = "scale_up"
+	ScaleDownAction = "scale_down"
 )
 
 func init() {
 	// Register metrics with controller-runtime's registry
-	metrics.Registry.MustRegister(
+	ctrlmetrics.Registry.MustRegister(
 		DeploymentGauge,
 		PDBGauge,
 		EvictionCounter,
@@ -177,114 +168,7 @@ func init() {
 		PDBCreationCounter,
 		EvictionAutoScalerCreationCounter,
 		NodeCordoningCounter,
-		OldNotReadyPodsGauge,
-		MaxUnavailableGauge,
-		MinAvailableEqualsReplicasGauge,
+		PDBInfoGauge,
 		PDBCounter,
 	)
-}
-
-// Helper functions to update metrics
-
-// IncrementDeploymentCount increments the deployment gauge
-func IncrementDeploymentCount(namespace string, canCreatePDB bool) {
-	canCreatePDBStr := "false"
-	if canCreatePDB {
-		canCreatePDBStr = "true"
-	}
-	DeploymentGauge.WithLabelValues(namespace, canCreatePDBStr).Inc()
-}
-
-// DecrementDeploymentCount decrements the deployment gauge
-func DecrementDeploymentCount(namespace string, canCreatePDB bool) {
-	canCreatePDBStr := "false"
-	if canCreatePDB {
-		canCreatePDBStr = "true"
-	}
-	DeploymentGauge.WithLabelValues(namespace, canCreatePDBStr).Dec()
-}
-
-// IncrementPDBCount increments the PDB gauge
-func IncrementPDBCount(namespace string, createdByUs bool) {
-	createdByUsStr := "false"
-	if createdByUs {
-		createdByUsStr = "true"
-	}
-	PDBGauge.WithLabelValues(namespace, createdByUsStr).Inc()
-}
-
-// DecrementPDBCount decrements the PDB gauge
-func DecrementPDBCount(namespace string, createdByUs bool) {
-	createdByUsStr := "false"
-	if createdByUs {
-		createdByUsStr = "true"
-	}
-	PDBGauge.WithLabelValues(namespace, createdByUsStr).Dec()
-}
-
-// IncrementEvictionCount increments the eviction counter
-func IncrementEvictionCount(namespace string) {
-	EvictionCounter.WithLabelValues(namespace).Inc()
-}
-
-// IncrementBlockedEvictionCount increments the blocked eviction counter
-func IncrementBlockedEvictionCount(namespace, pdbName string) {
-	BlockedEvictionCounter.WithLabelValues(namespace, pdbName).Inc()
-}
-
-// IncrementScalingOpportunityCount increments the scaling opportunity counter
-func IncrementScalingOpportunityCount(namespace, deploymentName, action string) {
-	ScalingOpportunityCounter.WithLabelValues(namespace, deploymentName, action).Inc()
-}
-
-// IncrementActualScalingCount increments the actual scaling counter
-func IncrementActualScalingCount(namespace, deploymentName, action string) {
-	ActualScalingCounter.WithLabelValues(namespace, deploymentName, action).Inc()
-}
-
-// IncrementPDBCreationCount increments the PDB creation counter
-func IncrementPDBCreationCount(namespace, deploymentName string) {
-	PDBCreationCounter.WithLabelValues(namespace, deploymentName).Inc()
-}
-
-// IncrementEvictionAutoScalerCreationCount increments the EvictionAutoScaler creation counter
-func IncrementEvictionAutoScalerCreationCount(namespace, pdbName, targetDeployment string) {
-	EvictionAutoScalerCreationCounter.WithLabelValues(namespace, pdbName, targetDeployment).Inc()
-}
-
-// IncrementNodeCordoningCount increments the node cordoning counter
-func IncrementNodeCordoningCount(cordoned bool) {
-	cordonedStr := "false"
-	if cordoned {
-		cordonedStr = "true"
-	}
-	NodeCordoningCounter.WithLabelValues(cordonedStr).Inc()
-}
-
-// UpdateOldNotReadyPods updates the old not ready pods gauge
-func UpdateOldNotReadyPods(namespace, targetName string, likelyToHelp bool, count float64) {
-	likelyToHelpStr := "false"
-	if likelyToHelp {
-		likelyToHelpStr = "true"
-	}
-	OldNotReadyPodsGauge.WithLabelValues(namespace, targetName, likelyToHelpStr).Set(count)
-}
-
-// UpdateMaxUnavailable updates the max unavailable gauge
-func UpdateMaxUnavailable(namespace, pdbName, targetName string, maxUnavailable float64) {
-	MaxUnavailableGauge.WithLabelValues(namespace, pdbName, targetName).Set(maxUnavailable)
-}
-
-// UpdateMinAvailableEqualsReplicas updates the min available equals replicas gauge
-func UpdateMinAvailableEqualsReplicas(namespace, pdbName, targetName string, value float64) {
-	MinAvailableEqualsReplicasGauge.WithLabelValues(namespace, pdbName, targetName).Set(value)
-}
-
-// IncrementPDBProcessedCount increments the PDB counter (total processed)
-func IncrementPDBProcessedCount(namespace string, createdByUs bool) {
-	createdByUsStr := "false"
-	if createdByUs {
-		createdByUsStr = "true"
-	}
-	PDBCounter.WithLabelValues(namespace, createdByUsStr).Inc()
 }

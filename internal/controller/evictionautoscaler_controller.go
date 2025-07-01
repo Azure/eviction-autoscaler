@@ -12,7 +12,7 @@ import (
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 
 	//v1 "k8s.io/api/apps/v1"
-	v1 "k8s.io/api/core/v1"
+
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -102,18 +102,17 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if pdb.Spec.MaxUnavailable != nil {
 		maxUnavailable = pdb.Spec.MaxUnavailable.IntVal
 	}
-	metrics.UpdateMaxUnavailable(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), float64(maxUnavailable))
+	metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MaxUnavailableMetric).Set(float64(maxUnavailable))
 
-	// Check if minAvailable equals replicas (indicating PDB might be too strict)
+	// Check if minAvailable equals the total expected pods from the PDB
 	minAvailable := int32(0)
 	if pdb.Spec.MinAvailable != nil {
 		minAvailable = pdb.Spec.MinAvailable.IntVal
 	}
-	currentReplicas := target.GetReplicas()
-	if minAvailable == currentReplicas {
-		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 1)
+	if minAvailable == pdb.Status.ExpectedPods {
+		metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MinAvailableEqualsReplicasMetric).Set(1)
 	} else {
-		metrics.UpdateMinAvailableEqualsReplicas(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), 0)
+		metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MinAvailableEqualsReplicasMetric).Set(0)
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
@@ -144,25 +143,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
 
 		// Track eviction in metrics
-		metrics.IncrementEvictionCount(EvictionAutoScaler.Namespace)
-
-		// Check pod readiness and age to determine if scaling would help
-		podList := &v1.PodList{}
-		if err := r.List(ctx, podList, client.InNamespace(EvictionAutoScaler.Namespace),
-			client.MatchingLabels(target.GetSelector().MatchLabels)); err == nil {
-
-			oldNotReadyCount := 0
-			for _, pod := range podList.Items {
-				// Check if pod is old and not ready
-				if time.Since(pod.CreationTimestamp.Time) > 5*time.Minute && !isPodReady(&pod) {
-					oldNotReadyCount++
-				}
-			}
-
-			// Determine if scaling would likely help based on the pattern
-			likelyToHelp := oldNotReadyCount > 0 && oldNotReadyCount < len(podList.Items)
-			metrics.UpdateOldNotReadyPods(EvictionAutoScaler.Namespace, target.GetName(), likelyToHelp, float64(oldNotReadyCount))
-		}
+		metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 	}
 
 	//if we're not scaled up and theres new evictions we haven't proceesed
@@ -172,10 +153,10 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
 
 		// Track blocked eviction if the PDB is blocking the eviction
-		metrics.IncrementBlockedEvictionCount(EvictionAutoScaler.Namespace, pdb.Name)
+		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
 
 		// Track scaling opportunity
-		metrics.IncrementScalingOpportunityCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_up")
+		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
 
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
@@ -191,7 +172,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Track actual scaling action
-		metrics.IncrementActualScalingCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_up")
+		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
 
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Scaled up %s  %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
@@ -225,7 +206,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas { //would we ever be below min replicas
 
 		// Track scaling opportunity
-		metrics.IncrementScalingOpportunityCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_down")
+		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		target.SetReplicas(EvictionAutoScaler.Status.MinReplicas)
@@ -236,7 +217,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Track actual scaling action
-		metrics.IncrementActualScalingCount(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, "scale_down")
+		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
 
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Reverted %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
@@ -315,13 +296,4 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 
 	panic("must be string or int")
 
-}
-
-func isPodReady(pod *v1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == v1.PodReady {
-			return condition.Status == v1.ConditionTrue
-		}
-	}
-	return false
 }

@@ -4,22 +4,17 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/apps/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type Surger interface {
-	//GetGeneration() int64
 	GetReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
-	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 	AddAnnotation(string, string)
 	RemoveAnnotation(string)
-	// returns the label selector for the deployment or statefulset
-	GetSelector() *metav1.LabelSelector
 }
 
 // Todo change casing to match k8s?
@@ -73,11 +68,6 @@ func (d *DeploymentWrapper) RemoveAnnotation(status string) {
 	}
 }
 
-// GetSelector returns the label selector for the deployment
-func (d *DeploymentWrapper) GetSelector() *metav1.LabelSelector {
-	return d.obj.Spec.Selector
-}
-
 type StatefulSetWrapper struct {
 	obj *v1.StatefulSet
 }
@@ -112,7 +102,6 @@ func GetSurger(kind string) (Surger, error) {
 	} else {
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}
-
 }
 
 // AddAnnotation will reset and add new annotation map every time this func is called
@@ -129,9 +118,4 @@ func (s *StatefulSetWrapper) RemoveAnnotation(status string) {
 	if s.obj.Annotations != nil {
 		delete(s.obj.Annotations, status)
 	}
-}
-
-// GetSelector returns the label selector for the statefulset
-func (s *StatefulSetWrapper) GetSelector() *metav1.LabelSelector {
-	return s.obj.Spec.Selector
 }

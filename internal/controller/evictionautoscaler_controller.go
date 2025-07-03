@@ -121,15 +121,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
-	// Check if there's a new eviction that hasn't been processed yet
-	if EvictionAutoScaler.Spec.LastEviction.EvictionTime != EvictionAutoScaler.Status.LastEviction.EvictionTime {
-		logger.Info("Detected new eviction",
-			"podName", EvictionAutoScaler.Spec.LastEviction.PodName,
-			"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
-
-		// Track eviction in metrics
-		metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
-	}
+	// Last eviction already tracked above so we can just log it
+	logger.V(1).Info("Detected new eviction",
+		"podName", EvictionAutoScaler.Spec.LastEviction.PodName,
+		"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
+	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
 	//if we're not scaled up and theres new evictions we haven't proceesed
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
@@ -170,6 +166,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Save the correct ResourceVersion to EvictionAutoScaler status
+		// Storing the current generation prevents an immediate follow-up reconcile
+		// that would otherwise interpret our own scale operation as an out of band
+		// user change skewinh the scaling Oppurtunity and Actual scaling metrics.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		//EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
@@ -215,6 +214,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Save the correct ResourceVersion to EvictionAutoScaler status
+		// (same rationale as the scale-up path)
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")

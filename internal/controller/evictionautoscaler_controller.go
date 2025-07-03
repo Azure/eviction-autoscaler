@@ -158,19 +158,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Scaled up %s  %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
 
-		// Fetch the updated deployment to get the correct generation after scaling
-		err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Spec.TargetName, Namespace: EvictionAutoScaler.Namespace}, target.Obj())
-		if err != nil {
-			logger.Error(err, "failed to fetch updated target after scaling")
-			return ctrl.Result{}, err
-		}
-
-		// Save the correct ResourceVersion to EvictionAutoScaler status
-		// Storing the current generation prevents an immediate follow-up reconcile
-		// that would otherwise interpret our own scale operation as an out of band
-		// user change skewinh the scaling Oppurtunity and Actual scaling metrics.
+		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		//EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -206,15 +195,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Reverted %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
 
-		// Fetch the updated deployment to get the correct generation after scaling
-		err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Spec.TargetName, Namespace: EvictionAutoScaler.Namespace}, target.Obj())
-		if err != nil {
-			logger.Error(err, "failed to fetch updated target after scaling")
-			return ctrl.Result{}, err
-		}
-
-		// Save the correct ResourceVersion to EvictionAutoScaler status
-		// (same rationale as the scale-up path)
+		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")

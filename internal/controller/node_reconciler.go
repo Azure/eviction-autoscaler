@@ -8,7 +8,6 @@ import (
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -114,9 +113,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
-		updatedpod := podutil.UpdatePodCondition(&pod.Status, &v1.PodCondition{
-			Type:    v1.DisruptionTarget,
-			Status:  v1.ConditionTrue,
+		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
+			Type:    corev1.DisruptionTarget,
+			Status:  corev1.ConditionTrue,
 			Reason:  "EvictionAttempt",
 			Message: "eviction attempt anticipated by node cordon",
 		})
@@ -149,9 +148,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &v1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
+	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
 		// Extract the spec.nodeName field
-		pod := rawObj.(*v1.Pod)
+		pod := rawObj.(*corev1.Pod)
 		if pod.Spec.NodeName == "" {
 			return nil // Don't index Pods without a NodeName
 		}
@@ -161,12 +160,12 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.Node{}).
+		For(&corev1.Node{}).
 		WithEventFilter(predicate.Funcs{
 			// ignore status updates as we only care about cordon.
 			UpdateFunc: func(ue event.UpdateEvent) bool {
-				oldNode := ue.ObjectOld.(*v1.Node)
-				newNode := ue.ObjectNew.(*v1.Node)
+				oldNode := ue.ObjectOld.(*corev1.Node)
+				newNode := ue.ObjectNew.(*corev1.Node)
 				return oldNode.Spec.Unschedulable == newNode.Spec.Unschedulable
 			},
 		}).

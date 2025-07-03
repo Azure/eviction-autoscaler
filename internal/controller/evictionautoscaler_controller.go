@@ -97,23 +97,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Track the max unavailable value from the PDB
-	maxUnavailable := int32(0)
-	if pdb.Spec.MaxUnavailable != nil {
-		maxUnavailable = pdb.Spec.MaxUnavailable.IntVal
-	}
-	metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MaxUnavailableMetric).Set(float64(maxUnavailable))
-
-	// Check if minAvailable equals the total expected pods from the PDB
-	minAvailable := int32(0)
-	if pdb.Spec.MinAvailable != nil {
-		minAvailable = pdb.Spec.MinAvailable.IntVal
-	}
-	if minAvailable == pdb.Status.ExpectedPods {
-		metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MinAvailableEqualsReplicasMetric).Set(1)
-	} else {
-		metrics.PDBInfoGauge.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name, target.GetName(), metrics.MinAvailableEqualsReplicasMetric).Set(0)
-	}
+	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
+	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {

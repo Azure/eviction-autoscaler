@@ -39,7 +39,7 @@ var (
 			Name: "eviction_autoscaler_pdbs_total",
 			Help: "Total number of PDBs seen by the eviction autoscaler",
 		},
-		[]string{"namespace", "created_by_us"},
+		[]string{"namespace", "created_by_us", "max_unavailable_zero", "min_available_equals_replicas"},
 	)
 
 	// EvictionCounter tracks how often the eviction-autoscaler notices an eviction
@@ -112,6 +112,8 @@ var (
 
 	// PDBInfoGauge tracks various PDB-related metrics
 	// Labels: namespace, pdb_name, target_name, metric_type
+	// todo:chnage with PDBGauge instead of separate gauges per PDB
+	// use labels on PDBGauge to count how many have maxUnavailable==0 and minAvailable==replicas
 	PDBInfoGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "eviction_autoscaler_pdb_info",
@@ -144,6 +146,7 @@ const (
 )
 
 // Constants for PDB info metric types
+// todo: Remove when PDBInfoGauge is replaced with PDBGauge labels
 const (
 	MaxUnavailableMetric             = "max_unavailable"
 	MinAvailableEqualsReplicasMetric = "min_available_equals_replicas"
@@ -155,6 +158,14 @@ const (
 	ScaleUpAction   = "scale_up"
 	ScaleDownAction = "scale_down"
 )
+
+// GetPDBCreatedByUsLabel returns the appropriate label value based on PDB annotations
+func GetPDBCreatedByUsLabel(annotations map[string]string) string {
+	if ann, ok := annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
+		return PDBCreatedByUsStr
+	}
+	return PDBNotCreatedByUsStr
+}
 
 func init() {
 	// Register metrics with controller-runtime's registry

@@ -174,8 +174,8 @@ var _ = Describe("controller", Ordered, func() {
 				return pods.Items[0].Spec.NodeName, nil
 			}
 			verifyControllerMgrPods := func() error {
-				_, e := verifyRunningPods(namespace, client.MatchingLabels{
-					"control-plane": "controller-manager",
+				_, e := verifyRunningPods("kube-system", client.MatchingLabels{
+					"app.kubernetes.io/name": "eviction-autoscaler",
 				}, 1)
 				return e
 			}

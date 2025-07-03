@@ -48,10 +48,8 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	// Update PDB metrics to check if this PDB was created by our deployment controller
-	createdByUsStr := metrics.PDBNotCreatedByUsStr
-	if ann, ok := pdb.Annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
-		createdByUsStr = metrics.PDBCreatedByUsStr
-	}
+	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
+	// Track PDB existence
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist

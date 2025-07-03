@@ -40,6 +40,8 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
+		// todo: decrement? DeploymentGauge when deployment not found
+		// was deployment ever tracked? permanent vs temporary not found?
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
@@ -77,14 +79,8 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		}
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
-			// Track the PDB (check if it was created by us)
-			createdByUsStr := metrics.PDBNotCreatedByUsStr
-			if ann, ok := pdb.Annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
-				createdByUsStr = metrics.PDBCreatedByUsStr
-			}
-			metrics.PDBGauge.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
-
 			// PDB already exists, nothing to do
+			// Note: PDB metrics are tracked by PDB controller, not here
 			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
 			EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
 			e := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
@@ -131,8 +127,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		return reconcile.Result{}, err
 	}
 
-	// Track PDB creation
-	metrics.PDBGauge.WithLabelValues(pdb.Namespace, metrics.PDBCreatedByUsStr).Inc()
+	// Track PDB creation event
 	metrics.PDBCreationCounter.WithLabelValues(deployment.Namespace, deployment.Name).Inc()
 
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)

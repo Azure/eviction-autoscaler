@@ -59,7 +59,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
 
 			// PDB already exists, nothing to do
-			// log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
 			EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
 			err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
 			if err != nil {

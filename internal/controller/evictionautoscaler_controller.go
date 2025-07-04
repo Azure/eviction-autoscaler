@@ -138,7 +138,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		//Not upddate EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+		//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}

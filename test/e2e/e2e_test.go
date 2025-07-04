@@ -20,6 +20,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -109,6 +110,13 @@ var _ = Describe("controller", Ordered, func() {
 			By("stopping log collection for eviction-autoscaler pods")
 			logStreamCancel()
 			fmt.Printf("Stopped log streaming for eviction-autoscaler pods\n")
+
+			// Show log file info if it exists
+			if _, err := os.Stat("eviction-autoscaler-e2e.log"); err == nil {
+				if info, err := os.Stat("eviction-autoscaler-e2e.log"); err == nil {
+					fmt.Printf("Log file 'eviction-autoscaler-e2e.log' created with size: %d bytes\n", info.Size())
+				}
+			}
 		}
 
 		if cleanEnv {

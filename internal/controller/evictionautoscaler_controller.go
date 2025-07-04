@@ -96,7 +96,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
-		logger.Info("Target resource version changed reseting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
+		logger.Info("Target resource version changed reseting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
 		// The resource version has changed, which means someone else has modified the Target.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
@@ -119,7 +119,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
 		// TODO later. Surge more slowly based on number of evitions (need to move back to capturing them all)
-		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction attempting to scale up", pdb.Name))
+		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction %s attempting to scale up", pdb.Name, EvictionAutoScaler.Spec.LastEviction))
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
 		//adding annotations here is an atomic operation;
@@ -134,11 +134,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled up %s  %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
+		logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		//EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
+		//Not upddate EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -166,11 +166,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Reverted %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
+		logger.Info(fmt.Sprintf("Scaled down %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
+		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
+
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -178,6 +180,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
 	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
+	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 }
 

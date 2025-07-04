@@ -101,6 +101,33 @@ Here's a drain of  Node on a to node cluster that is running the [aks store demo
 
 ![Screenshot 2024-09-07 173336](https://github.com/user-attachments/assets/c7407ae5-6fcd-48d4-900d-32a7c6ca8b08)
 
+## Testing
+
+### E2E Tests
+
+The project includes end-to-end tests that run in a kind cluster. To run the e2e tests:
+
+```bash
+make test-e2e
+```
+
+During e2e test execution, logs from all eviction-autoscaler pods are automatically collected and written to `eviction-autoscaler-e2e.log` in the current directory. This makes it easy to debug test failures or understand the controller behavior during testing.
+
+The log collection:
+- Starts automatically when the controller is deployed
+- Captures logs from all pods with the label `app.kubernetes.io/name=eviction-autoscaler`
+- Includes both stdout and stderr from all containers
+- Continues throughout the entire test execution
+- Stops automatically when tests complete
+
+### Unit Tests
+
+To run the unit tests:
+
+```bash
+make test
+```
+
 ## Shout out 
 
 This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler). 

@@ -35,20 +35,11 @@ type DeploymentToPDBReconciler struct {
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		return reconcile.Result{}, err
 	}
-	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
-	// If the Deployment is created, ensure a PDB exists
-	return r.handleDeploymentReconcile(ctx, &deployment)
-}
-
-// handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
-func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
 	log := log.FromContext(ctx)
 	// Check if PDB already exists for this Deployment
 
@@ -77,7 +68,7 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 			}
 			// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
 			// update pdb minReplicas to current deployment replicas
-			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, deployment, EvictionAutoScaler, pdb)
+			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
 		}
 	}
 
@@ -121,7 +112,6 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
-	logger.Info("deployment replicas got updated", " EvictionAutoScaler.Status.TargetGeneration", EvictionAutoScaler.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
 	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
 		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas

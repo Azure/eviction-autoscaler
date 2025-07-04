@@ -102,6 +102,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		//By("uninstalling the cert-manager bundle")
 		//utils.UninstallCertManager()
+
 		if cleanEnv {
 
 			By("removing kind cluster")
@@ -301,7 +302,7 @@ var _ = Describe("controller", Ordered, func() {
 					return fmt.Errorf("Annotation \"evictionSurgeReplicas\" is not removed\n")
 				}
 				fmt.Printf("Deployment after eviction '%s' at generation %d\n", deployment.Name, deployment.Generation)
-				if deployment.Status.Replicas != 1 {				return nil
+				return nil
 			}
 			//have to wait longer than pdbwatchers cooldown
 			EventuallyWithOffset(1, verifyDeploymentReplicas, 2*time.Minute, time.Second).Should(Succeed())

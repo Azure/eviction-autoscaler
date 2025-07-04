@@ -17,10 +17,12 @@ limitations under the License.
 package utils
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2" //nolint:golint,revive
 )
@@ -132,4 +134,49 @@ func GetProjectDir() (string, error) {
 	}
 	wd = strings.Replace(wd, "/test/e2e", "", -1)
 	return wd, nil
+}
+
+// StreamPodLogs starts streaming logs from pods with specified label selector to a file
+// Returns a context cancel function that should be called to stop the streaming
+func StreamPodLogs(labelSelector string, outputFile string, namespace string) (context.CancelFunc, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Create the output file
+	file, err := os.Create(outputFile)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create log file %s: %v", outputFile, err)
+	}
+
+	// Start the kubectl logs command
+	cmd := exec.CommandContext(ctx, "kubectl", "logs",
+		"-l", labelSelector,
+		"-n", namespace,
+		"--all-containers=true",
+		"--prefix=true",
+		"--previous=false",
+		"-f")
+
+	cmd.Stdout = file
+	cmd.Stderr = file
+
+	// Start the command in background
+	go func() {
+		defer func() {
+			if err := file.Close(); err != nil {
+				// Ignore write errors when writing to GinkgoWriter
+				_, _ = fmt.Fprintf(GinkgoWriter, "failed to close log file: %v\n", err)
+			}
+		}()
+		if err := cmd.Run(); err != nil && ctx.Err() == nil {
+			// Only log error if context wasn't cancelled
+			// Ignore write errors when writing to GinkgoWriter
+			_, _ = fmt.Fprintf(GinkgoWriter, "kubectl logs command failed: %v\n", err)
+		}
+	}()
+
+	// Give the command a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	return cancel, nil
 }

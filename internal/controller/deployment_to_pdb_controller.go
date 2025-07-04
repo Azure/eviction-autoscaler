@@ -7,6 +7,7 @@ import (
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,8 +36,6 @@ type DeploymentToPDBReconciler struct {
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
-
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
@@ -44,7 +43,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// was deployment ever tracked? permanent vs temporary not found?
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
-	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
+	log := log.FromContext(ctx)
 
 	// check if deployment is being deleted:
 	if !deployment.DeletionTimestamp.IsZero() {
@@ -52,14 +51,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Dec()
 		return reconcile.Result{}, nil
 	}
-
-	// If the Deployment is created, ensure a PDB exists
-	return r.handleDeploymentReconcile(ctx, &deployment)
-}
-
-// handleDeploymentReconcile creates a PodDisruptionBudget when a Deployment is created or updated.
-func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Context, deployment *v1.Deployment) (reconcile.Result, error) {
-	log := log.FromContext(ctx)
 
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
@@ -80,16 +71,15 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
 			// PDB already exists, nothing to do
-			// Note: PDB metrics are tracked by PDB controller, not here
-			log.Info("PodDisruptionBudget already exists", "namespace", pdb.Namespace, "name", pdb.Name)
 			EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
-			e := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
-			if e == nil {
-				// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
-				// update pdb minReplicas to current deployment replicas
-				return r.updateMinAvailableAsNecessary(ctx, deployment, EvictionAutoScaler, pdb)
+			err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
+			if err != nil {
+				//TODO don't ignore not found. Retry and fix unittest DeploymentToPDBReconciler when a deployment is created [It] should not create a PodDisruptionBudget if one already matches
+				return reconcile.Result{}, client.IgnoreNotFound(err)
 			}
-			return reconcile.Result{}, nil
+			// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
+			// update pdb minReplicas to current deployment replicas
+			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
 		}
 	}
 
@@ -135,9 +125,8 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 }
 
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
-	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) (reconcile.Result, error) {
+	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
-	logger.Info("deployment replicas got updated", " EvictionAutoScaler.Status.TargetGeneration", EvictionAutoScaler.Status.TargetGeneration, "deployment.Generation", deployment.GetGeneration())
 	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
 		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
@@ -147,25 +136,25 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			if err != nil {
 				logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
 					"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
-				return reconcile.Result{}, nil
+				return err
 			}
 
 			if int32(newReplicas) == *deployment.Spec.Replicas {
-				return reconcile.Result{}, nil
+				return nil
 			}
 		}
 		//someone else changed deployment num of replicas
 		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
-		e := r.Update(ctx, &pdb)
-		if e != nil {
-			logger.Error(e, "unable to update pdb minAvailable to deployment replicas ",
+		err := r.Update(ctx, &pdb)
+		if err != nil {
+			logger.Error(err, "unable to update pdb minAvailable to deployment replicas ",
 				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
-			return reconcile.Result{}, e
+			return err
 		}
 		logger.Info("Successfully updated pdb minAvailable to deployment replicas ",
 			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
 	}
-	return reconcile.Result{}, nil
+	return nil
 }
 
 func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
@@ -181,16 +170,15 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				//logger.Info("Update event detected, no action will be taken")
-				//ToDo: distinguish scales from our EvictionAutoScaler from scales from other owners and keep minAvailable up near replicas.
-				// Like if I start a deployment at 3 but then later say this is popular let me bump it to 5 should our pdb change.
 				if oldDeployment, ok := e.ObjectOld.(*v1.Deployment); ok {
 					newDeployment := e.ObjectNew.(*v1.Deployment)
-					logger.Info("Update event detected, num of replicas changed", "newReplicas", newDeployment.Spec.Replicas)
-					return oldDeployment.Spec.Replicas != newDeployment.Spec.Replicas
+					if lo.FromPtr(oldDeployment.Spec.Replicas) != lo.FromPtr(newDeployment.Spec.Replicas) {
+						//Update event detected, num of replicas changed	{"newReplicas": 2, "oldReplicas": 2}
+						logger.Info("Update event detected, num of replicas changed", "newReplicas", lo.FromPtr(newDeployment.Spec.Replicas), "oldReplicas", lo.FromPtr(oldDeployment.Spec.Replicas))
+						return true
+					}
 				}
 				return false
-				//return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration()
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

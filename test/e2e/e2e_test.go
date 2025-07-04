@@ -293,7 +293,6 @@ var _ = Describe("controller", Ordered, func() {
 			verifyDeploymentReplicas := func() error {
 				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				fmt.Printf("Deployment after eviction '%s' at generation %d\n", deployment.Name, deployment.Generation)
 				if *deployment.Spec.Replicas != 1 {
 					return fmt.Errorf("got %d controller replicas\n", *deployment.Spec.Replicas)
 				}
@@ -301,7 +300,8 @@ var _ = Describe("controller", Ordered, func() {
 				if _, ok := deployment.Annotations["evictionSurgeReplicas"]; ok {
 					return fmt.Errorf("Annotation \"evictionSurgeReplicas\" is not removed\n")
 				}
-				return nil
+				fmt.Printf("Deployment after eviction '%s' at generation %d\n", deployment.Name, deployment.Generation)
+				if deployment.Status.Replicas != 1 {				return nil
 			}
 			//have to wait longer than pdbwatchers cooldown
 			EventuallyWithOffset(1, verifyDeploymentReplicas, 2*time.Minute, time.Second).Should(Succeed())

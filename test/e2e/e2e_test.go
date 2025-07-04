@@ -60,6 +60,7 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
+var logStreamCancel context.CancelFunc
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
@@ -102,8 +103,15 @@ var _ = Describe("controller", Ordered, func() {
 
 		//By("uninstalling the cert-manager bundle")
 		//utils.UninstallCertManager()
-		if cleanEnv {
 
+		// Stop log streaming if it was started
+		if logStreamCancel != nil {
+			By("stopping log collection for eviction-autoscaler pods")
+			logStreamCancel()
+			fmt.Printf("Stopped log streaming for eviction-autoscaler pods\n")
+		}
+
+		if cleanEnv {
 			By("removing kind cluster")
 			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
 			_, _ = utils.Run(cmd)
@@ -142,6 +150,13 @@ var _ = Describe("controller", Ordered, func() {
 			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("starting log collection for eviction-autoscaler pods")
+			logStreamCancel, err = utils.StreamPodLogs("app.kubernetes.io/name=eviction-autoscaler",
+				"eviction-autoscaler-e2e.log", namespace)
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("Started log streaming for eviction-autoscaler pods to eviction-autoscaler-e2e.log\n")
+
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
 			Expect(err).NotTo(HaveOccurred())
 

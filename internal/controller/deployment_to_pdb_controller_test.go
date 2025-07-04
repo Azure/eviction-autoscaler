@@ -46,6 +46,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 
 		surge := intstr.FromInt(1)
+		maxUnavailable := intstr.FromInt(0) // Explicitly set to 0 to ensure PDB is created
 		// Create the reconciler instance
 		r = &DeploymentToPDBReconciler{
 			Client: k8sClient, // Use the fake client
@@ -67,7 +68,8 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 				},
 				Strategy: appsv1.DeploymentStrategy{
 					RollingUpdate: &appsv1.RollingUpdateDeployment{
-						MaxSurge: &surge,
+						MaxSurge:       &surge,
+						MaxUnavailable: &maxUnavailable,
 					},
 				},
 				Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
@@ -153,6 +155,132 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			}, newpdb)
 			Expect(errors.IsNotFound(err)).To(BeTrue())
 			//should we list it?
+		})
+
+		It("should not create a PodDisruptionBudget if maxUnavailable is not 0", func() {
+			// Create a deployment with maxUnavailable set to 25%
+			maxUnavailablePercent := intstr.FromString("25%")
+			surge := intstr.FromInt(1)
+			deploymentWithMaxUnavailable := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deployment-with-max-unavailable",
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(3),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "example-max-unavailable",
+						},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge:       &surge,
+							MaxUnavailable: &maxUnavailablePercent,
+						},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "example-max-unavailable",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					},
+				},
+			}
+
+			// Create the deployment
+			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailable)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{
+					Namespace: namespace,
+					Name:      "deployment-with-max-unavailable",
+				},
+			}
+
+			// Call the reconciler
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Check that PDB was NOT created
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = r.Client.Get(ctx, client.ObjectKey{
+				Namespace: namespace,
+				Name:      "deployment-with-max-unavailable",
+			}, pdb)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should not create a PodDisruptionBudget if maxUnavailable is an integer > 0", func() {
+			// Create a deployment with maxUnavailable set to 1 (integer)
+			maxUnavailableInt := intstr.FromInt(1)
+			surge := intstr.FromInt(1)
+			deploymentWithMaxUnavailableInt := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deployment-with-max-unavailable-int",
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(3),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "example-max-unavailable-int",
+						},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge:       &surge,
+							MaxUnavailable: &maxUnavailableInt,
+						},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "example-max-unavailable-int",
+							},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "nginx",
+									Image: "nginx:latest",
+								},
+							},
+						},
+					},
+				},
+			}
+
+			// Create the deployment
+			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailableInt)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{
+					Namespace: namespace,
+					Name:      "deployment-with-max-unavailable-int",
+				},
+			}
+
+			// Call the reconciler
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Check that PDB was NOT created
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = r.Client.Get(ctx, client.ObjectKey{
+				Namespace: namespace,
+				Name:      "deployment-with-max-unavailable-int",
+			}, pdb)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
 		})
 	})
 

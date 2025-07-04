@@ -79,6 +79,18 @@ func (r *DeploymentToPDBReconciler) handleDeploymentReconcile(ctx context.Contex
 		}
 	}
 
+	// Check if the deployment has maxUnavailable != 0
+	// If so, don't create a PDB since the deployment already allows downtime
+	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxUnavailable != nil {
+		maxUnavailable := *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
+		if (maxUnavailable.Type == intstr.Int && maxUnavailable.IntVal != 0) ||
+			(maxUnavailable.Type == intstr.String && maxUnavailable.StrVal != "0" && maxUnavailable.StrVal != "0%") {
+			log.Info("Skipping PDB creation for deployment with maxUnavailable != 0",
+				"deployment", deployment.Name, "namespace", deployment.Namespace, "maxUnavailable", maxUnavailable)
+			return reconcile.Result{}, nil
+		}
+	}
+
 	//variables
 	controller := true
 	blockOwnerDeletion := true

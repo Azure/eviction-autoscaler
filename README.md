@@ -40,19 +40,21 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 graph TD;
     Cordon[Cordon]
     NodeController[Cordoned Node Controller]
-    Eviction[Eviction]
-    Webhook[Admission Webhook]
-    CRD[Custom Resource Definition]
+    CRD[Eviction Autoscaler Custom Resource]
     Controller[Eviction-Autoscaler Controller]
     Deployment[Deployment or StatefulSet]
+    PDB[Pod Disruption Budget]
+    PDBController[Optional PDB creator]
+
 
     Cordon -->|Triggers| NodeController
     NodeController -->|writes spec| CRD
-    Eviction -->|Triggers| Webhook
-    Webhook -->|writes spec| CRD 
     CRD -->|spec watched by| Controller
     Controller -->|surges and shrinks| Deployment
     Controller -->|Writes status| CRD
+    Controller -->|reads allowed disruptions | PDB
+    PDBController -->|watches | Deployment
+    PDBController -->|creates if not exist| PDB
 ```
 
 ## Installation

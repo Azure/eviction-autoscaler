@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -45,6 +46,11 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	if err != nil {
 		return reconcile.Result{}, err
 	}
+
+	// Update PDB metrics to check if this PDB was created by our deployment controller
+	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
+	// Track PDB existence
+	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
 	var EvictionAutoScaler types.EvictionAutoScaler
@@ -100,6 +106,10 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
 		}
+
+		// Track EvictionAutoScaler creation
+		metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
+
 		logger.Info("Created EvictionAutoScaler")
 	}
 	// Return no error and no requeue

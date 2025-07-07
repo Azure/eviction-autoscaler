@@ -119,7 +119,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		//What if the evict went through because the pod being evicted wasn't ready anyways? Handle that in webhook or here?
 		// TODO later. Surge more slowly based on number of evitions (need to move back to capturing them all)
-		logger.Info(fmt.Sprintf("No disruptions allowed for %s and recent eviction %s attempting to scale up", pdb.Name, EvictionAutoScaler.Spec.LastEviction))
+		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction)
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 		target.SetReplicas(newReplicas)
 		//adding annotations here is an atomic operation;

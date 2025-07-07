@@ -96,7 +96,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
-		logger.Info("Target resource version changed reseting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
+		logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
 		// The resource version has changed, which means someone else has modified the Target.
 		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()

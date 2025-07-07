@@ -13,17 +13,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 package synthesizer
 
 import (
-	"embed"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-//go:embed config/*
-var configFS embed.FS
 
 // EmptyInput represents the empty input struct for the synthesizer
 type EmptyInput struct{}
@@ -32,24 +30,45 @@ type EmptyInput struct{}
 func SynthFunc(input EmptyInput) ([]client.Object, error) {
 	var objects []client.Object
 
-	// List of config files to process
+	// List of config files to process (relative to repository root)
 	configFiles := []string{
-		"config/crd.yaml",
-		"config/service_account.yaml",
-		"config/role.yaml",
-		"config/role_binding.yaml",
-		"config/manager.yaml",
+		"config/crd/bases/eviction-autoscaler.azure.com_evictionautoscalers.yaml",
+		"config/rbac/service_account.yaml",
+		"config/rbac/role.yaml",
+		"config/rbac/role_binding.yaml",
+		"config/manager/manager.yaml",
 	}
 
 	// Create a decoder
 	decoder := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme)
 
+	// Get the current working directory and find the repository root
+	currentDir, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	// Look for repository root by finding config directory
+	repoRoot := currentDir
+	for {
+		configPath := filepath.Join(repoRoot, "config")
+		if _, err := os.Stat(configPath); err == nil {
+			break
+		}
+		parent := filepath.Dir(repoRoot)
+		if parent == repoRoot {
+			return nil, fmt.Errorf("could not find repository root (config directory not found)")
+		}
+		repoRoot = parent
+	}
+
 	// Process each config file
 	for _, configFile := range configFiles {
 		// Read the file content
-		content, err := configFS.ReadFile(configFile)
+		fullPath := filepath.Join(repoRoot, configFile)
+		content, err := os.ReadFile(fullPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to read config file %s: %w", configFile, err)
+			return nil, fmt.Errorf("failed to read config file %s: %w", fullPath, err)
 		}
 
 		// Split by document separator and process each document

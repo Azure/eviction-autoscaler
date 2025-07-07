@@ -37,8 +37,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/Azure/eno/pkg/function"
+
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
+	"github.com/azure/eviction-autoscaler/internal/synthesizer"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -62,6 +65,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var evictionWebhook bool
+	var enoMode bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -75,12 +79,20 @@ func main() {
 	flag.BoolVar(&evictionWebhook, "eviction-webhook", false,
 		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, "+
 			"if false will rely on node cordon for signal")
+	flag.BoolVar(&enoMode, "eno", false,
+		"Run in Eno synthesizer mode to generate manifests")
 
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	// If Eno mode is enabled, run the synthesizer and exit
+	if enoMode {
+		function.Main(synthesizer.SynthFunc)
+		return
+	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 

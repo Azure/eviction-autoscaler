@@ -42,16 +42,16 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
 		// todo: decrement? DeploymentGauge when deployment not found
 		// was deployment ever tracked? permanent vs temporary not found?
-		return reconcile.Result{}, client.IgnoreNotFound(err)
+		return reconcile.Result{}, err
 	}
 	log.Info("Found: ", "deployment", deployment.Name, "namespace", deployment.Namespace)
 
 	// check if deployment is being deleted:
-	if !deployment.DeletionTimestamp.IsZero() {
+	// if !deployment.DeletionTimestamp.IsZero() {
 		// Deployment is being deleted
-		metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Dec()
-		return reconcile.Result{}, nil
-	}
+		//metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Dec()
+		//return reconcile.Result{}, nil
+	//}
 
 	// If the Deployment is created, ensure a PDB exists
 	return r.handleDeploymentReconcile(ctx, &deployment)

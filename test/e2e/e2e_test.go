@@ -102,6 +102,7 @@ var _ = Describe("controller", Ordered, func() {
 
 		//By("uninstalling the cert-manager bundle")
 		//utils.UninstallCertManager()
+
 		if cleanEnv {
 
 			By("removing kind cluster")
@@ -192,6 +193,12 @@ var _ = Describe("controller", Ordered, func() {
 				verifyNginxPods,
 				time.Minute, time.Second).Should(Succeed())
 
+			var deployment = &appsv1.Deployment{}
+
+			err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("Deployment after create '%s' at generation %d\n", deployment.Name, deployment.Generation)
+
 			//this is different than the eviction-autoscaler manager in that the pdb is generated
 			By("Verify PDB and PDBWatcher exist")
 			verifyPdbExists := func() error {
@@ -242,7 +249,6 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Verifying annotations are added")
 			verifyAnnotationExists := func() error {
-				var deployment = &appsv1.Deployment{}
 				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if val, ok := deployment.Annotations["evictionSurgeReplicas"]; !ok {
@@ -250,6 +256,7 @@ var _ = Describe("controller", Ordered, func() {
 				} else {
 					fmt.Printf("Annotation evictionSurgeReplicas has value %s set\n", val)
 				}
+				fmt.Printf("Deployment after cordon '%s' at generation %d\n", deployment.Name, deployment.Generation)
 				return nil
 			}
 			EventuallyWithOffset(1, verifyAnnotationExists, time.Minute, time.Second).Should(Succeed())
@@ -284,7 +291,6 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
 			//verify there is always one running pod? other might be terminating/creating so need different
 			//check that there are two pods temporarily or does that not matter as long as we successfully evicted?
-			var deployment = &appsv1.Deployment{}
 			By("Verifying we scale back down")
 			verifyDeploymentReplicas := func() error {
 				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
@@ -296,6 +302,7 @@ var _ = Describe("controller", Ordered, func() {
 				if _, ok := deployment.Annotations["evictionSurgeReplicas"]; ok {
 					return fmt.Errorf("Annotation \"evictionSurgeReplicas\" is not removed\n")
 				}
+				fmt.Printf("Deployment after eviction '%s' at generation %d\n", deployment.Name, deployment.Generation)
 				return nil
 			}
 			//have to wait longer than pdbwatchers cooldown

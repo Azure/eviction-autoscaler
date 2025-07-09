@@ -141,7 +141,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	logger.Info("Number of pods found", "count", len(podList.Items))
 
 	if len(podList.Items) == 0 {
-		// TODO instead of an error which leads to a backoff retry quitely for a while then error?
+		// TODO instead of an error which leads to a backoff retry quietly for a while then error?
 		return "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
 	}
 

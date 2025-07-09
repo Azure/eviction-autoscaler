@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
@@ -39,11 +40,24 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
+		// todo: decrement? DeploymentGauge when deployment not found
+		// was deployment ever tracked? permanent vs temporary not found?
 		return reconcile.Result{}, err
 	}
-	log := log.FromContext(ctx)
-	// Check if PDB already exists for this Deployment
 
+	// check if deployment is being deleted:
+	// if !deployment.DeletionTimestamp.IsZero() {
+	// Deployment is being deleted
+	//metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Dec()
+	//return reconcile.Result{}, nil
+	//}
+
+	log := log.FromContext(ctx)
+
+	// Increment deployment count for metrics
+	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
+
+	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
 		Namespace: deployment.Namespace,
@@ -58,7 +72,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
-
 			// PDB already exists, nothing to do
 			EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
 			err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
@@ -105,6 +118,10 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if err := r.Create(ctx, pdb); err != nil {
 		return reconcile.Result{}, err
 	}
+
+	// Track PDB creation event
+	metrics.PDBCreationCounter.WithLabelValues(deployment.Namespace, deployment.Name).Inc()
+
 	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
 	return reconcile.Result{}, nil
 }

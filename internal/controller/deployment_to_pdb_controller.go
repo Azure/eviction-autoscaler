@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -145,6 +146,21 @@ func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) strin
 	return deploymentName
 }
 
+// triggerOnReplicaChange checks if a deployment update event should trigger reconciliation
+// by comparing the number of replicas between old and new deployment
+func triggerOnReplicaChange(e event.UpdateEvent, logger logr.Logger) bool {
+	if oldDeployment, ok := e.ObjectOld.(*v1.Deployment); ok {
+		newDeployment := e.ObjectNew.(*v1.Deployment)
+		if lo.FromPtr(oldDeployment.Spec.Replicas) != lo.FromPtr(newDeployment.Spec.Replicas) {
+			logger.Info("Update event detected, num of replicas changed",
+				"newReplicas", lo.FromPtr(newDeployment.Spec.Replicas),
+				"oldReplicas", lo.FromPtr(oldDeployment.Spec.Replicas))
+			return true
+		}
+	}
+	return false
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
@@ -154,15 +170,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				if oldDeployment, ok := e.ObjectOld.(*v1.Deployment); ok {
-					newDeployment := e.ObjectNew.(*v1.Deployment)
-					if lo.FromPtr(oldDeployment.Spec.Replicas) != lo.FromPtr(newDeployment.Spec.Replicas) {
-						//Update event detected, num of replicas changed	{"newReplicas": 2, "oldReplicas": 2}
-						logger.Info("Update event detected, num of replicas changed", "newReplicas", lo.FromPtr(newDeployment.Spec.Replicas), "oldReplicas", lo.FromPtr(oldDeployment.Spec.Replicas))
-						return true
-					}
-				}
-				return false
+				return triggerOnReplicaChange(e, logger)
 			},
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership

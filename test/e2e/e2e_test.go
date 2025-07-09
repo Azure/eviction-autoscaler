@@ -196,6 +196,7 @@ var _ = Describe("controller", Ordered, func() {
 			var deployment = &appsv1.Deployment{}
 
 			err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+			Expect(err).NotTo(HaveOccurred())
 			fmt.Printf("Deployment after create '%s' at generation %d\n", deployment.Name, deployment.Generation)
 
 			//this is different than the eviction-autoscaler manager in that the pdb is generated

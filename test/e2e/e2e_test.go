@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -415,6 +416,37 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
+
+			By("Scraping controller metrics at the end of the e2e test")
+
+			scrapeMetrics := func() error {
+				// Fetch controller-manager pod name via kubectl and label selector
+				cmd := exec.Command("kubectl", "-n", "kube-system", "get", "pods", "-l", "app.kubernetes.io/name=eviction-autoscaler", "-o", "jsonpath={.items[0].metadata.name}")
+				podNameBytes, err := utils.Run(cmd)
+				if err != nil {
+					return err
+				}
+				podName := strings.TrimSpace(string(podNameBytes))
+				if podName == "" {
+					return fmt.Errorf("unable to locate controller-manager pod name")
+				}
+
+				// Scrape metrics directly using the Kubernetes API server proxy
+				metricsPath := fmt.Sprintf("/api/v1/namespaces/kube-system/pods/%s:8080/proxy/metrics", podName)
+				cmd = exec.Command("kubectl", "-n", "kube-system", "get", "--raw", metricsPath)
+				metricsOutput, err := utils.Run(cmd)
+				if err != nil {
+					return err
+				}
+
+				// Print a subset of interesting metrics for visibility
+				fmt.Println("===== Eviction Autoscaler Metrics =====")
+				fmt.Println(string(metricsOutput))
+				fmt.Println("======================================")
+				return nil
+			}
+
+			Expect(scrapeMetrics()).To(Succeed())
 		})
 	})
 })

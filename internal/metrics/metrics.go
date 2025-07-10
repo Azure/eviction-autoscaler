@@ -63,13 +63,13 @@ var (
 	)
 
 	// ScalingOpportunityCounter tracks how often the controller thinks it could have scaled a deployment
-	// Labels: namespace, deployment_name, action (scale_up/scale_down)
+	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal
 	ScalingOpportunityCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "eviction_autoscaler_scaling_opportunities_total",
 			Help: "Total number of times the controller identified scaling opportunities",
 		},
-		[]string{"namespace", "deployment_name", "action"},
+		[]string{"namespace", "deployment_name", "action", "signal"},
 	)
 
 	// ActualScalingCounter tracks actual scaling actions performed
@@ -157,6 +157,15 @@ const (
 const (
 	ScaleUpAction   = "scale_up"
 	ScaleDownAction = "scale_down"
+)
+
+// Constants for scaling opportunity signals
+const (
+	PDBBlockedSignal                = "pdb_blocked"
+	MinAvailableEqualsDesiredSignal = "min_available_equals_desired_healthy"
+	CooldownElapsedSignal           = "cooldown_elapsed"
+	OldNotReadyPodsSignal           = "old_not_ready_pods"
+	WouldExceedMinAvailableSignal   = "would_exceed_min_available"
 )
 
 // GetPDBCreatedByUsLabel returns the appropriate label value based on PDB annotations

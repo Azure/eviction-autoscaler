@@ -39,6 +39,7 @@ import (
 
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
+	_ "github.com/azure/eviction-autoscaler/internal/metrics"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )

@@ -52,68 +52,85 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	// Track PDB existence
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
-	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
-	var EvictionAutoScaler types.EvictionAutoScaler
-	err = r.Get(ctx, req.NamespacedName, &EvictionAutoScaler)
-	if err != nil {
-		if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
+	deploymentName, e := r.discoverDeployment(ctx, &pdb)
+	if e != nil {
+		if e == errOwnerNotFound {
+			return reconcile.Result{}, nil
 		}
-
-		deploymentName, e := r.discoverDeployment(ctx, &pdb)
-		if e != nil {
-			if e == errOwnerNotFound {
-				return reconcile.Result{}, nil
-			}
-			return reconcile.Result{}, e
-		}
-
-		//variables
-		controller := true
-		blockOwnerDeletion := true
-
-		// Create a new EvictionAutoScaler
-		EvictionAutoScaler = types.EvictionAutoScaler{
-			TypeMeta: metav1.TypeMeta{
-				Kind:       "EvictionAutoScaler",
-				APIVersion: "eviction-autoscaler.azure.com/v1",
-			},
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      pdb.Name,
-				Namespace: pdb.Namespace,
-				Annotations: map[string]string{
-					"createdBy": "PDBToEvictionAutoScalerController",
-					"target":    deploymentName,
-				},
-				OwnerReferences: []metav1.OwnerReference{
-					{
-						APIVersion:         "policy/v1",
-						Kind:               "PodDisruptionBudget",
-						Name:               pdb.Name,
-						UID:                pdb.UID,
-						Controller:         &controller,         // Mark as managed by this controller
-						BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the EvictionAutoScaler until the controller is deleted
-					},
-				},
-			},
-			Spec: types.EvictionAutoScalerSpec{
-				TargetName: deploymentName,
-				TargetKind: deploymentKind,
-			},
-		}
-
-		err := r.Create(ctx, &EvictionAutoScaler)
-		if err != nil {
-			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
-		}
-
-		// Track EvictionAutoScaler creation
-		metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
-
-		logger.Info("Created EvictionAutoScaler")
+		return reconcile.Result{}, e
 	}
+
+	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
+	var eva types.EvictionAutoScaler
+	err = r.Get(ctx, req.NamespacedName, &eva)
+	if err == nil {
+		//we should only be here if pdb selectors changed
+		// still some chance the deployment changes without changing labels.
+		//could also always update it so eviction autoscaler fixes it minavailable status immediately.
+		if eva.Annotations["createdBy"] == "PDBToEvictionAutoScalerController" &&
+			(eva.Spec.TargetName != deploymentName) {
+			eva.Spec.TargetName = deploymentName
+			err = r.Update(ctx, &eva)
+			if err != nil {
+				return reconcile.Result{}, fmt.Errorf("unable to update EvictionAutoScaler: %v", err)
+			}
+		}
+		// Return no error and no requeue
+		return reconcile.Result{}, nil
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return ctrl.Result{}, err
+	}
+
+	eva = generateEvictionAutoScalerName(&pdb, deploymentName)
+	err = r.Create(ctx, &eva)
+	if err != nil {
+		return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
+	}
+
+	// Track EvictionAutoScaler creation
+	metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
+
+	logger.Info("Created EvictionAutoScaler")
+
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
+}
+
+func generateEvictionAutoScalerName(pdb *policyv1.PodDisruptionBudget, deploymentName string) types.EvictionAutoScaler {
+	//variables
+	controller := true
+	blockOwnerDeletion := true
+	// Create a new EvictionAutoScaler
+	return types.EvictionAutoScaler{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "EvictionAutoScaler",
+			APIVersion: "eviction-autoscaler.azure.com/v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      pdb.Name,
+			Namespace: pdb.Namespace,
+			Annotations: map[string]string{
+				"createdBy": "PDBToEvictionAutoScalerController",
+				"target":    deploymentName,
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				{
+					APIVersion:         "policy/v1",
+					Kind:               "PodDisruptionBudget",
+					Name:               pdb.Name,
+					UID:                pdb.UID,
+					Controller:         &controller,         // Mark as managed by this controller
+					BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the EvictionAutoScaler until the controller is deleted
+				},
+			},
+		},
+		Spec: types.EvictionAutoScalerSpec{
+			TargetName: deploymentName,
+			TargetKind: deploymentKind,
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -124,9 +141,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 		WithEventFilter(predicate.Funcs{
 			// Only trigger for Create and Delete events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				//ToDo: theoretically you could have a pdb update and change
-				// its label selectors in which case you might need to update the deployment target?
-				return false
+				return e.ObjectOld.GetGeneration() != e.ObjectNew.GetGeneration() //spec has been updated. regenerate
 			},
 		}).
 		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership

@@ -136,14 +136,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
 
-		// Track scaling opportunity
-		// Determine signal for scaling opportunity
-		signalLabel := metrics.PDBBlockedSignal
-		if pdb.Spec.MinAvailable != nil && int32(pdb.Spec.MinAvailable.IntValue()) == pdb.Status.DesiredHealthy {
-			signalLabel = metrics.MinAvailableEqualsDesiredSignal
-		}
-
 		// Track scaling opportunity with signal label
+		signalLabel := metrics.GetScalingSignal(pdb.Spec.MinAvailable, pdb.Status.DesiredHealthy)
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
 
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)

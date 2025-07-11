@@ -18,7 +18,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
-	"k8s.io/apimachinery/pkg/util/intstr"
+	policyv1 "k8s.io/api/policy/v1"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -179,8 +179,8 @@ func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 }
 
 // GetScalingSignal determines the appropriate signal label for scaling opportunities
-func GetScalingSignal(minAvailable *intstr.IntOrString, desiredHealthy int32) string {
-	if minAvailable != nil && int64(minAvailable.IntValue()) == int64(desiredHealthy) {
+func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
+	if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
 		return MinAvailableEqualsDesiredSignal
 	}
 	return PDBBlockedSignal

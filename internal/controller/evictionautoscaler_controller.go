@@ -137,7 +137,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
 
 		// Track scaling opportunity with signal label
-		signalLabel := metrics.GetScalingSignal(pdb.Spec.MinAvailable, pdb.Status.DesiredHealthy)
+		signalLabel := metrics.GetScalingSignal(pdb)
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
 
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)

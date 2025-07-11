@@ -74,8 +74,8 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			if err != nil {
 				return reconcile.Result{}, fmt.Errorf("unable to update EvictionAutoScaler: %v", err)
 			}
+			logger.Info("Updated EvictionAutoScaler")
 		}
-		// Return no error and no requeue
 		return reconcile.Result{}, nil
 	}
 
@@ -94,7 +94,6 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 	logger.Info("Created EvictionAutoScaler")
 
-	// Return no error and no requeue
 	return reconcile.Result{}, nil
 }
 

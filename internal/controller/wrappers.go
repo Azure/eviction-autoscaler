@@ -12,6 +12,7 @@ type Surger interface {
 	GetReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
+	GetMaxUnavailable() intstr.IntOrString
 	Obj() client.Object
 	AddAnnotation(string, string)
 	RemoveAnnotation(string)
@@ -48,6 +49,13 @@ func (d *DeploymentWrapper) SetReplicas(replicas int32) {
 func (d *DeploymentWrapper) GetMaxSurge() intstr.IntOrString {
 	if d.obj.Spec.Strategy.RollingUpdate != nil && d.obj.Spec.Strategy.RollingUpdate.MaxSurge != nil {
 		return *d.obj.Spec.Strategy.RollingUpdate.MaxSurge
+	}
+	return intstr.FromInt(0)
+}
+
+func (d *DeploymentWrapper) GetMaxUnavailable() intstr.IntOrString {
+	if d.obj.Spec.Strategy.RollingUpdate != nil && d.obj.Spec.Strategy.RollingUpdate.MaxUnavailable != nil {
+		return *d.obj.Spec.Strategy.RollingUpdate.MaxUnavailable
 	}
 	return intstr.FromInt(0)
 }
@@ -92,6 +100,10 @@ func (s *StatefulSetWrapper) SetReplicas(replicas int32) {
 
 func (s *StatefulSetWrapper) GetMaxSurge() intstr.IntOrString {
 	return intstr.FromString("10%") //there is no max surge for stateful sets.
+}
+
+func (s *StatefulSetWrapper) GetMaxUnavailable() intstr.IntOrString {
+	return intstr.FromInt(0) //there is no max unavailable for stateful sets in this context.
 }
 
 func GetSurger(kind string) (Surger, error) {

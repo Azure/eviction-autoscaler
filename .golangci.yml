@@ -32,6 +32,8 @@ linters:
     - ineffassign
     - lll
     - misspell
+    - nilnil         # Checks for redundant nil checks
+    - noctx          # Finds HTTP requests without context
     - nakedret
     - prealloc
     - staticcheck

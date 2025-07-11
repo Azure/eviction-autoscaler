@@ -55,7 +55,6 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 	// Find the applicable EvictionAutoScaler
 	var applicableEvictionAutoScaler *pdbautoscaler.EvictionAutoScaler
 	for _, EvictionAutoScaler := range EvictionAutoScalerList.Items {
-		EvictionAutoScaler := EvictionAutoScaler
 		// Fetch the associated PDB
 		pdb := &policyv1.PodDisruptionBudget{}
 		err := e.Client.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)

@@ -433,8 +433,9 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				podName := pods.Items[0].Name
 
-				// TODO Use clientset with proxy and HTTP GET instead of kubectl and use a Prometheus client to get structured data for assertions
-				// try to confirm that we get a MinAvailableEqualsDesiredSignal from nginx ingress pod
+				// TODO Use clientset with proxy and HTTP GET instead of kubectl and use a Prometheus client
+				// to get structured data for assertions. Try to confirm that we get a
+				// MinAvailableEqualsDesiredSignal from nginx ingress pod
 
 				// Scrape metrics directly using the Kubernetes API server proxy
 				metricsPath := fmt.Sprintf("/api/v1/namespaces/kube-system/pods/%s:8080/proxy/metrics", podName)

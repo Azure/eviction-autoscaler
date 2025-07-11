@@ -2,16 +2,15 @@ apiVersion: v1
 kind: Service
 metadata:
   labels:
-    control-plane: controller-manager
     app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: kustomize
   name: controller-manager-metrics-service
   namespace: system
 spec:
   ports:
-  - name: http
+  - name: metrics
     port: 8080
     protocol: TCP
     targetPort: 8080
   selector:
-    control-plane: controller-manager
+    app.kubernetes.io/name: eviction-autoscaler

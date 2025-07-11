@@ -7,7 +7,6 @@ import (
 	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -84,9 +83,9 @@ func (e *EvictionHandler) Handle(ctx context.Context, req admission.Request) adm
 
 	logger.Info("Found EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name)
 
-	updatedpod := podutil.UpdatePodCondition(&podObj.Status, &v1.PodCondition{
-		Type:    v1.DisruptionTarget,
-		Status:  v1.ConditionTrue,
+	updatedpod := podutil.UpdatePodCondition(&podObj.Status, &corev1.PodCondition{
+		Type:    corev1.DisruptionTarget,
+		Status:  corev1.ConditionTrue,
 		Reason:  "EvictionAttempt",
 		Message: "eviction attempt recorded by eviction webhook",
 	})

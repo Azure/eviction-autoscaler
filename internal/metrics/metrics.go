@@ -18,6 +18,7 @@ package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
+	policyv1 "k8s.io/api/policy/v1"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -63,13 +64,13 @@ var (
 	)
 
 	// ScalingOpportunityCounter tracks how often the controller thinks it could have scaled a deployment
-	// Labels: namespace, deployment_name, action (scale_up/scale_down)
+	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal
 	ScalingOpportunityCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "eviction_autoscaler_scaling_opportunities_total",
 			Help: "Total number of times the controller identified scaling opportunities",
 		},
-		[]string{"namespace", "deployment_name", "action"},
+		[]string{"namespace", "deployment_name", "action", "signal"},
 	)
 
 	// ActualScalingCounter tracks actual scaling actions performed
@@ -159,12 +160,31 @@ const (
 	ScaleDownAction = "scale_down"
 )
 
+// Constants for scaling opportunity signals
+const (
+	PDBBlockedSignal                = "pdb_blocked"
+	MinAvailableEqualsDesiredSignal = "min_available_equals_desired_healthy"
+	CooldownElapsedSignal           = "cooldown_elapsed"
+	// todo: Implement these when additional scaling logic is added
+	// OldNotReadyPodsSignal           = "old_not_ready_pods"
+	// WouldExceedMinAvailableSignal   = "would_exceed_min_available"
+)
+
 // GetPDBCreatedByUsLabel returns the appropriate label value based on PDB annotations
 func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 	if ann, ok := annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
 		return PDBCreatedByUsStr
 	}
 	return PDBNotCreatedByUsStr
+}
+
+// GetScalingSignal determines the appropriate signal label for scaling opportunities
+func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
+	// TODO: Could implement later for proactive scaling logic
+	// if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
+	//     return MinAvailableEqualsDesiredSignal
+	// }
+	return PDBBlockedSignal
 }
 
 func init() {

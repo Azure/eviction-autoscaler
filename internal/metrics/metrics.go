@@ -180,9 +180,10 @@ func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 
 // GetScalingSignal determines the appropriate signal label for scaling opportunities
 func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
-	if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
-		return MinAvailableEqualsDesiredSignal
-	}
+	// TODO: Could implement later for proactive scaling logic
+	// if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
+	//     return MinAvailableEqualsDesiredSignal
+	// }
 	return PDBBlockedSignal
 }
 

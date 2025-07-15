@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -397,6 +398,49 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
+
+			By("Scraping controller metrics at the end of the e2e test")
+
+			scrapeMetrics := func() error {
+				// Fetch controller-manager pod using clientset and label selector
+				var pods = &corev1.PodList{}
+				err := clientset.List(ctx, pods, client.InNamespace("kube-system"),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"},
+					client.Limit(1))
+				if err != nil {
+					return err
+				}
+				if len(pods.Items) == 0 {
+					return fmt.Errorf("unable to locate controller-manager pod")
+				}
+				podName := pods.Items[0].Name
+
+				// TODO Use clientset with proxy and HTTP GET instead of kubectl and use a Prometheus client
+				// to get structured data for assertions. Try to confirm that we get a
+				// MinAvailableEqualsDesiredSignal from nginx ingress pod
+
+				// Scrape metrics directly using the Kubernetes API server proxy
+				metricsPath := fmt.Sprintf("/api/v1/namespaces/kube-system/pods/%s:8080/proxy/metrics", podName)
+				cmd = exec.Command("kubectl", "-n", "kube-system", "get", "--raw", metricsPath)
+				metricsOutput, err := utils.Run(cmd)
+				if err != nil {
+					return err
+				}
+
+				// Print a subset of interesting metrics for visibility
+				fmt.Println("===== Eviction Autoscaler Metrics =====")
+				metricsLines := strings.Split(string(metricsOutput), "\n")
+				for _, line := range metricsLines {
+					// Only show our eviction autoscaler and controller runtime metrics, skip comments and empty lines
+					if strings.HasPrefix(line, "eviction_autoscaler_") || strings.HasPrefix(line, "controller_runtime_") {
+						fmt.Println(line)
+					}
+				}
+				fmt.Println("======================================")
+				return nil
+			}
+
+			Expect(scrapeMetrics()).To(Succeed())
 		})
 	})
 })

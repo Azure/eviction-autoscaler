@@ -207,7 +207,7 @@ var _ = Describe("controller", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
-					fmt.Printf("found pdb name: %s \n", pdb.Name)
+					//fmt.Printf("found pdb name: %s \n", pdb.Name)
 					if pdb.Name != "ingress-nginx" {
 						return fmt.Errorf("nginx pdb is not present on cluster")
 					}
@@ -357,29 +357,10 @@ var _ = Describe("controller", Ordered, func() {
 						fmt.Printf("PDB '%s' has MinAvailable set to 2\n", pdb.Name)
 					}
 				}
+				//Eviction Autoscaler minavailable only updates lazily on an eviction or resync so ignore
 				return nil
 			}
 			EventuallyWithOffset(1, verifyMinAvailableUpdated, time.Minute, time.Second).Should(Succeed())
-
-			//Autoscalers min available status is not updaed by pdb watcher but can self update if controller restarts/resyncs
-			/*By("Verify Eviction Autoscaler MinAvailable is not updated")
-			verifyEvictionAutoScalerNotUpdated := func() error {
-				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
-				err = clientset.List(ctx, evictionAutoScalerList,
-					client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
-				Expect(err).NotTo(HaveOccurred())
-				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
-				for _, resource := range evictionAutoScalerList.Items {
-					fmt.Printf("found evictionautoscaler name: %s \n", resource.GetName())
-
-					if val := resource.Status.MinReplicas; val == 2 {
-						return fmt.Errorf("eviction autoscaler '%s' has MinReplicas set to %d (not 1)\n", resource.Name, val)
-					}
-					fmt.Printf("eviction autoscaler '%s' has MinReplicas set to 1\n", resource.Name)
-				}
-				return nil
-			}
-			EventuallyWithOffset(1, verifyEvictionAutoScalerNotUpdated, time.Minute, time.Second).Should(Succeed()) */
 
 			By("Delete Deployment and verify PDB gets deleted")
 			deleteNginxDeployment := func() error {
@@ -397,7 +378,7 @@ var _ = Describe("controller", Ordered, func() {
 				var pdbList = &policy.PodDisruptionBudgetList{}
 				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
-				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
+				//fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				if len(pdbList.Items) != 0 {
 					return fmt.Errorf("nginx pdb is still present on cluster")
 				}

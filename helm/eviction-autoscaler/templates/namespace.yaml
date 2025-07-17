@@ -1,0 +1,12 @@
+{{- if not (eq .Release.Namespace "default") }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: eviction-autoscaler
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/chart: eviction-autoscaler-0.1.0
+{{- end }}

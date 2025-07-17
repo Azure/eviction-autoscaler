@@ -1,0 +1,25 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "eviction-autoscaler.fullname" . }}-metrics-monitor
+  namespace: {{ .Values.namespace }}
+  labels:
+    app.kubernetes.io/name: eviction-autoscaler
+    app.kubernetes.io/component: metrics
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    helm.sh/chart: {{ include "eviction-autoscaler.chart" . }}
+    control-plane: controller-manager
+spec:
+  endpoints:
+  - path: /metrics
+    port: http
+    scheme: http
+    interval: 30s
+    scrapeTimeout: 10s
+    honorLabels: false
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: eviction-autoscaler
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: metrics

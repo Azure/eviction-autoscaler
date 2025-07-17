@@ -4,16 +4,16 @@ metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
   namespace: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: {{ include "eviction-autoscaler.name" . }}
+    app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/component: controller
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     helm.sh/chart: {{ include "eviction-autoscaler.chart" . }}
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: {{ include "eviction-autoscaler.name" . }}
+      app.kubernetes.io/name: eviction-autoscaler
       app.kubernetes.io/instance: {{ .Release.Name }}
   template:
     metadata:
@@ -21,28 +21,14 @@ spec:
         kubectl.kubernetes.io/default-container: manager
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
-        app.kubernetes.io/name: {{ include "eviction-autoscaler.name" . }}
+        app.kubernetes.io/name: eviction-autoscaler
         app.kubernetes.io/component: controller
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
-      serviceAccountName: {{ .Values.serviceAccount.name }}
+      serviceAccountName: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
       terminationGracePeriodSeconds: 30
-      {{- with .Values.podSecurityContext }}
       securityContext:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
+        runAsNonRoot: true
       containers:
       - name: eviction-autoscaler
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -50,35 +36,35 @@ spec:
         command:
         - /manager
         args:
-        {{- if .Values.leaderElection.enabled }}
         - --leader-elect
-        {{- end }}
-        - --health-probe-bind-address=:{{ .Values.ports.health }}
-        - --metrics-bind-address=:{{ .Values.ports.metrics }}
+        - --health-probe-bind-address=:8081
+        - --metrics-bind-address=:8080
         - --config=/etc/eviction-autoscaler/config.yaml
         ports:
-        - containerPort: {{ .Values.ports.metrics }}
+        - containerPort: 8080
           name: metrics
           protocol: TCP
-        - containerPort: {{ .Values.ports.health }}
+        - containerPort: 8081
           name: health
           protocol: TCP
-        {{- with .Values.livenessProbe }}
         livenessProbe:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.readinessProbe }}
+          httpGet:
+            path: /healthz
+            port: 8081
+          initialDelaySeconds: 15
+          periodSeconds: 20
         readinessProbe:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.resources }}
+          httpGet:
+            path: /readyz
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
         resources:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
-        {{- with .Values.securityContext }}
+          {{- toYaml .Values.resources | nindent 10 }}
         securityContext:
-          {{- toYaml . | nindent 10 }}
-        {{- end }}
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
         volumeMounts:
         - name: config
           mountPath: /etc/eviction-autoscaler

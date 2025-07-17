@@ -1,12 +1,10 @@
-{{- if and .Values.rbac.create .Values.leaderElection.enabled }}
----
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-leader-election-role
   namespace: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: {{ include "eviction-autoscaler.name" . }}
+    app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     helm.sh/chart: {{ include "eviction-autoscaler.chart" . }}
@@ -49,7 +47,7 @@ metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-leader-election-rolebinding
   namespace: {{ .Values.namespace }}
   labels:
-    app.kubernetes.io/name: {{ include "eviction-autoscaler.name" . }}
+    app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: {{ .Release.Service }}
     app.kubernetes.io/instance: {{ .Release.Name }}
     helm.sh/chart: {{ include "eviction-autoscaler.chart" . }}
@@ -59,6 +57,5 @@ roleRef:
   name: {{ include "eviction-autoscaler.fullname" . }}-leader-election-role
 subjects:
 - kind: ServiceAccount
-  name: {{ .Values.serviceAccount.name }}
+  name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
   namespace: {{ .Values.namespace }}
-{{- end }}

@@ -1,28 +1,14 @@
-# Default values for eviction-autoscaler.
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# =============================================================================
+# USER CONFIGURATION - Main settings users typically need to customize
+# =============================================================================
 
-replicaCount: 1
-
+# Container image configuration
 image:
-  repository: paulgmiller/k8s-pdb-autoscaler #need to point to mcr later
+  repository: paulgmiller/k8s-pdb-autoscaler
   tag: latest
   pullPolicy: IfNotPresent
 
-nameOverride: ""
-fullnameOverride: ""
-
-serviceAccount:
-  # Specifies whether a service account should be created
-  create: true
-  # Annotations to add to the service account
-  annotations: {}
-  # The name of the service account to use.
-  name: eviction-autoscaler
-
-# Namespace to deploy the controller to
-namespace: default
-
+# Resource limits and requests
 resources:
   limits:
     cpu: 500m
@@ -31,27 +17,56 @@ resources:
     cpu: 10m
     memory: 64Mi
 
-# Node selector for pod assignment
-nodeSelector: {}
+# Controller configuration - the main settings users need to customize
+controllerConfig:
+  # Metrics configuration
+  metrics:
+    enabled: true
+  
+  # Namespace watching configuration
+  namespaces:
+    # Watch mode: "all", "only", or "none"
+    # - "all": Watch all namespaces
+    # - "only": Watch only namespaces specified in includeList  
+    # - "none": Disable controller
+    watchMode: "all"
+    # List of namespaces to exclude (when watchMode is "all")
+    excludeList: []
+    # List of namespaces to include (when watchMode is "only")
+    includeList: []
+  
+  # PDB creation configuration
+  pdb:
+    create: true
 
-# Tolerations for pod assignment
-tolerations: []
+# ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)
+serviceAccount:
+  annotations: {}
 
-# Affinity for pod assignment
-affinity: {}
+# =============================================================================
+# INTERNAL CONFIGURATION - Fixed settings with sensible defaults
+# These are not intended for user customization
+# =============================================================================
 
-# Security context for the pod
+# Deployment configuration (fixed)
+replicaCount: 1
+namespace: default
+
+# PodDisruptionBudget for the controller itself
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Security contexts (fixed for security)
 podSecurityContext:
   runAsNonRoot: true
 
-# Security context for the container
 securityContext:
   allowPrivilegeEscalation: false
   capabilities:
-    drop:
-    - "ALL"
+    drop: ["ALL"]
 
-# Probes configuration
+# Health checks (fixed)
 livenessProbe:
   httpGet:
     path: /healthz
@@ -66,84 +81,7 @@ readinessProbe:
   initialDelaySeconds: 5
   periodSeconds: 10
 
-# Metrics and health probe ports
+# Port configuration (fixed)
 ports:
   metrics: 8080
   health: 8081
-
-# PodDisruptionBudget configuration
-pdb:
-  enabled: true
-  minAvailable: 1
-
-# RBAC configuration
-rbac:
-  create: true
-
-# Leader election configuration
-leaderElection:
-  enabled: true
-
-# CRD configuration
-crd:
-  # Specifies whether the CRD should be created
-  create: true
-
-# Controller configuration
-controllerConfig:
-  # Metrics configuration
-  metrics:
-    enabled: true
-  
-  # Namespace watching configuration
-  namespaces:
-    # Watch mode: "all", "only", or "none"
-    # - "all": Watch all namespaces (optionally exclude some with excludeList)
-    # - "only": Watch only namespaces specified in includeList  
-    # - "none": Watch no namespaces (disable controller)
-    watchMode: "all"
-    # List of namespaces to exclude (used with watchMode "all")
-    excludeList: []
-    # List of namespaces to include (only used when watchMode is "only")
-    includeList: []
-  
-  # PDB configuration
-  pdb:
-    create: true
-
-# Metrics configuration
-metrics:
-  # Enable metrics collection
-  enabled: true
-  
-  # Metrics service configuration
-  service:
-    type: ClusterIP
-    port: 8080
-    portName: http
-    annotations: {}
-  
-  # ServiceMonitor configuration (for Prometheus Operator)
-  serviceMonitor:
-    # Enable ServiceMonitor creation
-    enabled: true
-    # Scrape path
-    path: /metrics
-    # Scrape scheme
-    scheme: http
-    # Scrape interval
-    interval: 30s
-    # Scrape timeout
-    scrapeTimeout: 10s
-    # Honor labels
-    honorLabels: false
-    # Additional labels for ServiceMonitor
-    labels: {}
-    # Additional annotations for ServiceMonitor
-    annotations: {}
-    # Namespace selector for ServiceMonitor
-    namespaceSelector: {}
-    # Metric relabelings
-    metricRelabelings: []
-    # Relabelings
-    relabelings: []

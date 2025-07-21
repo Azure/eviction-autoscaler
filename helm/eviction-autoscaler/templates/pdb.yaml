@@ -2,7 +2,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager-pdb
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "eviction-autoscaler.ns" . }}
   labels:
     app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/managed-by: {{ .Release.Service }}

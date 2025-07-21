@@ -39,6 +39,12 @@ controllerConfig:
   pdb:
     create: true
 
+# ServiceMonitor for Prometheus Operator (optional)
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+
 # ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)
 serviceAccount:
   annotations: {}
@@ -50,7 +56,7 @@ serviceAccount:
 
 # Deployment configuration (fixed)
 replicaCount: 1
-namespace: default
+namespace: ""
 
 # PodDisruptionBudget for the controller itself
 pdb:

@@ -1,8 +1,9 @@
+{{- if .Values.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-metrics-monitor
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "eviction-autoscaler.ns" . }}
   labels:
     app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/component: metrics
@@ -15,11 +16,12 @@ spec:
   - path: /metrics
     port: http
     scheme: http
-    interval: 30s
-    scrapeTimeout: 10s
+    interval: {{ .Values.serviceMonitor.interval }}
+    scrapeTimeout: {{ .Values.serviceMonitor.scrapeTimeout }}
     honorLabels: false
   selector:
     matchLabels:
       app.kubernetes.io/name: eviction-autoscaler
       app.kubernetes.io/instance: {{ .Release.Name }}
       app.kubernetes.io/component: metrics
+{{- end }}

@@ -1,4 +1,4 @@
-{{- if not (eq .Release.Namespace "default") }}
+{{- if and (not (eq .Release.Namespace "default")) (not (hasPrefix "kube-" .Release.Namespace)) }}
 apiVersion: v1
 kind: Namespace
 metadata:

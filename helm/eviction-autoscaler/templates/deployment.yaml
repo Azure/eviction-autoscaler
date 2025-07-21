@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
-  namespace: {{ .Values.namespace }}
+  namespace: {{ include "eviction-autoscaler.ns" . }}
   labels:
     app.kubernetes.io/name: eviction-autoscaler
     app.kubernetes.io/component: controller
@@ -19,7 +19,6 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
-        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
       labels:
         app.kubernetes.io/name: eviction-autoscaler
         app.kubernetes.io/component: controller
@@ -39,7 +38,6 @@ spec:
         - --leader-elect
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8080
-        - --config=/etc/eviction-autoscaler/config.yaml
         ports:
         - containerPort: 8080
           name: metrics
@@ -65,11 +63,3 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop: ["ALL"]
-        volumeMounts:
-        - name: config
-          mountPath: /etc/eviction-autoscaler
-          readOnly: true
-      volumes:
-      - name: config
-        configMap:
-          name: {{ include "eviction-autoscaler.fullname" . }}-config

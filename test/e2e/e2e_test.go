@@ -161,7 +161,8 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			cmd = exec.Command("kubectl", "wait", "--for=condition=available", "deployment/eviction-autoscaler-controller-manager",
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler-controller-manager",
 				"--namespace", "kube-system", "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())

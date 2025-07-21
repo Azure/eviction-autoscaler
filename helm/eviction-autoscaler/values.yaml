@@ -39,11 +39,7 @@ controllerConfig:
   pdb:
     create: true
 
-# ServiceMonitor for Prometheus Operator (optional)
-serviceMonitor:
-  enabled: false
-  interval: 30s
-  scrapeTimeout: 10s
+
 
 # ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)
 serviceAccount:

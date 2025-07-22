@@ -56,7 +56,7 @@ func init() {
 	utilruntime.Must(types.AddToScheme(scheme))
 }
 
-// SYNC with kustomize file
+// Test namespace for eviction-autoscaler
 const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
@@ -135,7 +135,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			// Deploy the controller using the Helm chart instead of kustomize
+			// Deploy the controller using the Helm chart
 			By("deploying the controller-manager with Helm")
 
 			// Split the image into repository and tag so we can

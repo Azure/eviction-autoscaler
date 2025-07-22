@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
-#So ideally we move towards kustomize and cert manager
-#that will make image and namespace simpler first then cert manger should make the webhook ca bundle easier.
+# Installation script for eviction-autoscaler
+# Note: This is a legacy script. For new deployments, use the Helm chart instead.
 
 # Define variables
 IMAGE="paulgmiller/k8s-pdb-autoscaler:latest" 

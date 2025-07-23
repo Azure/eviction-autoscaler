@@ -43,15 +43,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Resolve the namespace where namespaced resources should be created.
-If the user does not explicitly set `.Values.namespace`, fall back to `.Release.Namespace` so that
-`helm install -n <ns>` works out of the box.
-*/}}
-{{- define "eviction-autoscaler.ns" -}}
-{{- default .Release.Namespace .Values.namespace -}}
-{{- end }}
-
-{{/*
 Selector labels
 */}}
 {{- define "eviction-autoscaler.selectorLabels" -}}

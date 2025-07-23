@@ -52,7 +52,6 @@ serviceAccount:
 
 # Deployment configuration (fixed)
 replicaCount: 1
-namespace: ""
 
 # PodDisruptionBudget for the controller itself
 pdb:

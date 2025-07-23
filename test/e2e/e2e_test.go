@@ -90,9 +90,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			//By("installing the cert-manager")
 			//Expect(utils.InstallCertManager()).To(Succeed())
-			By("creating manager namespace")
-			_, err = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-			Expect(err).NotTo(HaveOccurred())
+			// Namespace will be created automatically by Helm with --create-namespace
 		}
 
 	})
@@ -149,11 +147,10 @@ var _ = Describe("controller", Ordered, func() {
 			// Use `helm upgrade --install` so that the test can be re-run without manual cleanup.
 			helmArgs := []string{
 				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", "kube-system", "--create-namespace",
+				"--namespace", namespace, "--create-namespace",
 				"--set", fmt.Sprintf("image.repository=%s", repo),
 				"--set", fmt.Sprintf("image.tag=%s", tag),
 				"--set", "image.pullPolicy=IfNotPresent",
-				"--set", "serviceMonitor.enabled=false",
 			}
 
 			cmd = exec.Command("helm", helmArgs...)
@@ -163,7 +160,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler-controller-manager",
-				"--namespace", "kube-system", "--timeout=300s")
+				"--namespace", namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
@@ -198,7 +195,7 @@ var _ = Describe("controller", Ordered, func() {
 				return pods.Items[0].Spec.NodeName, nil
 			}
 			verifyControllerMgrPods := func() error {
-				_, e := verifyRunningPods("kube-system", client.MatchingLabels{
+				_, e := verifyRunningPods(namespace, client.MatchingLabels{
 					"app.kubernetes.io/name": "eviction-autoscaler",
 				}, 1)
 				return e
@@ -426,7 +423,7 @@ var _ = Describe("controller", Ordered, func() {
 			scrapeMetrics := func() error {
 				// Fetch controller-manager pod using clientset and label selector
 				var pods = &corev1.PodList{}
-				err := clientset.List(ctx, pods, client.InNamespace("kube-system"),
+				err := clientset.List(ctx, pods, client.InNamespace(namespace),
 					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"},
 					client.Limit(1))
 				if err != nil {
@@ -442,8 +439,8 @@ var _ = Describe("controller", Ordered, func() {
 				// MinAvailableEqualsDesiredSignal from nginx ingress pod
 
 				// Scrape metrics directly using the Kubernetes API server proxy
-				metricsPath := fmt.Sprintf("/api/v1/namespaces/kube-system/pods/%s:8080/proxy/metrics", podName)
-				cmd = exec.Command("kubectl", "-n", "kube-system", "get", "--raw", metricsPath)
+				metricsPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s:8080/proxy/metrics", namespace, podName)
+				cmd = exec.Command("kubectl", "-n", namespace, "get", "--raw", metricsPath)
 				metricsOutput, err := utils.Run(cmd)
 				if err != nil {
 					return err

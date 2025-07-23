@@ -5,8 +5,8 @@ set -e
 # This replaces the legacy manual installation with a Helm-based approach
 
 # Default values
-IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-paulgmiller/k8s-pdb-autoscaler}"
-IMAGE_TAG="${IMAGE_TAG:-latest}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-mcr.microsoft.com/oss/v2/eviction-autoscaler/eviction-autoscaler}"
+IMAGE_TAG="${IMAGE_TAG:-v1.0.1}"
 NAMESPACE="${NAMESPACE:-kube-system}"
 
 echo "🚀 Installing eviction-autoscaler using Helm..."
@@ -18,8 +18,7 @@ echo
 helm upgrade --install eviction-autoscaler ./helm/eviction-autoscaler \
     --namespace "${NAMESPACE}" --create-namespace \
     --set image.repository="${IMAGE_REPOSITORY}" \
-    --set image.tag="${IMAGE_TAG}" \
-    --set image.pullPolicy=IfNotPresent
+    --set image.tag="${IMAGE_TAG}"
 
 echo
 echo "✅ Installation completed!"

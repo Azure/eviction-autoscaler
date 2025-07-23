@@ -120,22 +120,26 @@ ifndef ignore-not-found
   ignore-not-found = false
 endif
 
-.PHONY: helm-install
-helm-install: ## Install the controller using Helm.
+.PHONY: install
+install: ## Install the controller using Helm.
 	helm upgrade --install eviction-autoscaler ./helm/eviction-autoscaler \
 		--namespace kube-system --create-namespace \
-		--set image.repository=paulgmiller/k8s-pdb-autoscaler \
-		--set image.tag=${IMG#*:}
+		--set image.repository=mcr.microsoft.com/oss/v2/eviction-autoscaler/eviction-autoscaler \
+		--set image.tag=v1.0.1
 
-.PHONY: helm-uninstall
-helm-uninstall: ## Uninstall the controller using Helm.
+.PHONY: uninstall
+uninstall: ## Uninstall the controller using Helm.
 	helm uninstall eviction-autoscaler --namespace kube-system
 
 .PHONY: deploy
-deploy: helm-install ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: ## Deploy controller with custom image to the K8s cluster specified in ~/.kube/config.
+	helm upgrade --install eviction-autoscaler ./helm/eviction-autoscaler \
+		--namespace kube-system --create-namespace \
+		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
+		--set image.tag=$(shell echo ${IMG} | cut -d: -f2)
 
 .PHONY: undeploy
-undeploy: helm-uninstall ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
+undeploy: uninstall ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 
 ##@ Dependencies
 

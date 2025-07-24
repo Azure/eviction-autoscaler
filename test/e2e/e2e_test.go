@@ -56,7 +56,7 @@ func init() {
 	utilruntime.Must(types.AddToScheme(scheme))
 }
 
-// SYNC with kustomize file
+// Test namespace for eviction-autoscaler
 const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
@@ -90,9 +90,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			//By("installing the cert-manager")
 			//Expect(utils.InstallCertManager()).To(Succeed())
-			By("creating manager namespace")
-			_, err = utils.Run(exec.Command("kubectl", "create", "ns", namespace))
-			Expect(err).NotTo(HaveOccurred())
+			// Namespace will be created automatically by Helm with --create-namespace
 		}
 
 	})
@@ -135,13 +133,38 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("installing CRDs")
-			cmd = exec.Command("make", "install")
+			// Deploy the controller using the Helm chart
+			By("deploying the controller-manager with Helm")
+
+			// Split the image into repository and tag so we can
+			// override the chart values accordingly.
+			imgParts := strings.Split(projectimage, ":")
+			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+
+			repo := imgParts[0]
+			tag := imgParts[1]
+
+			// Use `helm upgrade --install` so that the test can be re-run without manual cleanup.
+			// Not: we use pullPolicy=IfNotPresent is required for Kind e2e testing because
+			// We build and load the image locally into Kind cluster 
+			// the image tag doesn't exist in any remote registry
+			// if pullPolicy=Always would fail trying to pull from remote registry
+			helmArgs := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+			}
+
+			cmd = exec.Command("helm", helmArgs...)
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("deploying the controller-manager")
-			cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectimage))
+			By("waiting for deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler-controller-manager",
+				"--namespace", namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
@@ -176,7 +199,7 @@ var _ = Describe("controller", Ordered, func() {
 				return pods.Items[0].Spec.NodeName, nil
 			}
 			verifyControllerMgrPods := func() error {
-				_, e := verifyRunningPods("kube-system", client.MatchingLabels{
+				_, e := verifyRunningPods(namespace, client.MatchingLabels{
 					"app.kubernetes.io/name": "eviction-autoscaler",
 				}, 1)
 				return e
@@ -404,7 +427,7 @@ var _ = Describe("controller", Ordered, func() {
 			scrapeMetrics := func() error {
 				// Fetch controller-manager pod using clientset and label selector
 				var pods = &corev1.PodList{}
-				err := clientset.List(ctx, pods, client.InNamespace("kube-system"),
+				err := clientset.List(ctx, pods, client.InNamespace(namespace),
 					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"},
 					client.Limit(1))
 				if err != nil {
@@ -420,8 +443,8 @@ var _ = Describe("controller", Ordered, func() {
 				// MinAvailableEqualsDesiredSignal from nginx ingress pod
 
 				// Scrape metrics directly using the Kubernetes API server proxy
-				metricsPath := fmt.Sprintf("/api/v1/namespaces/kube-system/pods/%s:8080/proxy/metrics", podName)
-				cmd = exec.Command("kubectl", "-n", "kube-system", "get", "--raw", metricsPath)
+				metricsPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s:8080/proxy/metrics", namespace, podName)
+				cmd = exec.Command("kubectl", "-n", namespace, "get", "--raw", metricsPath)
 				metricsOutput, err := utils.Run(cmd)
 				if err != nil {
 					return err

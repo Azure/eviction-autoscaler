@@ -39,6 +39,8 @@ controllerConfig:
   pdb:
     create: true
 
+
+
 # ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)
 serviceAccount:
   annotations: {}
@@ -50,7 +52,6 @@ serviceAccount:
 
 # Deployment configuration (fixed)
 replicaCount: 1
-namespace: default
 
 # PodDisruptionBudget for the controller itself
 pdb:

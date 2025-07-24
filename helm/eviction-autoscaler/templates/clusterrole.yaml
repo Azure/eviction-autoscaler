@@ -111,4 +111,4 @@ roleRef:
 subjects:
 - kind: ServiceAccount
   name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}

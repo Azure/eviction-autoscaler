@@ -48,7 +48,7 @@ helm push "$chart_pkg" "oci://$IMAGE_REPO/helm/eviction-autoscaler"
 rm -f "$chart_pkg"
 
 cosign_sign "$IMG" "$version" "$commit_sha" "$build_dt"
-cosign_sign "${IMAGE_REPO}/eviction-autoscaler:$version" "$version" "$commit_sha" "$build_dt"
+cosign_sign "${IMAGE_REPO}:$version" "$version" "$commit_sha" "$build_dt"
 
 lock_image "$RELEASE_ACR" "public/aks/eviction-autoscaler/controller" "$version"
 

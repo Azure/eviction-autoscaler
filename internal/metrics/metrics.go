@@ -17,8 +17,14 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
+	"sort"
+
 	"github.com/prometheus/client_golang/prometheus"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -64,13 +70,13 @@ var (
 	)
 
 	// ScalingOpportunityCounter tracks how often the controller thinks it could have scaled a deployment
-	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal
+	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal, age_pattern, likely_helpful
 	ScalingOpportunityCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "eviction_autoscaler_scaling_opportunities_total",
 			Help: "Total number of times the controller identified scaling opportunities",
 		},
-		[]string{"namespace", "deployment_name", "action", "signal"},
+		[]string{"namespace", "deployment_name", "action", "signal", "age_pattern", "likely_helpful"},
 	)
 
 	// ActualScalingCounter tracks actual scaling actions performed
@@ -132,6 +138,26 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// PodAgeFailurePatternGauge tracks failure patterns by pod age
+	// Labels: namespace, pdb_name, pattern (oldest_failing/newest_failing/random_failing/all_healthy)
+	PodAgeFailurePatternGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_pod_age_failure_pattern",
+			Help: "Current failure pattern based on pod age (1 = active pattern, 0 = not active)",
+		},
+		[]string{"namespace", "pdb_name", "pattern"},
+	)
+
+	// ScalingEffectivenessGauge tracks whether scaling would likely help based on failure patterns
+	// Labels: namespace, pdb_name, likely_helpful (true/false)
+	ScalingEffectivenessGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_scaling_effectiveness_prediction",
+			Help: "Prediction of whether scaling up would be effective (1 = likely helpful, 0 = unlikely helpful)",
+		},
+		[]string{"namespace", "pdb_name", "likely_helpful"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -170,6 +196,20 @@ const (
 	// WouldExceedMinAvailableSignal   = "would_exceed_min_available"
 )
 
+// Constants for pod age failure patterns
+const (
+	OldestFailingPattern = "oldest_failing"
+	NewestFailingPattern = "newest_failing"
+	RandomFailingPattern = "random_failing"
+	AllHealthyPattern    = "all_healthy"
+)
+
+// Constants for scaling effectiveness predictions
+const (
+	LikelyHelpfulStr   = "true"
+	UnlikelyHelpfulStr = "false"
+)
+
 // GetPDBCreatedByUsLabel returns the appropriate label value based on PDB annotations
 func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 	if ann, ok := annotations["createdBy"]; ok && ann == "DeploymentToPDBController" {
@@ -187,6 +227,172 @@ func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
 	return PDBBlockedSignal
 }
 
+// GetScalingOpportunityLabels gets age pattern and effectiveness labels for scaling opportunities
+func GetScalingOpportunityLabels(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, string) {
+	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	if err != nil {
+		return "unknown", "unknown"
+	}
+	
+	isHelpful := PredictScalingEffectiveness(pattern)
+	helpfulLabel := UnlikelyHelpfulStr
+	if isHelpful {
+		helpfulLabel = LikelyHelpfulStr
+	}
+	
+	return pattern, helpfulLabel
+}
+
+// AnalyzePodAgeFailurePattern analyzes the failure pattern of pods based on their age
+func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, error) {
+	// Convert PDB label selector to Kubernetes selector
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return AllHealthyPattern, err
+	}
+
+	// List all pods matching the PDB selector
+	var podList corev1.PodList
+	err = c.List(ctx, &podList, &client.ListOptions{
+		Namespace:     pdb.Namespace,
+		LabelSelector: selector,
+	})
+	if err != nil {
+		return AllHealthyPattern, err
+	}
+
+	if len(podList.Items) == 0 {
+		return AllHealthyPattern, nil
+	}
+
+	// Sort pods by creation time (oldest first)
+	sort.Slice(podList.Items, func(i, j int) bool {
+		return podList.Items[i].CreationTimestamp.Before(&podList.Items[j].CreationTimestamp)
+	})
+
+	// Categorize pods as unhealthy
+	var unhealthyPods []corev1.Pod
+	for _, pod := range podList.Items {
+		if !isPodHealthy(&pod) {
+			unhealthyPods = append(unhealthyPods, pod)
+		}
+	}
+
+	// If all pods are healthy
+	if len(unhealthyPods) == 0 {
+		return AllHealthyPattern, nil
+	}
+
+	// Analyze failure pattern - simpler logic based on where most failures are
+	totalPods := len(podList.Items)
+	totalUnhealthyPods := len(unhealthyPods)
+	
+	// If less than 2 pods, can't determine pattern clearly
+	if totalPods < 2 {
+		return AllHealthyPattern, nil
+	}
+
+	// Split pods into oldest half and newest half
+	oldestHalf := totalPods / 2
+	
+	oldestFailureCount := 0
+	newestFailureCount := 0
+
+	for i, pod := range podList.Items {
+		if !isPodHealthy(&pod) {
+			if i < oldestHalf {
+				oldestFailureCount++
+			} else {
+				newestFailureCount++
+			}
+		}
+	}
+
+	// Simple majority logic:
+	// If more than 66% of failures are in oldest half -> oldest failing
+	// If more than 66% of failures are in newest half -> newest failing  
+	// Otherwise -> random failing
+	oldestFailureRatio := float64(oldestFailureCount) / float64(totalUnhealthyPods)
+	newestFailureRatio := float64(newestFailureCount) / float64(totalUnhealthyPods)
+	
+	if oldestFailureRatio >= 0.66 {
+		return OldestFailingPattern, nil
+	} else if newestFailureRatio >= 0.66 {
+		return NewestFailingPattern, nil
+	} else {
+		return RandomFailingPattern, nil
+	}
+}
+
+// isPodHealthy determines if a pod is healthy based on its conditions
+func isPodHealthy(pod *corev1.Pod) bool {
+	// Check if pod is running
+	if pod.Status.Phase != corev1.PodRunning {
+		return false
+	}
+
+	// Check readiness condition
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.PodReady {
+			return condition.Status == corev1.ConditionTrue
+		}
+	}
+
+	return false
+}
+
+// PredictScalingEffectiveness predicts whether scaling up would be helpful based on failure pattern
+func PredictScalingEffectiveness(pattern string) bool {
+	switch pattern {
+	case OldestFailingPattern:
+		// If oldest pods are failing, scaling up helps by giving new pods time to stabilize
+		return true
+	case NewestFailingPattern:
+		// If newest pods are failing, scaling up won't help much as new pods will likely also fail
+		return false
+	case RandomFailingPattern:
+		// Random failures - unclear if scaling helps, default to cautious approach
+		return false
+	case AllHealthyPattern:
+		// All pods healthy, no need to scale
+		return false
+	default:
+		return false
+	}
+}
+
+// UpdatePodAgeFailureMetrics updates the metrics for pod age failure patterns
+func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) {
+	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	if err != nil {
+		// Log error but don't fail the reconcile
+		return
+	}
+
+	// Reset all pattern metrics for this PDB
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, OldestFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, NewestFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, RandomFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AllHealthyPattern).Set(0)
+
+	// Set the current pattern
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, pattern).Set(1)
+
+	// Update scaling effectiveness prediction
+	isHelpful := PredictScalingEffectiveness(pattern)
+	helpfulLabel := UnlikelyHelpfulStr
+	if isHelpful {
+		helpfulLabel = LikelyHelpfulStr
+	}
+
+	// Reset both effectiveness metrics for this PDB
+	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, LikelyHelpfulStr).Set(0)
+	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, UnlikelyHelpfulStr).Set(0)
+
+	// Set the current effectiveness prediction
+	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, helpfulLabel).Set(1)
+}
+
 func init() {
 	// Register metrics with controller-runtime's registry
 	ctrlmetrics.Registry.MustRegister(
@@ -201,5 +407,7 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		PodAgeFailurePatternGauge,
+		ScalingEffectivenessGauge,
 	)
 }

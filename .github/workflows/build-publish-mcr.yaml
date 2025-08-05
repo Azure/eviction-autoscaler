@@ -46,4 +46,4 @@ jobs:
       env:
         RELEASE_ACR: AKSMCRImagesCommon
       run: |
-        ./hack/release/release.sh
+        ./hack/release.sh

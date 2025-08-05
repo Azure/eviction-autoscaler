@@ -150,7 +150,7 @@ var (
 	)
 
 	// ScalingEffectivenessGauge tracks whether scaling would likely help based on failure patterns
-	// Labels: namespace, pdb_name, likely_helpful (true/false)
+	// Labels: namespace, pdb_name, likely_helpful
 	ScalingEffectivenessGauge = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "eviction_autoscaler_scaling_effectiveness_prediction",
@@ -265,7 +265,7 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 		return AllHealthyPattern, nil
 	}
 
-	// Sort pods by creation time (oldest first)
+	// Sort pods by creation time 
 	sort.Slice(podList.Items, func(i, j int) bool {
 		return podList.Items[i].CreationTimestamp.Before(&podList.Items[j].CreationTimestamp)
 	})
@@ -283,7 +283,7 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 		return AllHealthyPattern, nil
 	}
 
-	// Analyze failure pattern - simpler logic based on where most failures are
+	// Analyze failure pattern 
 	totalPods := len(podList.Items)
 	totalUnhealthyPods := len(unhealthyPods)
 	
@@ -308,10 +308,10 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 		}
 	}
 
-	// Simple majority logic:
+	// Follow majority logic
 	// If more than 66% of failures are in oldest half -> oldest failing
 	// If more than 66% of failures are in newest half -> newest failing  
-	// Otherwise -> random failing
+	// Otherwise this is a random failing pattern
 	oldestFailureRatio := float64(oldestFailureCount) / float64(totalUnhealthyPods)
 	newestFailureRatio := float64(newestFailureCount) / float64(totalUnhealthyPods)
 	
@@ -351,7 +351,7 @@ func PredictScalingEffectiveness(pattern string) bool {
 		// If newest pods are failing, scaling up won't help much as new pods will likely also fail
 		return false
 	case RandomFailingPattern:
-		// Random failures - unclear if scaling helps, default to cautious approach
+		// Random failures - unclear if scaling helps default to maybe?
 		return false
 	case AllHealthyPattern:
 		// All pods healthy, no need to scale

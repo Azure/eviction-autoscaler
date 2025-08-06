@@ -351,7 +351,7 @@ func PredictScalingEffectiveness(pattern string) bool {
 		// If newest pods are failing, scaling up won't help much as new pods will likely also fail
 		return false
 	case RandomFailingPattern:
-		// Random failures - unclear if scaling helps default to maybe?
+		// Random failures indicate no clear pattern, so scaling up is unlikely to be effective
 		return false
 	case AllHealthyPattern:
 		// All pods healthy, no need to scale

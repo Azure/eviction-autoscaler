@@ -30,7 +30,7 @@ echo "Building and publishing controller image with ko..."
 IMG=$(KO_DOCKER_REPO="$IMAGE_REPO" ko publish -B --sbom none -t "$version" ./cmd/manager)
 echo "Image pushed: $IMG"
 
-trivy_scan "$IMAGE"
+trivy_scan "$IMG"
 
 img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
 img_digest="$(echo "$IMG" | cut -d '@' -f 2)"

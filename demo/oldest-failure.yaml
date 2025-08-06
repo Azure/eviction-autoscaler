@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: oldest-fail-script
+  namespace: demo
+data:
+  oldest-fail.sh: |
+    #!/bin/bash
+    POD_NAME=$HOSTNAME
+    POD_CREATION_TIME=$(stat -c %Y /proc/1)
+    
+    echo "Pod $POD_NAME started at $POD_CREATION_TIME"
+    
+    # Create health files initially
+    touch /tmp/healthy
+    touch /tmp/ready
+    
+    while true; do
+      # Get all pod creation times
+      OLDEST_TIME=$(kubectl get pods -n demo -l app=oldest-fail -o json | \
+        jq -r '.items | sort_by(.metadata.creationTimestamp) | .[0].metadata.name')
+      
+      if [ "$POD_NAME" == "$OLDEST_TIME" ]; then
+        echo "I am the oldest pod, failing health checks"
+        rm -f /tmp/healthy /tmp/ready
+      else
+        echo "Not the oldest pod, staying healthy"
+        touch /tmp/healthy
+        touch /tmp/ready
+      fi
+      
+      sleep 30
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oldest-fail-app
+  namespace: demo
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: oldest-fail
+  template:
+    metadata:
+      labels:
+        app: oldest-fail
+    spec:
+      serviceAccountName: pod-reader
+      containers:
+      - name: app
+        image: bitnami/kubectl:latest
+        command: ["/bin/bash", "/scripts/oldest-fail.sh"]
+        env:
+        - name: HOSTNAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+        livenessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/healthy
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/ready
+          initialDelaySeconds: 10
+          periodSeconds: 10
+      volumes:
+      - name: script
+        configMap:
+          name: oldest-fail-script
+          defaultMode: 0755
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pod-reader
+  namespace: demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: pod-reader
+  namespace: demo
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pod-reader
+  namespace: demo
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: pod-reader
+subjects:
+- kind: ServiceAccount
+  name: pod-reader
+  namespace: demo

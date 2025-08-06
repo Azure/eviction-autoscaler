@@ -40,3 +40,15 @@ lock_image() {
   echo "Locking image tag $repo:$tag in $acr_name"
   az acr repository update -n "${acr_name}" --image "${repo}:${tag}" --write-enabled false --delete-enabled false
 }
+
+trivy_scan() {
+  local image="$1"
+
+  echo "Scanning image with Trivy: $image"
+  if ! command -v trivy &>/dev/null; then
+    echo "Installing Trivy..."
+    curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+  fi
+
+  trivy image --ignore-unfixed --exit-code 1 --no-progress "$image"
+}

@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: newest-fail-script
+  namespace: demo
+data:
+  newest-fail.sh: |
+    #!/bin/bash
+    POD_NAME=$HOSTNAME
+    
+    echo "Pod $POD_NAME starting..."
+    
+    # New pods fail for first 5 minutes
+    STARTUP_TIME=$(date +%s)
+    
+    while true; do
+      CURRENT_TIME=$(date +%s)
+      ELAPSED=$((CURRENT_TIME - STARTUP_TIME))
+      
+      if [ $ELAPSED -lt 300 ]; then
+        echo "Pod is new (${ELAPSED}s old), failing health checks"
+        rm -f /tmp/healthy /tmp/ready
+      else
+        echo "Pod is mature (${ELAPSED}s old), becoming healthy"
+        touch /tmp/healthy
+        touch /tmp/ready
+      fi
+      
+      sleep 10
+    done
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: newest-fail-app
+  namespace: demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: newest-fail
+  template:
+    metadata:
+      labels:
+        app: newest-fail
+    spec:
+      containers:
+      - name: app
+        image: busybox
+        command: ["/bin/sh", "/scripts/newest-fail.sh"]
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+        livenessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/healthy
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/ready
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: script
+        configMap:
+          name: newest-fail-script
+          defaultMode: 0755

@@ -44,7 +44,7 @@ helm lint helm/eviction-autoscaler
 helm package helm/eviction-autoscaler --version "$version" --app-version "$version"
 
 chart_pkg="eviction-autoscaler-$version.tgz"
-helm push "$chart_pkg" "oci://$RELEASE_ACR_FQDN/public/aks/charts/eviction-autoscaler"
+helm push "$chart_pkg" "oci://$IMAGE_REPO/helm"
 rm -f "$chart_pkg"
 
 cosign_sign "$IMG" "$version" "$commit_sha" "$build_dt"

@@ -141,9 +141,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
 
 		// Track scaling opportunity with signal label and age pattern analysis
-		signalLabel := metrics.GetScalingSignal(pdb)
-		agePattern, likelyHelpful := metrics.GetScalingOpportunityLabels(ctx, r.Client, pdb)
-		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel, agePattern, likelyHelpful).Inc()
+		signal := metrics.GetScalingSignal(ctx, r.Client, pdb)
+		metrics.ScalingOpportunityCounter.WithLabelValues(
+			EvictionAutoScaler.Namespace,
+			EvictionAutoScaler.Spec.TargetName,
+			"scale_up",
+			signal,
+		).Inc()
 
 		// Update pod age failure pattern metrics
 		metrics.UpdatePodAgeFailureMetrics(ctx, r.Client, pdb)
@@ -187,9 +191,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	//still at a scaled out state check if we can scale back down
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas { //would we ever be below min replicas
-
-		// Track scaling opportunity (for scale down we don't need age pattern analysis)
-		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal, "none", "true").Inc()
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		target.SetReplicas(EvictionAutoScaler.Status.MinReplicas)

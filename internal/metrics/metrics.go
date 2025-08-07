@@ -70,13 +70,13 @@ var (
 	)
 
 	// ScalingOpportunityCounter tracks how often the controller thinks it could have scaled a deployment
-	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal, age_pattern, likely_helpful
+	// Labels: namespace, deployment_name, action (scale_up/scale_down), signal
 	ScalingOpportunityCounter = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "eviction_autoscaler_scaling_opportunities_total",
 			Help: "Total number of times the controller identified scaling opportunities",
 		},
-		[]string{"namespace", "deployment_name", "action", "signal", "age_pattern", "likely_helpful"},
+		[]string{"namespace", "deployment_name", "action", "signal"},
 	)
 
 	// ActualScalingCounter tracks actual scaling actions performed
@@ -148,16 +148,6 @@ var (
 		},
 		[]string{"namespace", "pdb_name", "pattern"},
 	)
-
-	// ScalingEffectivenessGauge tracks whether scaling would likely help based on failure patterns
-	// Labels: namespace, pdb_name, likely_helpful
-	ScalingEffectivenessGauge = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "eviction_autoscaler_scaling_effectiveness_prediction",
-			Help: "Prediction of whether scaling up would be effective (1 = likely helpful, 0 = unlikely helpful)",
-		},
-		[]string{"namespace", "pdb_name", "likely_helpful"},
-	)
 )
 
 // Constants for PDB creation tracking
@@ -188,9 +178,15 @@ const (
 
 // Constants for scaling opportunity signals
 const (
-	PDBBlockedSignal                = "pdb_blocked"
-	MinAvailableEqualsDesiredSignal = "min_available_equals_desired_healthy"
-	CooldownElapsedSignal           = "cooldown_elapsed"
+	PDBBlockedSignal                 = "pdb_blocked"
+	MinAvailableEqualsReplicasSignal = "min_available_equals_replicas"
+	OldestFailingSignal              = "oldest_failing"
+	NewestFailingSignal              = "newest_failing"
+	RandomFailingSignal              = "random_failing"
+	AllHealthySignal                 = "all_healthy"
+	AbandonedPDBSignal               = "abandoned_pdb"
+	UnknownSignal                    = "unknown"
+	CooldownElapsedSignal            = "cooldown_elapsed"
 	// todo: Implement these when additional scaling logic is added
 	// OldNotReadyPodsSignal           = "old_not_ready_pods"
 	// WouldExceedMinAvailableSignal   = "would_exceed_min_available"
@@ -202,6 +198,8 @@ const (
 	NewestFailingPattern = "newest_failing"
 	RandomFailingPattern = "random_failing"
 	AllHealthyPattern    = "all_healthy"
+	AbandonedPDBPattern  = "abandoned_pdb"
+	UnknownPattern       = "unknown"
 )
 
 // Constants for scaling effectiveness predictions
@@ -219,36 +217,45 @@ func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 }
 
 // GetScalingSignal determines the appropriate signal label for scaling opportunities
-func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
-	// TODO: Could implement later for proactive scaling logic
-	// if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
-	//     return MinAvailableEqualsDesiredSignal
-	// }
-	return PDBBlockedSignal
-}
+func GetScalingSignal(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) string {
+	// First check if minAvailable == replicas (highest priority signal)
+	if pdb.Spec.MinAvailable != nil && pdb.Status.CurrentHealthy > 0 {
+		minAvailable := pdb.Spec.MinAvailable.IntValue()
+		if minAvailable == int(pdb.Status.CurrentHealthy) {
+			return MinAvailableEqualsReplicasSignal
+		}
+	}
 
-// GetScalingOpportunityLabels gets age pattern and effectiveness labels for scaling opportunities
-func GetScalingOpportunityLabels(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, string) {
-	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	// Then check pod failure patterns
+	pattern, err := analyzePodAgeFailurePattern(ctx, c, pdb)
 	if err != nil {
-		return "unknown", "unknown"
+		return PDBBlockedSignal // fallback to generic signal
 	}
-	
-	isHelpful := PredictScalingEffectiveness(pattern)
-	helpfulLabel := UnlikelyHelpfulStr
-	if isHelpful {
-		helpfulLabel = LikelyHelpfulStr
+
+	switch pattern {
+	case OldestFailingPattern:
+		return OldestFailingSignal
+	case NewestFailingPattern:
+		return NewestFailingSignal
+	case RandomFailingPattern:
+		return RandomFailingSignal
+	case AllHealthyPattern:
+		return AllHealthySignal
+	case AbandonedPDBPattern:
+		return AbandonedPDBSignal
+	case UnknownPattern:
+		return UnknownSignal
+	default:
+		return PDBBlockedSignal // fallback
 	}
-	
-	return pattern, helpfulLabel
 }
 
-// AnalyzePodAgeFailurePattern analyzes the failure pattern of pods based on their age
-func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, error) {
+// analyzePodAgeFailurePattern analyzes the failure pattern of pods based on their age
+func analyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, error) {
 	// Convert PDB label selector to Kubernetes selector
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
-		return AllHealthyPattern, err
+		return UnknownPattern, err
 	}
 
 	// List all pods matching the PDB selector
@@ -258,14 +265,24 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 		LabelSelector: selector,
 	})
 	if err != nil {
-		return AllHealthyPattern, err
+		return UnknownPattern, err
 	}
 
 	if len(podList.Items) == 0 {
+		return AbandonedPDBPattern, nil
+	}
+
+	// If only 1 pod and it's being blocked, that means minAvailable=1
+	// We can't determine age-based failure pattern with only 1 pod
+	if len(podList.Items) == 1 {
+		if !isPodHealthy(&podList.Items[0]) {
+			// Single unhealthy pod - can't determine age pattern
+			return RandomFailingPattern, nil
+		}
 		return AllHealthyPattern, nil
 	}
 
-	// Sort pods by creation time 
+	// Sort pods by creation time
 	sort.Slice(podList.Items, func(i, j int) bool {
 		return podList.Items[i].CreationTimestamp.Before(&podList.Items[j].CreationTimestamp)
 	})
@@ -283,18 +300,13 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 		return AllHealthyPattern, nil
 	}
 
-	// Analyze failure pattern 
+	// Analyze failure pattern (we know we have >= 2 pods at this point)
 	totalPods := len(podList.Items)
 	totalUnhealthyPods := len(unhealthyPods)
-	
-	// If less than 2 pods, can't determine pattern clearly
-	if totalPods < 2 {
-		return AllHealthyPattern, nil
-	}
 
 	// Split pods into oldest half and newest half
 	oldestHalf := totalPods / 2
-	
+
 	oldestFailureCount := 0
 	newestFailureCount := 0
 
@@ -310,11 +322,11 @@ func AnalyzePodAgeFailurePattern(ctx context.Context, c client.Client, pdb *poli
 
 	// Follow majority logic
 	// If more than 66% of failures are in oldest half -> oldest failing
-	// If more than 66% of failures are in newest half -> newest failing  
+	// If more than 66% of failures are in newest half -> newest failing
 	// Otherwise this is a random failing pattern
 	oldestFailureRatio := float64(oldestFailureCount) / float64(totalUnhealthyPods)
 	newestFailureRatio := float64(newestFailureCount) / float64(totalUnhealthyPods)
-	
+
 	if oldestFailureRatio >= 0.66 {
 		return OldestFailingPattern, nil
 	} else if newestFailureRatio >= 0.66 {
@@ -341,29 +353,9 @@ func isPodHealthy(pod *corev1.Pod) bool {
 	return false
 }
 
-// PredictScalingEffectiveness predicts whether scaling up would be helpful based on failure pattern
-func PredictScalingEffectiveness(pattern string) bool {
-	switch pattern {
-	case OldestFailingPattern:
-		// If oldest pods are failing, scaling up helps by giving new pods time to stabilize
-		return true
-	case NewestFailingPattern:
-		// If newest pods are failing, scaling up won't help much as new pods will likely also fail
-		return false
-	case RandomFailingPattern:
-		// Random failures indicate no clear pattern, so scaling up is unlikely to be effective
-		return false
-	case AllHealthyPattern:
-		// All pods healthy, no need to scale
-		return false
-	default:
-		return false
-	}
-}
-
 // UpdatePodAgeFailureMetrics updates the metrics for pod age failure patterns
 func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) {
-	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	pattern, err := analyzePodAgeFailurePattern(ctx, c, pdb)
 	if err != nil {
 		// Log error but don't fail the reconcile
 		return
@@ -374,23 +366,20 @@ func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *polic
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, NewestFailingPattern).Set(0)
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, RandomFailingPattern).Set(0)
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AllHealthyPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AbandonedPDBPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, UnknownPattern).Set(0)
 
 	// Set the current pattern
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, pattern).Set(1)
 
-	// Update scaling effectiveness prediction
-	isHelpful := PredictScalingEffectiveness(pattern)
-	helpfulLabel := UnlikelyHelpfulStr
-	if isHelpful {
-		helpfulLabel = LikelyHelpfulStr
-	}
-
-	// Reset both effectiveness metrics for this PDB
-	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, LikelyHelpfulStr).Set(0)
-	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, UnlikelyHelpfulStr).Set(0)
-
-	// Set the current effectiveness prediction
-	ScalingEffectivenessGauge.WithLabelValues(pdb.Namespace, pdb.Name, helpfulLabel).Set(1)
+	// Update scaling opportunity counter with signal
+	signal := GetScalingSignal(ctx, c, pdb)
+	ScalingOpportunityCounter.WithLabelValues(
+		pdb.Namespace,
+		pdb.Name,   // This should be the deployment/PDB name
+		"scale_up", // This should be the action, not "v1"
+		signal,
+	).Inc()
 }
 
 func init() {
@@ -408,6 +397,5 @@ func init() {
 		PDBInfoGauge,
 		PDBCounter,
 		PodAgeFailurePatternGauge,
-		ScalingEffectivenessGauge,
 	)
 }

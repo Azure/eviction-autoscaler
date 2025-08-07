@@ -36,9 +36,7 @@ img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
 img_digest="$(echo "$IMG" | cut -d '@' -f 2)"
 
 echo "Updating Helm chart values..."
-yq e -i ".controller.image.repository = \"$img_repo\"" helm/eviction-autoscaler/values.yaml
-yq e -i ".controller.image.tag = \"$version\"" helm/eviction-autoscaler/values.yaml
-yq e -i ".controller.image.digest = \"$img_digest\"" helm/eviction-autoscaler/values.yaml
+inject_mcr_image "helm/eviction-autoscaler" "$version"
 
 echo "Packaging Helm chart..."
 helm dependency update helm/eviction-autoscaler

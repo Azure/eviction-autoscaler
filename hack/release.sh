@@ -53,6 +53,5 @@ rm -f "$chart_pkg"
 cosign_sign "$IMG" "$version" "$commit_sha" "$build_dt"
 cosign_sign "${IMAGE_REPO}:$version" "$version" "$commit_sha" "$build_dt"
 
-lock_image "$RELEASE_ACR" "public/aks/eviction-autoscaler/controller" "$version"
-
+lock_image "$RELEASE_ACR" "$IMAGE_REPO" "$version"
 echo "Release complete: $version"

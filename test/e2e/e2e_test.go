@@ -146,7 +146,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Use `helm upgrade --install` so that the test can be re-run without manual cleanup.
 			// Not: we use pullPolicy=IfNotPresent is required for Kind e2e testing because
-			// We build and load the image locally into Kind cluster 
+			// We build and load the image locally into Kind cluster
 			// the image tag doesn't exist in any remote registry
 			// if pullPolicy=Always would fail trying to pull from remote registry
 			helmArgs := []string{

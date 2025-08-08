@@ -37,12 +37,12 @@ func (m *mockPodLister) List(ctx context.Context, list client.ObjectList, opts .
 	if m.err != nil {
 		return m.err
 	}
-	
+
 	// Cast to PodList and populate with our test data
 	if podList, ok := list.(*corev1.PodList); ok {
 		podList.Items = m.pods
 	}
-	
+
 	return nil
 }
 
@@ -58,7 +58,7 @@ func createPod(name string, phase corev1.PodPhase, ready bool, creationTime meta
 			Phase: phase,
 		},
 	}
-	
+
 	if phase == corev1.PodRunning {
 		condition := corev1.PodCondition{
 			Type:   corev1.PodReady,
@@ -69,7 +69,7 @@ func createPod(name string, phase corev1.PodPhase, ready bool, creationTime meta
 		}
 		pod.Status.Conditions = []corev1.PodCondition{condition}
 	}
-	
+
 	return pod
 }
 
@@ -92,9 +92,9 @@ func TestAnalyzePodAgeFailurePattern_EmptyPodList(t *testing.T) {
 	ctx := context.Background()
 	lister := &mockPodLister{pods: []corev1.Pod{}}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -106,16 +106,16 @@ func TestAnalyzePodAgeFailurePattern_EmptyPodList(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_SingleHealthyPod(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	pods := []corev1.Pod{
 		createPod("pod-1", corev1.PodRunning, true, baseTime),
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -127,16 +127,16 @@ func TestAnalyzePodAgeFailurePattern_SingleHealthyPod(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_SingleUnhealthyPod(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	pods := []corev1.Pod{
 		createPod("pod-1", corev1.PodFailed, false, baseTime),
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -148,18 +148,18 @@ func TestAnalyzePodAgeFailurePattern_SingleUnhealthyPod(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_AllHealthyPods(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	pods := []corev1.Pod{
 		createPod("pod-1", corev1.PodRunning, true, baseTime),
-		createPod("pod-2", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-5*time.Minute))), // 5 min ago
+		createPod("pod-2", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-5*time.Minute))),  // 5 min ago
 		createPod("pod-3", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-10*time.Minute))), // 10 min ago
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -171,7 +171,7 @@ func TestAnalyzePodAgeFailurePattern_AllHealthyPods(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_OldestFailingPattern(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	// Create 6 pods: oldest 3 are unhealthy (100% of oldest half), newest 3 are healthy
 	pods := []corev1.Pod{
 		// Oldest half (all failing)
@@ -183,12 +183,12 @@ func TestAnalyzePodAgeFailurePattern_OldestFailingPattern(t *testing.T) {
 		createPod("pod-newest-2", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-10*time.Minute))), // 10 min ago
 		createPod("pod-newest-3", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-5*time.Minute))),  // 5 min ago
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -200,7 +200,7 @@ func TestAnalyzePodAgeFailurePattern_OldestFailingPattern(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_NewestFailingPattern(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	// Create 6 pods: oldest 3 are healthy, newest 3 are unhealthy (100% of newest half)
 	pods := []corev1.Pod{
 		// Oldest half (all healthy)
@@ -212,12 +212,12 @@ func TestAnalyzePodAgeFailurePattern_NewestFailingPattern(t *testing.T) {
 		createPod("pod-newest-2", corev1.PodFailed, false, metav1.NewTime(baseTime.Add(-10*time.Minute))), // 10 min ago
 		createPod("pod-newest-3", corev1.PodFailed, false, metav1.NewTime(baseTime.Add(-5*time.Minute))),  // 5 min ago
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -229,24 +229,24 @@ func TestAnalyzePodAgeFailurePattern_NewestFailingPattern(t *testing.T) {
 func TestAnalyzePodAgeFailurePattern_RandomFailingPattern(t *testing.T) {
 	ctx := context.Background()
 	baseTime := metav1.Now()
-	
+
 	// Create 6 pods with mixed failures (50/50 distribution)
 	pods := []corev1.Pod{
 		// Oldest half (1 healthy, 1 failing)
 		createPod("pod-oldest-1", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-30*time.Minute))), // 30 min ago
-		createPod("pod-oldest-2", corev1.PodFailed, false, metav1.NewTime(baseTime.Add(-25*time.Minute))),  // 25 min ago
+		createPod("pod-oldest-2", corev1.PodFailed, false, metav1.NewTime(baseTime.Add(-25*time.Minute))), // 25 min ago
 		createPod("pod-oldest-3", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-20*time.Minute))), // 20 min ago
 		// Newest half (1 healthy, 1 failing)
 		createPod("pod-newest-1", corev1.PodFailed, false, metav1.NewTime(baseTime.Add(-15*time.Minute))), // 15 min ago
 		createPod("pod-newest-2", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-10*time.Minute))), // 10 min ago
 		createPod("pod-newest-3", corev1.PodRunning, true, metav1.NewTime(baseTime.Add(-5*time.Minute))),  // 5 min ago
 	}
-	
+
 	lister := &mockPodLister{pods: pods}
 	pdb := createTestPDB()
-	
+
 	pattern, err := AnalyzePodAgeFailurePattern(ctx, lister, pdb)
-	
+
 	if err != nil {
 		t.Errorf("Expected no error, got %v", err)
 	}
@@ -314,7 +314,7 @@ func TestIsPodHealthy(t *testing.T) {
 			expected: false,
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := IsPodHealthy(&tt.pod)

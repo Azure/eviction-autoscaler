@@ -224,33 +224,22 @@ func GetScalingSignal(ctx context.Context, c client.Client, pdb *policyv1.PodDis
 	}
 
 	// Then check pod failure patterns
-	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	signal, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
 	if err != nil {
-		return PDBBlockedSignal // fallback to generic signal
+		// we don't know the pattern, so return unknown
+		return UnknownSignal
 	}
 
-	switch pattern {
-	case OldestFailingPattern:
-		return OldestFailingSignal
-	case NewestFailingPattern:
-		return NewestFailingSignal
-	case RandomFailingPattern:
-		return RandomFailingSignal
-	case AllHealthyPattern:
-		return AllHealthySignal
-	case AbandonedPDBPattern:
-		return AbandonedPDBSignal
-	case UnknownPattern:
-		return UnknownSignal
-	default:
-		return PDBBlockedSignal // fallback
-	}
+	return signal
 }
 
-
 // UpdatePodAgeFailureMetrics updates the metrics for pod age failure patterns
+// This function only updates gauges and should be called
+// when an eviction event occurs and is being processed. It does NOT increment
+// scaling opportunity counters those should only be incremented when there's
+// an actual new scaling opportunity
 func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) {
-	pattern, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	signal, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
 	if err != nil {
 		// Log error but don't fail the reconcile
 		return
@@ -264,15 +253,19 @@ func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *polic
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AbandonedPDBPattern).Set(0)
 	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, UnknownPattern).Set(0)
 
-	// Set the current pattern
-	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, pattern).Set(1)
+	// Set the current pattern (signal and pattern values are identical)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, signal).Set(1)
+}
 
-	// Update scaling opportunity counter with signal
+// RecordScalingOpportunity records when there's an actual scaling opportunity
+// This should only be called when there's a new eviction that creates a scaling opportunity
+// (i.e., when Spec.LastEviction != Status.LastEviction)
+func RecordScalingOpportunity(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget, deploymentName, action string) {
 	signal := GetScalingSignal(ctx, c, pdb)
 	ScalingOpportunityCounter.WithLabelValues(
 		pdb.Namespace,
-		pdb.Name,   // This should be the deployment/PDB name
-		"scale_up", // This should be the action, not "v1"
+		deploymentName,
+		"scale_up",
 		signal,
 	).Inc()
 }

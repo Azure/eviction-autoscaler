@@ -36,9 +36,7 @@ img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
 img_digest="$(echo "$IMG" | cut -d '@' -f 2)"
 
 echo "Updating Helm chart values..."
-yq e -i ".controller.image.repository = \"$img_repo\"" helm/eviction-autoscaler/values.yaml
-yq e -i ".controller.image.tag = \"$version\"" helm/eviction-autoscaler/values.yaml
-yq e -i ".controller.image.digest = \"$img_digest\"" helm/eviction-autoscaler/values.yaml
+inject_mcr_image "helm/eviction-autoscaler" "$version"
 
 echo "Packaging Helm chart..."
 helm dependency update helm/eviction-autoscaler
@@ -55,6 +53,5 @@ rm -f "$chart_pkg"
 cosign_sign "$IMG" "$version" "$commit_sha" "$build_dt"
 cosign_sign "${IMAGE_REPO}:$version" "$version" "$commit_sha" "$build_dt"
 
-lock_image "$RELEASE_ACR" "public/aks/eviction-autoscaler/controller" "$version"
-
+lock_image "$RELEASE_ACR" "$IMAGE_REPO" "$version"
 echo "Release complete: $version"

@@ -56,7 +56,7 @@ jobs:
       uses: azure/setup-helm@v4
       with:
         version: v3.12.0
-    - name: 'Login the ACR'
+    - name: 'Login to the ACR'
       env:
         RELEASE_ACR: AKSMCRImagesCommon #owned by aks dev infra
       run: |

@@ -61,5 +61,5 @@ jobs:
         RELEASE_ACR: AKSMCRImagesCommon #owned by aks dev infra
       run: |
         az login --identity
-        az acr login -n ${{ secrets.AZURE_REGISTRY }}
+        az acr login -n $RELEASE_ACR
         ./hack/release.sh

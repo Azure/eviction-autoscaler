@@ -12,7 +12,7 @@ permissions:
 jobs:
   publish:
     runs-on:
-      labels: [self-hosted, "1ES.Pool=1es-aks-eno-pool-ubuntu"]
+      labels: [self-hosted, "1ES.Pool=1es-aks-eviction-autoscaler-pool-ubuntu"]
 
     steps:
     - name: Checkout code

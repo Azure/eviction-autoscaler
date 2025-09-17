@@ -34,23 +34,16 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl jq make ca-certificates apt-transport-https gnupg lsb-release
 
-        # Remove containerd.io if present, to avoid conflicts (safer than removing containerd)
-        if dpkg -l | grep -q containerd.io; then
-          echo "Removing conflicting containerd.io package..."
-          sudo apt-get remove -y containerd.io
+        # Remove containerd if present, to avoid conflicts
+        if dpkg -l | grep -q containerd; then
+          echo "Removing conflicting containerd package..."
+          sudo apt-get remove -y containerd
         fi
 
-        # Install Docker using the official Docker APT repository (more secure)
+        # Install Docker using the official script (recommended way)
         if ! command -v docker >/dev/null 2>&1; then
-          echo "Installing Docker from official APT repository..."
-          # Add Docker's official GPG key
-          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-          # Set up the stable repository
-          echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-            $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-          sudo apt-get update
-          sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+          echo "Installing Docker..."
+          curl -fsSL https://get.docker.com | sudo sh
         fi
 
         # Ensure Azure CLI is available

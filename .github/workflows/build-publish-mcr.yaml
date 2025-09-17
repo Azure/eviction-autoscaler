@@ -34,10 +34,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl jq make ca-certificates apt-transport-https gnupg lsb-release
 
-        # Remove containerd if present, to avoid conflicts
-        if dpkg -l | grep -q containerd; then
-          echo "Removing conflicting containerd package..."
-          sudo apt-get remove -y containerd
+        # Remove containerd.io if present, to avoid conflicts (safer than removing containerd)
+        if dpkg -l | grep -q containerd.io; then
+          echo "Removing conflicting containerd.io package..."
+          sudo apt-get remove -y containerd.io
         fi
 
         # Install Docker using the official script (recommended way)

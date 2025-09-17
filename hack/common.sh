@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-acr_login() {
-  local acr_name="$1"
-  echo "Logging into ACR: $acr_name"
-  az acr login -n "${acr_name}"
-}
-
 cosign_sign() {
   local artifact="$1"
   local version="$2"

@@ -21,8 +21,6 @@ echo "Version: $version"
 echo "Commit: $commit_sha"
 echo "ACR: $RELEASE_ACR"
 
-acr_login "$RELEASE_ACR"
-
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 

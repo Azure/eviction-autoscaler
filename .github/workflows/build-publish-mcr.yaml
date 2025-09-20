@@ -34,7 +34,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl jq make ca-certificates apt-transport-https gnupg lsb-release
 
-        # Install Docker using the official script (recommended way)
+       # Install Docker using the official script (recommended way)
         if ! command -v docker >/dev/null 2>&1; then
           echo "Installing Docker..."
           curl -fsSL https://get.docker.com | sudo sh
@@ -67,7 +67,7 @@ jobs:
 
         # Install trivy (container/image scanning tool)
         if ! command -v trivy >/dev/null 2>&1; then
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/v0.50.0/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
         fi
 
         echo "All tools installed successfully."

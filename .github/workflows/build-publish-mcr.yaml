@@ -34,12 +34,6 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y curl jq make ca-certificates apt-transport-https gnupg lsb-release
 
-        # Remove containerd if present, to avoid conflicts
-        if dpkg -l | grep -q containerd; then
-          echo "Removing conflicting containerd package..."
-          sudo apt-get remove -y containerd
-        fi
-
         # Install Docker using the official script (recommended way)
         if ! command -v docker >/dev/null 2>&1; then
           echo "Installing Docker..."
@@ -95,9 +89,6 @@ jobs:
 
     - name: Verify trivy installation
       run: trivy --version
-
-        # Install trivy so trivy_scan() won't need to install it at runtime
-        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
 
     - name: Set up Helm
       uses: azure/setup-helm@v4

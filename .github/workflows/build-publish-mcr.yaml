@@ -50,7 +50,6 @@ jobs:
         fi
 
         # Update and install required packages via brew
-        brew update
         brew install ko yq cosign trivy azure-cli
 
         echo "All tools installed successfully."

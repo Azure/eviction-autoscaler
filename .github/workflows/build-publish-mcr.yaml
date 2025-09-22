@@ -45,7 +45,8 @@ jobs:
           echo "Installing Homebrew..."
           NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
           # Persist Homebrew env for later steps in this job
-          echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> $GITHUB_ENV
+          /home/linuxbrew/.linuxbrew/bin/brew shellenv | grep -E '^(export |PATH=)' | sed -E 's/^export ([^=]+)=([^\"]+)$/\1=\2/' | grep -v '^PATH=' >> $GITHUB_ENV
+          /home/linuxbrew/.linuxbrew/bin/brew shellenv | grep '^export PATH=' | sed -E 's/^export PATH="([^"]+)".*$/\1/' >> $GITHUB_PATH
           eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
         fi
 

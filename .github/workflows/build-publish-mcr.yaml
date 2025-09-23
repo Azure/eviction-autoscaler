@@ -77,9 +77,13 @@ jobs:
       uses: azure/setup-helm@v4
       with:
         version: v3.12.0
+
+    - name: Make release.sh executable
+      run: chmod +x ./hack/release.sh 
+
     - name: 'Login to the ACR'
       env:
-        RELEASE_ACR: AKSMCRImagesCommon #owned by aks dev infra
+        RELEASE_ACR: aksmcrimagescommon #owned by aks dev infra
       run: |
         az login --identity
         az acr login -n $RELEASE_ACR

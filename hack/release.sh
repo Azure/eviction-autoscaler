@@ -17,13 +17,12 @@ fi
 
 version="$(git describe --tags --abbrev=0 || echo "snapshot-${commit_sha:0:7}")"
 
-echo "Uncommitted changes:"
-git status
-git diff
-
 # Ensure there are no uncommitted changes
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "Error: working directory has uncommitted changes."
+  echo "Uncommitted changes:"
+  git status
+  git diff
   exit 1
 fi
 

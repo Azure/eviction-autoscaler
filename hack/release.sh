@@ -4,15 +4,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 source "${SCRIPT_DIR}/common.sh"
 
+
 commit_sha="$(git rev-parse HEAD)"
+
+# Create a tag for the latest commit if it doesn't already have one
+if ! git describe --tags --exact-match "$commit_sha" >/dev/null 2>&1; then
+  tag_name="commit-$(git rev-parse --short HEAD)"
+  git tag "$tag_name"
+  git push origin "$tag_name"
+  echo "Tagged latest commit as $tag_name"
+fi
+
 version="$(git describe --tags --abbrev=0 || echo "snapshot-${commit_sha:0:7}")"
 
+echo "Uncommitted changes:"
+git status
+git diff
+
+# Ensure there are no uncommitted changes
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "Error: working directory has uncommitted changes."
   exit 1
 fi
 
-RELEASE_ACR="${RELEASE_ACR:-AKSMCRImagesCommon}"
+RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
 

@@ -44,6 +44,9 @@ trivy_scan() {
     curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
   fi
 
+  # Use GitHub Container Registry for Trivy DB to avoid mirror.gcr.io errors
+  export TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db"
+
   trivy image --ignore-unfixed --exit-code 1 --no-progress "$image"
 }
 

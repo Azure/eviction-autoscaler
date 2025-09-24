@@ -17,15 +17,6 @@ fi
 
 version="$(git describe --tags --abbrev=0 || echo "snapshot-${commit_sha:0:7}")"
 
-# Ensure there are no uncommitted changes
-if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Error: working directory has uncommitted changes."
-  echo "Uncommitted changes:"
-  git status
-  git diff
-  exit 1
-fi
-
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"

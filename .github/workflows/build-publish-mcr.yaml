@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main  # Or your release branch
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to run the workflow'
+        required: true
+        default: 'main'    
 
 permissions:
   contents: write

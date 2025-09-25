@@ -53,10 +53,10 @@ helm push "$chart_pkg" "oci://$IMAGE_REPO/helm"
 # Get digest and sign the chart
 chart_ref="${IMAGE_REPO}/helm:${version}"
 chart_digest=$(az acr manifest show \
-  --name "$RELEASE_ACR" \
-  --repository "public/aks/eviction-autoscaler/helm" \
-  --tag "$version" \
+  -r "$RELEASE_ACR" \
+  -n "public/aks/eviction-autoscaler/helm:$version" \
   --query digest -o tsv)
+
 cosign sign "${IMAGE_REPO}/helm@${chart_digest}" --yes
 
 rm -f "$chart_pkg"

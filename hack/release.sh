@@ -7,15 +7,16 @@ source "${SCRIPT_DIR}/common.sh"
 
 commit_sha="$(git rev-parse HEAD)"
 
-# Create a tag for the latest commit if it doesn't already have one
-if ! git describe --tags --exact-match "$commit_sha" >/dev/null 2>&1; then
-  tag_name="commit-$(git rev-parse --short HEAD)"
-  git tag "$tag_name"
-  git push origin "$tag_name"
-  echo "Tagged latest commit as $tag_name"
-fi
+base_version="0.1"
+commit_count=$(git rev-list --count HEAD)
+version="${base_version}.${commit_count}"
 
-version="$(git describe --tags --abbrev=0 || echo "snapshot-${commit_sha:0:7}")"
+# Create a tag for the latest commit if it doesn't already have one
+if ! git describe --tags --exact-match "$version" >/dev/null 2>&1; then
+  git tag "$version"
+  git push origin "$version"
+  echo "Tagged latest commit as $version"
+fi
 
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"

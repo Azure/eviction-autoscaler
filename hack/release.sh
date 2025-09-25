@@ -50,11 +50,18 @@ helm package helm/eviction-autoscaler --version "$version" --app-version "$versi
 chart_pkg="eviction-autoscaler-$version.tgz"
 helm push "$chart_pkg" "oci://$IMAGE_REPO/helm"
 
+# Optional: wait a few seconds for ACR to register the new manifest
+sleep 5
+
+# List tags to verify the chart was pushed
+echo "Available tags in ACR for helm repo:"
+az acr repository show-tags -n "$RELEASE_ACR" --repository "public/aks/eviction-autoscaler/helm"
+
 # Get digest and sign the chart
 chart_ref="${IMAGE_REPO}/helm:${version}"
 chart_digest=$(az acr manifest show \
   -r "$RELEASE_ACR" \
-  -n "public/aks/eviction-autoscaler/helm:$version" \
+  -n "public/aks/eviction-autoscaler/helm:latest" \
   --query digest -o tsv)
 
 cosign sign "${IMAGE_REPO}/helm@${chart_digest}" --yes

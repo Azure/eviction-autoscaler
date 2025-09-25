@@ -74,5 +74,5 @@ require (
 	github.com/go-logr/logr v1.4.2
 	github.com/prometheus/client_golang v1.20.5
 	github.com/samber/lo v1.51.0
-	golang.org/x/oauth2 v0.27.0 // indirect
+	golang.org/x/oauth2 v0.27.0
 )

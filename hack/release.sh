@@ -50,12 +50,6 @@ helm package helm/eviction-autoscaler --version "$version" --app-version "$versi
 chart_pkg="eviction-autoscaler-$version.tgz"
 helm push "$chart_pkg" "oci://$IMAGE_REPO/helm"
 
-# After helm push, get the digest for the chart
-chart_ref="${IMAGE_REPO}/helm:${version}"
-chart_digest=$(crane digest "$chart_ref") # crane is a tool for OCI registries
-
-cosign sign "${IMAGE_REPO}/helm@${chart_digest}" --yes
-
 # Get digest and sign the chart
 chart_ref="${IMAGE_REPO}/helm:${version}"
 chart_digest=$(az acr manifest show \

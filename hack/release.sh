@@ -53,14 +53,11 @@ helm push "$chart_pkg" "oci://$IMAGE_REPO/helm"
 # Optional: wait a few seconds for ACR to register the new manifest
 sleep 5
 
-# List tags to verify the chart was pushed
-echo "Available tags in ACR for helm repo:"
-az acr repository show-tags -n "$RELEASE_ACR" --repository "public/aks/eviction-autoscaler/helm"
-
 # Get digest and sign the chart
 chart_ref="${IMAGE_REPO}/helm/eviction-autoscaler:${version}"
 chart_digest=$(crane digest "$chart_ref")
-
+echo "Chart pushed: ${chart_ref}@${chart_digest}"
+echo "Signing chart..."
 cosign sign "${IMAGE_REPO}/helm/eviction-autoscaler@${chart_digest}" --yes
 
 rm -f "$chart_pkg"

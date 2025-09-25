@@ -58,13 +58,10 @@ echo "Available tags in ACR for helm repo:"
 az acr repository show-tags -n "$RELEASE_ACR" --repository "public/aks/eviction-autoscaler/helm"
 
 # Get digest and sign the chart
-chart_ref="${IMAGE_REPO}/helm:${version}"
-chart_digest=$(az acr manifest show \
-  -r "$RELEASE_ACR" \
-  -n "public/aks/eviction-autoscaler/helm:latest" \
-  --query digest -o tsv)
+chart_ref="${IMAGE_REPO}/helm/eviction-autoscaler:${version}"
+chart_digest=$(crane digest "$chart_ref")
 
-cosign sign "${IMAGE_REPO}/helm@${chart_digest}" --yes
+cosign sign "${IMAGE_REPO}/helm/eviction-autoscaler@${chart_digest}" --yes
 
 rm -f "$chart_pkg"
 

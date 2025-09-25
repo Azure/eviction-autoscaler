@@ -29,10 +29,9 @@ git_epoch() {
 
 lock_image() {
   local acr_name="$1"
-  local repo="$2"
-  local tag="$3"
-  echo "Locking image tag $repo:$tag in $acr_name"
-  az acr repository update -n "${acr_name}" --image "${repo}:${tag}" --write-enabled false --delete-enabled false
+  local img="$2"
+  echo "Locking image tag $img in $acr_name"
+  az acr repository update -n "${acr_name}" --image "${img}" --write-enabled false --delete-enabled false
 }
 
 trivy_scan() {

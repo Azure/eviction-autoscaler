@@ -64,5 +64,5 @@ cosign sign "${IMAGE_REPO}/helm/eviction-autoscaler@${chart_digest}" --yes
 
 rm -f "$chart_pkg"
 
-lock_image "$RELEASE_ACR" "$img_path" "$version"
+lock_image "$RELEASE_ACR" "$img_path"
 echo "Release complete: $version"

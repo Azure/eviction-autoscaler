@@ -53,6 +53,6 @@ inject_mcr_image() {
   local chart_path="$1"
   local tag="$2"
   echo "Injecting MCR image into values.yaml: ${tag}"
-  yq e -i '.image.repository = "mcr.microsoft.com/aks/eviction-autoscaler"' "${chart_path}/values.yaml"
+  yq e -i '.image.repository = "mcr.microsoft.com/aks/eviction-autoscaler/cmd"' "${chart_path}/values.yaml"
   yq e -i ".image.tag = \"${tag}\"" "${chart_path}/values.yaml"
 }

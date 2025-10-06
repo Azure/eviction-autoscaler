@@ -44,7 +44,6 @@ trivy_scan "$IMG"
 img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
 img_digest="$(echo "$IMG" | cut -d '@' -f 2)"
 img_path="$(echo "$img_repo" | cut -d "/" -f 2-)"
-img_tag="$(echo "$IMG" | cut -d '@' -f 1 | cut -d ':' -f 2 -s)"
 
 echo "Updating Helm chart values..."
 inject_mcr_image "helm/eviction-autoscaler" "$version"

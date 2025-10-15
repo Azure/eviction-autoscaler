@@ -35,8 +35,8 @@ echo "ACR: $RELEASE_ACR"
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
-echo "Building and publishing controller image with ko..."
-IMG=$(KO_DOCKER_REPO="$IMAGE_REPO" ko publish -B --sbom none -t "$version" ./cmd)
+echo "Building and publishing controller image with dalec..."
+dalec publish --destination "${IMAGE_REPO}:${version}"
 echo "Image pushed: $IMG"
 
 trivy_scan "$IMG"

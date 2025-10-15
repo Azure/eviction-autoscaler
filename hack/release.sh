@@ -35,7 +35,7 @@ epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
 echo "Building and publishing controller image with Docker..."
-docker build -t "${IMAGE_REPO}:${version}"
+docker build -t "${IMAGE_REPO}:${version}" .
 docker push "${IMAGE_REPO}:${version}"
 IMG="${IMAGE_REPO}:${version}"
 echo "Image pushed: $IMG"

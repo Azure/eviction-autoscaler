@@ -11,7 +11,6 @@ RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
 repo_path="public/aks/eviction-autoscaler/cmd"  # adjust if your ko publish path changes
 
-# List all tags, filter for semver, sort, and get the latest
 latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv | \
   grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
 
@@ -35,8 +34,10 @@ echo "ACR: $RELEASE_ACR"
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
-echo "Building and publishing controller image with ko..."
-KO_DOCKER_REPO="$IMAGE_REPO" ko publish --dockerfile=Dockerfile -B --sbom none -t "$version" ./cmd
+echo "Building and publishing controller image with Docker..."
+docker build -t "${IMAGE_REPO}:${version}"
+docker push "${IMAGE_REPO}:${version}"
+IMG="${IMAGE_REPO}:${version}"
 echo "Image pushed: $IMG"
 
 trivy_scan "$IMG"

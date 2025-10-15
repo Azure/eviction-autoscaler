@@ -57,7 +57,7 @@ jobs:
         fi
 
         # Update and install required packages via brew
-        brew install yq cosign trivy azure-cli crane ko
+        brew install yq cosign trivy azure-cli crane
 
         echo "All tools installed successfully."
 
@@ -66,9 +66,6 @@ jobs:
 
     - name: Verify Azure CLI installation
       run: az --version
-
-    - name: Verify ko installation
-      run: ko version
 
     - name: Verify yq installation
       run: yq --version

@@ -9,7 +9,7 @@ commit_sha="$(git rev-parse HEAD)"
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
-repo_path="public/aks/eviction-autoscaler"  # adjust if your dalec publish path changes
+repo_path="public/aks/eviction-autoscaler/cmd"  # adjust if your ko publish path changes
 
 # List all tags, filter for semver, sort, and get the latest
 latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv | \
@@ -35,8 +35,8 @@ echo "ACR: $RELEASE_ACR"
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
-echo "Building and publishing controller image with dalec..."
-IMG=$(dalec publish --destination "${IMAGE_REPO}:${version}" | tail -n1)
+echo "Building and publishing controller image with ko..."
+KO_DOCKER_REPO="$IMAGE_REPO" ko publish --dockerfile=Dockerfile -B --sbom none -t "$version" ./cmd
 echo "Image pushed: $IMG"
 
 trivy_scan "$IMG"

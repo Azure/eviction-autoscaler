@@ -57,7 +57,7 @@ jobs:
         fi
 
         # Update and install required packages via brew
-        brew install yq cosign trivy azure-cli crane googlecontainertools/tap/dalec
+        brew install yq cosign trivy azure-cli crane ko
 
         echo "All tools installed successfully."
 
@@ -67,8 +67,8 @@ jobs:
     - name: Verify Azure CLI installation
       run: az --version
 
-    - name: Verify dalec installation
-      run: dalec version
+    - name: Verify ko installation
+      run: ko version
 
     - name: Verify yq installation
       run: yq --version

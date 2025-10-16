@@ -9,11 +9,22 @@ commit_sha="$(git rev-parse HEAD)"
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
-repo_path="public/aks/eviction-autoscaler/cmd"  # adjust if your ko publish path changes
+repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
-# List all tags, filter for semver, sort, and get the latest
-latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv | \
+set +e
+latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv 2>/tmp/acr_err | \
   grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+acr_err=$(< /tmp/acr_err)
+set -e
+
+if [[ -n "$acr_err" && "$acr_err" == *"is not found"* ]]; then
+  echo "ACR repository $repo_path not found, using base version."
+  base_version="0.1.0"
+elif [[ -z "$latest_tag" ]]; then
+  base_version="0.1.0"
+else
+  base_version="$latest_tag"
+fi
 
 if [[ -z "$latest_tag" ]]; then
   base_version="0.1.0"
@@ -35,14 +46,15 @@ echo "ACR: $RELEASE_ACR"
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
-echo "Building and publishing controller image with ko..."
-IMG=$(KO_DOCKER_REPO="$IMAGE_REPO" ko publish -B --sbom none -t "$version" ./cmd)
+echo "Building and publishing controller image with Docker..."
+docker build -t "${IMAGE_REPO}:${version}" .
+docker push "${IMAGE_REPO}:${version}"
+IMG="${IMAGE_REPO}:${version}"
 echo "Image pushed: $IMG"
 
 trivy_scan "$IMG"
 
 img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
-img_digest="$(echo "$IMG" | cut -d '@' -f 2)"
 img_path="$(echo "$img_repo" | cut -d "/" -f 2-)"
 
 echo "Updating Helm chart values..."

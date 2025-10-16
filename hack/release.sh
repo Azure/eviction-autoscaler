@@ -11,8 +11,20 @@ RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
 repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
-latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv | \
+set +e
+latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv 2>/tmp/acr_err | \
   grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+acr_err=$(< /tmp/acr_err)
+set -e
+
+if [[ -n "$acr_err" && "$acr_err" == *"is not found"* ]]; then
+  echo "ACR repository $repo_path not found, using base version."
+  base_version="0.1.0"
+elif [[ -z "$latest_tag" ]]; then
+  base_version="0.1.0"
+else
+  base_version="$latest_tag"
+fi
 
 if [[ -z "$latest_tag" ]]; then
   base_version="0.1.0"

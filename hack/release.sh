@@ -9,7 +9,7 @@ commit_sha="$(git rev-parse HEAD)"
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
-repo_path="public/aks/eviction-autoscaler/cmd"  # adjust if your ko publish path changes
+repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
 latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv | \
   grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)

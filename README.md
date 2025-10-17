@@ -87,14 +87,14 @@ kubectl create deployment -n laboratory piggie --image nginx
 # show a starting state
 kubectl get pods -n laboratory
 kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 0
-kubectl get pdbwatcher piggie -n laboratory -o yaml
+kubectl get evictionautoscalers piggie -n laboratory -o yaml
 # cordon
 NODE=$(kubectl get pods -n laboratory -l app=piggie -o=jsonpath='{.items[*].spec.nodeName}')
 kubectl cordon $NODE
 # show we've scaled up
 kubectl get pods -n laboratory
 kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 1
-kubectl get pdbwatcher piggie -n laboratory -o yaml
+kubectl get evictionautoscalers piggie -n laboratory -o yaml
 # actually kick the node off now that pdb isn't at zero.
 kubectl drain $NODE --delete-emptydir-data --ignore-daemonsets
 

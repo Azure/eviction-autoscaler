@@ -17,8 +17,11 @@ limitations under the License.
 package metrics
 
 import (
+	"context"
+
 	"github.com/prometheus/client_golang/prometheus"
 	policyv1 "k8s.io/api/policy/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
@@ -132,6 +135,16 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// PodAgeFailurePatternGauge tracks failure patterns by pod age
+	// Labels: namespace, pdb_name, pattern (oldest_failing/newest_failing/random_failing/all_healthy)
+	PodAgeFailurePatternGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_pod_age_failure_pattern",
+			Help: "Current failure pattern based on pod age (1 = active pattern, 0 = not active)",
+		},
+		[]string{"namespace", "pdb_name", "pattern"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -162,12 +175,34 @@ const (
 
 // Constants for scaling opportunity signals
 const (
-	PDBBlockedSignal                = "pdb_blocked"
-	MinAvailableEqualsDesiredSignal = "min_available_equals_desired_healthy"
-	CooldownElapsedSignal           = "cooldown_elapsed"
+	PDBBlockedSignal                 = "pdb_blocked"
+	MinAvailableEqualsReplicasSignal = "min_available_equals_replicas"
+	OldestFailingSignal              = "oldest_failing"
+	NewestFailingSignal              = "newest_failing"
+	RandomFailingSignal              = "random_failing"
+	AllHealthySignal                 = "all_healthy"
+	AbandonedPDBSignal               = "abandoned_pdb"
+	UnknownSignal                    = "unknown"
+	CooldownElapsedSignal            = "cooldown_elapsed"
 	// todo: Implement these when additional scaling logic is added
 	// OldNotReadyPodsSignal           = "old_not_ready_pods"
 	// WouldExceedMinAvailableSignal   = "would_exceed_min_available"
+)
+
+// Constants for pod age failure patterns
+const (
+	OldestFailingPattern = "oldest_failing"
+	NewestFailingPattern = "newest_failing"
+	RandomFailingPattern = "random_failing"
+	AllHealthyPattern    = "all_healthy"
+	AbandonedPDBPattern  = "abandoned_pdb"
+	UnknownPattern       = "unknown"
+)
+
+// Constants for scaling effectiveness predictions
+const (
+	LikelyHelpfulStr   = "true"
+	UnlikelyHelpfulStr = "false"
 )
 
 // GetPDBCreatedByUsLabel returns the appropriate label value based on PDB annotations
@@ -179,12 +214,60 @@ func GetPDBCreatedByUsLabel(annotations map[string]string) string {
 }
 
 // GetScalingSignal determines the appropriate signal label for scaling opportunities
-func GetScalingSignal(pdb *policyv1.PodDisruptionBudget) string {
-	// TODO: Could implement later for proactive scaling logic
-	// if pdb.Spec.MinAvailable != nil && int64(pdb.Spec.MinAvailable.IntValue()) == int64(pdb.Status.DesiredHealthy) {
-	//     return MinAvailableEqualsDesiredSignal
-	// }
-	return PDBBlockedSignal
+func GetScalingSignal(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) string {
+	// First check if minAvailable == replicas (highest priority signal)
+	if pdb.Spec.MinAvailable != nil && pdb.Status.CurrentHealthy > 0 {
+		minAvailable := pdb.Spec.MinAvailable.IntValue()
+		if minAvailable == int(pdb.Status.CurrentHealthy) {
+			return MinAvailableEqualsReplicasSignal
+		}
+	}
+
+	// Then check pod failure patterns
+	signal, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	if err != nil {
+		// we don't know the pattern, so return unknown
+		return UnknownSignal
+	}
+
+	return signal
+}
+
+// UpdatePodAgeFailureMetrics updates the metrics for pod age failure patterns
+// This function only updates gauges and should be called
+// when an eviction event occurs and is being processed. It does NOT increment
+// scaling opportunity counters those should only be incremented when there's
+// an actual new scaling opportunity
+func UpdatePodAgeFailureMetrics(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) {
+	signal, err := AnalyzePodAgeFailurePattern(ctx, c, pdb)
+	if err != nil {
+		// Log error but don't fail the reconcile
+		return
+	}
+
+	// Reset all pattern metrics for this PDB
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, OldestFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, NewestFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, RandomFailingPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AllHealthyPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, AbandonedPDBPattern).Set(0)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, UnknownPattern).Set(0)
+
+	// Set the current pattern (signal and pattern values are identical)
+	PodAgeFailurePatternGauge.WithLabelValues(pdb.Namespace, pdb.Name, signal).Set(1)
+}
+
+// RecordScalingOpportunity records when there's an actual scaling opportunity
+// This should only be called when there's a new eviction that creates a scaling opportunity
+// (i.e., when Spec.LastEviction != Status.LastEviction)
+func RecordScalingOpportunity(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget, deploymentName, action string) {
+	signal := GetScalingSignal(ctx, c, pdb)
+	ScalingOpportunityCounter.WithLabelValues(
+		pdb.Namespace,
+		deploymentName,
+		"scale_up",
+		signal,
+	).Inc()
 }
 
 func init() {
@@ -201,5 +284,6 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		PodAgeFailurePatternGauge,
 	)
 }

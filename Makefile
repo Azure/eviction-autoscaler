@@ -59,14 +59,29 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+KIND_VERSION ?= v0.22.0
+KIND_BIN ?= $(LOCALBIN)/kind-$(KIND_VERSION)
+
+.PHONY: kind
+kind: $(KIND_BIN) ## Download kind locally if necessary.
+$(KIND_BIN): $(LOCALBIN)
+	@[ -f $(KIND_BIN) ] || { \
+		echo "Downloading kind $(KIND_VERSION)"; \
+		curl -Lo $(KIND_BIN) https://kind.sigs.k8s.io/dl/$(KIND_VERSION)/kind-linux-amd64; \
+		chmod +x $(KIND_BIN); \
+	}
+	@ln -sf $(KIND_BIN) $(LOCALBIN)/kind
+
+export PATH := $(LOCALBIN):$(PATH)
+
 .PHONY: test
 test: manifests generate fmt vet envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
-test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+test-e2e: kind
+	PATH=$(LOCALBIN):$$PATH go test ./test/e2e/ -v -ginkgo.v
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

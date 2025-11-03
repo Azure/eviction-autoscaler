@@ -12,17 +12,7 @@ data:
   config.yaml: |-
     metrics:
       enabled: {{ .Values.controllerConfig.metrics.enabled }}
-
+    pdb.create: {{ .Values.controllerConfig.pdb.create | quote }}
     namespaces:
       watchMode: {{ .Values.controllerConfig.namespaces.watchMode | quote }}
-{{- if and .Values.controllerConfig.namespaces.excludeList (gt (len .Values.controllerConfig.namespaces.excludeList) 0) }}
-      excludeList:
-{{ toYaml .Values.controllerConfig.namespaces.excludeList | indent 8 }}
-{{- end }}
-{{- if and .Values.controllerConfig.namespaces.includeList (gt (len .Values.controllerConfig.namespaces.includeList) 0) }}
-      includeList:
-{{ toYaml .Values.controllerConfig.namespaces.includeList | indent 8 }}
-{{- end }}
 
-    pdb:
-      create: {{ .Values.controllerConfig.pdb.create }}

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"os"
 
 	"github.com/go-logr/logr/testr"
 	. "github.com/onsi/ginkgo/v2"
@@ -96,6 +97,8 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 	Describe("when a deployment is created", func() {
 		It("should create a PodDisruptionBudget", func() {
+			os.Setenv("PDB_CREATE", "true")
+			defer os.Unsetenv("PDB_CREATE")
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: namespace,
@@ -186,6 +189,125 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 		})
+	})
+})
+
+var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
+	var (
+		namespace  string
+		deployment *appsv1.Deployment
+		r          *DeploymentToPDBReconciler
+		ctx        context.Context
+	)
+
+	const deploymentName = "skip-pdb-deployment"
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		// Create namespace
+		namespaceObj := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-skip-",
+			},
+		}
+		Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+		namespace = namespaceObj.Name
+
+		s := scheme.Scheme
+		Expect(appsv1.AddToScheme(s)).To(Succeed())
+		Expect(policyv1.AddToScheme(s)).To(Succeed())
+
+		r = &DeploymentToPDBReconciler{
+			Client: k8sClient,
+			Scheme: s,
+		}
+
+		deployment = &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Labels:    map[string]string{"app": "skip"},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(2),
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "skip"},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "skip"},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "nginx", Image: "nginx:latest"},
+						},
+					},
+				},
+			},
+		}
+	})
+
+	AfterEach(func() {
+		os.Unsetenv("PDB_CREATE")
+	})
+
+	It("should skip PDB creation if PDB_CREATE env is false", func() {
+		os.Setenv("PDB_CREATE", "false")
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+		}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("should skip PDB creation if deployment annotation disables it", func() {
+		os.Setenv("PDB_CREATE", "true")
+		deployment.Annotations = map[string]string{PDBCreateAnnotationKey: "false"}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+		}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+
+	It("should skip PDB creation if namespace annotation disables it", func() {
+		os.Setenv("PDB_CREATE", "true")
+		deployment.Annotations = nil
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		ns := &corev1.Namespace{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+		if ns.Annotations == nil {
+			ns.Annotations = map[string]string{}
+		}
+		ns.Annotations[PDBCreateAnnotationKey] = "false"
+		Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+		}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+		Expect(err).To(HaveOccurred())
+		Expect(errors.IsNotFound(err)).To(BeTrue())
 	})
 })
 

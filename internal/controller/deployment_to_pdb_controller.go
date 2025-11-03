@@ -28,7 +28,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
+const (
+	PDBCreateAnnotationKey   = "eviction-autoscaler.azure.com/pdb-create"
+	PDBCreateAnnotationValue = "false"
+)
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -62,6 +65,26 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
+	// Check PDB_CREATE env variable
+	pdbCreate := strings.ToLower(os.Getenv("PDB_CREATE"))
+	if pdbCreate != "true" {
+		// Skip PDB creation if not explicitly enabled
+		return reconcile.Result{}, nil
+	}
+
+	// Check for pdb-create annotation on deployment
+	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationValue {
+		return reconcile.Result{}, nil
+	}
+
+	// Fetch the Namespace object
+	var namespaceObj corev1.Namespace
+	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, &namespaceObj); err == nil {
+		if val, ok := namespaceObj.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationValue {
+			return reconcile.Result{}, nil
+		}
+	}
+
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
@@ -87,26 +110,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
 			// update pdb minReplicas to current deployment replicas
 			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
-		}
-	}
-
-	// Check PDB_CREATE env variable
-	pdbCreate := strings.ToLower(os.Getenv("PDB_CREATE"))
-	if pdbCreate != "true" {
-		// Skip PDB creation if not explicitly enabled
-		return reconcile.Result{}, nil
-	}
-
-	// Check for pdb-create annotation on deployment
-	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == "false" {
-		return reconcile.Result{}, nil
-	}
-
-	// Fetch the Namespace object
-	var namespaceObj corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, &namespaceObj); err == nil {
-		if val, ok := namespaceObj.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == "false" {
-			return reconcile.Result{}, nil
 		}
 	}
 

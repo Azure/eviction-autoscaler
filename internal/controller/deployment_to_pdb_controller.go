@@ -29,6 +29,7 @@ import (
 )
 
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
+const PDBCreateAnnotationFalse = "false"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -98,14 +99,14 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Check for pdb-create annotation on deployment
-	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == "false" {
+	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationFalse {
 		return reconcile.Result{}, nil
 	}
 
 	// Fetch the Namespace object
 	var namespaceObj corev1.Namespace
 	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, &namespaceObj); err == nil {
-		if val, ok := namespaceObj.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == "false" {
+		if val, ok := namespaceObj.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationFalse {
 			return reconcile.Result{}, nil
 		}
 	}

@@ -422,7 +422,6 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
 
-
 			By("creating a test namespace for annotation-based PDB control")
 			testNs := "pdb-annotation-test"
 			cmd = exec.Command("kubectl", "create", "namespace", testNs)
@@ -468,20 +467,26 @@ var _ = Describe("controller", Ordered, func() {
 				"eviction-autoscaler.azure.com/pdb-create=false", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, func() error { return verifyNoPdb(testNs, "nginx-test") }, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNs, "nginx-test")
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing pdb-create annotation from the deployment and verifying PDB is created")
 			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", "--namespace", testNs,
 				"eviction-autoscaler.azure.com/pdb-create-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, func() error { return verifyPdbCreated(testNs, "nginx-test") }, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-test")
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the test deployment and verifying PDB is deleted")
 			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", "--namespace", testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, func() error { return verifyNoPdb(testNs, "nginx-test") }, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNs, "nginx-test")
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("adding pdb-create=false annotation to the namespace and verifying no PDB is created for a new deployment")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
@@ -496,14 +501,18 @@ var _ = Describe("controller", Ordered, func() {
 			cmd = exec.Command("kubectl", "scale", "deployment/nginx-test-ns", "--replicas=2", "--namespace", testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, func() error { return verifyNoPdb(testNs, "nginx-test-ns") }, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNs, "nginx-test-ns")
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing pdb-create annotation from the namespace and verifying PDB is created for the deployment")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
 				"eviction-autoscaler.azure.com/pdb-create-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			EventuallyWithOffset(1, func() error { return verifyPdbCreated(testNs, "nginx-test-ns") }, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-test-ns")
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the test deployment and namespace")
 			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test-ns", "--namespace", testNs)

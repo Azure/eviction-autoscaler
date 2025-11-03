@@ -28,10 +28,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-const (
-	PDBCreateAnnotationKey   = "eviction-autoscaler.azure.com/pdb-create"
-	PDBCreateAnnotationValue = "false"
-)
+const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
+const PDBCreateAnnotationFalse = "false"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {

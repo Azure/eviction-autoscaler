@@ -97,8 +97,12 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 	Describe("when a deployment is created", func() {
 		It("should create a PodDisruptionBudget", func() {
-			os.Setenv("PDB_CREATE", "true")
-			defer os.Unsetenv("PDB_CREATE")
+			err := os.Setenv("KEY", "VALUE")
+			Expect(err).NotTo(HaveOccurred())
+			defer func() {
+				err := os.Unsetenv("PDB_CREATE")
+				Expect(err).NotTo(HaveOccurred())
+			}()
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: namespace,
@@ -107,7 +111,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			}
 
 			// Call the reconciler
-			_, err := r.Reconcile(ctx, req)
+			_, err = r.Reconcile(ctx, req)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Check if PDB is created
@@ -249,17 +253,19 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 	})
 
 	AfterEach(func() {
-		os.Unsetenv("PDB_CREATE")
+		err := os.Unsetenv("PDB_CREATE")
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	It("should skip PDB creation if PDB_CREATE env is false", func() {
-		os.Setenv("PDB_CREATE", "false")
+		err := os.Setenv("PDB_CREATE", "false")
+		Expect(err).NotTo(HaveOccurred())
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
 		req := reconcile.Request{
 			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
 		}
-		_, err := r.Reconcile(ctx, req)
+		_, err = r.Reconcile(ctx, req)
 		Expect(err).ToNot(HaveOccurred())
 
 		pdb := &policyv1.PodDisruptionBudget{}
@@ -269,14 +275,15 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 	})
 
 	It("should skip PDB creation if deployment annotation disables it", func() {
-		os.Setenv("PDB_CREATE", "true")
+		err := os.Setenv("KEY", "VALUE")
+		Expect(err).NotTo(HaveOccurred())
 		deployment.Annotations = map[string]string{PDBCreateAnnotationKey: "false"}
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
 		req := reconcile.Request{
 			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
 		}
-		_, err := r.Reconcile(ctx, req)
+		_, err = r.Reconcile(ctx, req)
 		Expect(err).ToNot(HaveOccurred())
 
 		pdb := &policyv1.PodDisruptionBudget{}
@@ -286,7 +293,8 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 	})
 
 	It("should skip PDB creation if namespace annotation disables it", func() {
-		os.Setenv("PDB_CREATE", "true")
+		err := os.Setenv("KEY", "VALUE")
+		Expect(err).NotTo(HaveOccurred())
 		deployment.Annotations = nil
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 
@@ -301,7 +309,7 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		req := reconcile.Request{
 			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
 		}
-		_, err := r.Reconcile(ctx, req)
+		_, err = r.Reconcile(ctx, req)
 		Expect(err).ToNot(HaveOccurred())
 
 		pdb := &policyv1.PodDisruptionBudget{}

@@ -422,7 +422,6 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
 
-
 			By("creating a test namespace for annotation-based PDB control")
 			testNs := "pdb-annotation-test"
 			cmd = exec.Command("kubectl", "create", "namespace", testNs)

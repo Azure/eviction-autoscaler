@@ -97,7 +97,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 	Describe("when a deployment is created", func() {
 		It("should create a PodDisruptionBudget", func() {
-			err := os.Setenv("KEY", "VALUE")
+			err := os.Setenv("PDB_CREATE", "true")
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
 				err := os.Unsetenv("PDB_CREATE")

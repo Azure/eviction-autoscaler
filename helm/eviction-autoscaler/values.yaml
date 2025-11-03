@@ -25,15 +25,10 @@ controllerConfig:
   
   # Namespace watching configuration
   namespaces:
-    # Watch mode: "all", "only", or "none"
-    # - "all": Watch all namespaces
-    # - "only": Watch only namespaces specified in includeList  
+    # Watch mode: "all" or "none"
+    # - "all": Watch all namespaces 
     # - "none": Disable controller
     watchMode: "all"
-    # List of namespaces to exclude (when watchMode is "all")
-    excludeList: []
-    # List of namespaces to include (when watchMode is "only")
-    includeList: []
   
   # PDB creation configuration
   pdb:

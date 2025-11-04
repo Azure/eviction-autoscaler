@@ -200,29 +200,12 @@ func triggerOnReplicaChange(e event.UpdateEvent, logger logr.Logger) bool {
 
 // triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
 // by comparing the annotations between old and new deployment
-
-// triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
-// by comparing the annotations between old and new deployment
 func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 	oldDeployment, okOld := e.ObjectOld.(*v1.Deployment)
 	newDeployment, okNew := e.ObjectNew.(*v1.Deployment)
 	if okOld && okNew {
-		valOld, hasOld := oldDeployment.Annotations[PDBCreateAnnotationKey]
-		valNew, hasNew := newDeployment.Annotations[PDBCreateAnnotationKey]
-
-		// Trigger only if annotation changed from "false" to "true"
-		if hasOld && hasNew &&
-			strings.ToLower(valOld) == PDBCreateAnnotationFalse &&
-			strings.ToLower(valNew) == PDBCreateAnnotationTrue {
-			logger.Info("Update event detected, annotation changed from 'false' to 'true'",
-				"newAnnotations", newDeployment.Annotations,
-				"oldAnnotations", oldDeployment.Annotations)
-			return true
-		}
-
-		// Trigger if annotation was "false" and is now removed
-		if hasOld && !hasNew && strings.ToLower(valOld) == PDBCreateAnnotationFalse {
-			logger.Info("Update event detected, annotation 'false' removed",
+		if oldDeployment.Annotations[PDBCreateAnnotationKey] != newDeployment.Annotations[PDBCreateAnnotationKey] {
+			logger.Info("Update event detected, annotation changed",
 				"newAnnotations", newDeployment.Annotations,
 				"oldAnnotations", oldDeployment.Annotations)
 			return true

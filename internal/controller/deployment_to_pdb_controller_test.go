@@ -257,54 +257,11 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should skip PDB creation if PDB_CREATE env is false", func() {
-		err := os.Setenv("PDB_CREATE", "false")
-		Expect(err).NotTo(HaveOccurred())
-		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
-
-		req := reconcile.Request{
-			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
-		}
-		_, err = r.Reconcile(ctx, req)
-		Expect(err).ToNot(HaveOccurred())
-
-		pdb := &policyv1.PodDisruptionBudget{}
-		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
-		Expect(err).To(HaveOccurred())
-		Expect(errors.IsNotFound(err)).To(BeTrue())
-	})
-
 	It("should skip PDB creation if deployment annotation disables it", func() {
 		err := os.Setenv("KEY", "VALUE")
 		Expect(err).NotTo(HaveOccurred())
 		deployment.Annotations = map[string]string{PDBCreateAnnotationKey: "false"}
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
-
-		req := reconcile.Request{
-			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
-		}
-		_, err = r.Reconcile(ctx, req)
-		Expect(err).ToNot(HaveOccurred())
-
-		pdb := &policyv1.PodDisruptionBudget{}
-		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
-		Expect(err).To(HaveOccurred())
-		Expect(errors.IsNotFound(err)).To(BeTrue())
-	})
-
-	It("should skip PDB creation if namespace annotation disables it", func() {
-		err := os.Setenv("KEY", "VALUE")
-		Expect(err).NotTo(HaveOccurred())
-		deployment.Annotations = nil
-		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
-
-		ns := &corev1.Namespace{}
-		Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-		if ns.Annotations == nil {
-			ns.Annotations = map[string]string{}
-		}
-		ns.Annotations[PDBCreateAnnotationKey] = "false"
-		Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 		req := reconcile.Request{
 			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},

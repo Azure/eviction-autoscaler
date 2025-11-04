@@ -63,8 +63,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
-	
-
 	// Check for pdb-create annotation on deployment
 	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
 		if strings.ToLower(val) == PDBCreateAnnotationFalse {
@@ -74,7 +72,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.Error(fmt.Errorf("Unsupported value for pdb-create annotation, only 'false' is supported"), "value", val)
 		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
 	}
-	
+
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
@@ -232,7 +230,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
 					b = false
 				}
-			    return b	
+				return b
 			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				// Check PDB_CREATE env variable
@@ -242,7 +240,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
 					b = false
 				}
-			    return b && (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger)) 
+				return b && (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).

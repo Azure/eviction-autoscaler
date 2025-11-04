@@ -122,12 +122,13 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
 		WithEventFilter(predicate.Funcs{
-			// Only trigger for Create and Delete events
+			// Only trigger for Create events
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				//ToDo: theoretically you could have a pdb update and change
 				// its label selectors in which case you might need to update the deployment target?
 				return false
 			},
+			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
 		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership
 		Complete(r)

@@ -12,7 +12,6 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -30,6 +29,7 @@ import (
 
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
+const PDBCreateAnnotationTrue = "true"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -65,6 +65,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Check PDB_CREATE env variable
 	pdbCreate := strings.ToLower(os.Getenv("PDB_CREATE"))
+	fmt.Println("PDB_CREATE:", pdbCreate)
 	if pdbCreate != "true" {
 		// Skip PDB creation if not explicitly enabled
 		return reconcile.Result{}, nil
@@ -75,14 +76,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, nil
 	}
 
-	// Fetch the Namespace object
-	var namespaceObj corev1.Namespace
-	if err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, &namespaceObj); err == nil {
-		if val, ok := namespaceObj.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationFalse {
-			return reconcile.Result{}, nil
-		}
-	}
-
+	fmt.Printf("Allowed to create PDB")
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
@@ -110,7 +104,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
 		}
 	}
-
+	fmt.Printf("Creating pdb: %s", deployment.Name)
 	//variables
 	controller := true
 	blockOwnerDeletion := true
@@ -204,6 +198,39 @@ func triggerOnReplicaChange(e event.UpdateEvent, logger logr.Logger) bool {
 	return false
 }
 
+// triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
+// by comparing the annotations between old and new deployment
+
+// triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
+// by comparing the annotations between old and new deployment
+func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+	oldDeployment, okOld := e.ObjectOld.(*v1.Deployment)
+	newDeployment, okNew := e.ObjectNew.(*v1.Deployment)
+	if okOld && okNew {
+		valOld, hasOld := oldDeployment.Annotations[PDBCreateAnnotationKey]
+		valNew, hasNew := newDeployment.Annotations[PDBCreateAnnotationKey]
+
+		// Trigger only if annotation changed from "false" to "true"
+		if hasOld && hasNew &&
+			strings.ToLower(valOld) == PDBCreateAnnotationFalse &&
+			strings.ToLower(valNew) == PDBCreateAnnotationTrue {
+			logger.Info("Update event detected, annotation changed from 'false' to 'true'",
+				"newAnnotations", newDeployment.Annotations,
+				"oldAnnotations", oldDeployment.Annotations)
+			return true
+		}
+
+		// Trigger if annotation was "false" and is now removed
+		if hasOld && !hasNew && strings.ToLower(valOld) == PDBCreateAnnotationFalse {
+			logger.Info("Update event detected, annotation 'false' removed",
+				"newAnnotations", newDeployment.Annotations,
+				"oldAnnotations", oldDeployment.Annotations)
+			return true
+		}
+	}
+	return false
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
@@ -213,8 +240,9 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				return triggerOnReplicaChange(e, logger)
+				return triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger)
 			},
+			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership
 		Complete(r)

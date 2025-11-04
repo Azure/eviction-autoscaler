@@ -12,7 +12,7 @@ data:
   config.yaml: |-
     metrics:
       enabled: {{ .Values.controllerConfig.metrics.enabled }}
-    pdb.create: {{ .Values.controllerConfig.pdb.create | quote }}
+    pdb.create: {{ .Values.controllerConfig.pdb.create }}
     namespaces:
       watchMode: {{ .Values.controllerConfig.namespaces.watchMode | quote }}
 

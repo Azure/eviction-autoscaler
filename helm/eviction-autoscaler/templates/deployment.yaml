@@ -34,11 +34,7 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         env:
           - name: PDB_CREATE
-            valueFrom:
-              configMapKeyRef:
-                name: {{ include "eviction-autoscaler.fullname" . }}-config
-                key: pdb.create
-                optional: true
+            value: {{ .Values.pdb.create | quote }}
         command:
         - /manager
         args:

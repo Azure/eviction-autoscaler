@@ -51,6 +51,7 @@ require (
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/exp v0.0.0-20241217172543-b2144cdd0a67 // indirect
 	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/oauth2 v0.27.0 // indirect
 	golang.org/x/sys v0.31.0 // indirect
 	golang.org/x/term v0.30.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
@@ -74,5 +75,4 @@ require (
 	github.com/go-logr/logr v1.4.2
 	github.com/prometheus/client_golang v1.20.5
 	github.com/samber/lo v1.51.0
-	golang.org/x/oauth2 v0.27.0
 )

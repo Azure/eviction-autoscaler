@@ -63,20 +63,18 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
-	// Check PDB_CREATE env variable
-	pdbCreate := strings.ToLower(os.Getenv("PDB_CREATE"))
-	fmt.Println("PDB_CREATE:", pdbCreate)
-	if pdbCreate != "true" {
-		// Skip PDB creation if not explicitly enabled
-		return reconcile.Result{}, nil
-	}
+	
 
 	// Check for pdb-create annotation on deployment
-	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok && strings.ToLower(val) == PDBCreateAnnotationFalse {
-		return reconcile.Result{}, nil
+	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
+		if strings.ToLower(val) == PDBCreateAnnotationFalse {
+			return reconcile.Result{}, nil
+		}
+		// Only "false" is supported, log a warning for any other value
+		log.Error(fmt.Errorf("Unsupported value for pdb-create annotation, only 'false' is supported"), "value", val)
+		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
 	}
-
-	fmt.Printf("Allowed to create PDB")
+	
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
@@ -207,24 +205,11 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 	oldDeployment, okOld := e.ObjectOld.(*v1.Deployment)
 	newDeployment, okNew := e.ObjectNew.(*v1.Deployment)
 	if okOld && okNew {
-		valOld, hasOld := oldDeployment.Annotations[PDBCreateAnnotationKey]
-		valNew, hasNew := newDeployment.Annotations[PDBCreateAnnotationKey]
-
-		// Trigger only if annotation changed from "false" to "true"
-		if hasOld && hasNew &&
-			strings.ToLower(valOld) == PDBCreateAnnotationFalse &&
-			strings.ToLower(valNew) == PDBCreateAnnotationTrue {
-			logger.Info("Update event detected, annotation changed from 'false' to 'true'",
-				"newAnnotations", newDeployment.Annotations,
-				"oldAnnotations", oldDeployment.Annotations)
-			return true
-		}
-
-		// Trigger if annotation was "false" and is now removed
-		if hasOld && !hasNew && strings.ToLower(valOld) == PDBCreateAnnotationFalse {
-			logger.Info("Update event detected, annotation 'false' removed",
-				"newAnnotations", newDeployment.Annotations,
-				"oldAnnotations", oldDeployment.Annotations)
+		oldVal := oldDeployment.Annotations[PDBCreateAnnotationKey]
+		newVal := newDeployment.Annotations[PDBCreateAnnotationKey]
+		if oldVal != newVal {
+			logger.Info("Update event detected, annotation value changed",
+				"oldValue", oldVal, "newValue", newVal)
 			return true
 		}
 	}
@@ -239,8 +224,25 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
+			CreateFunc: func(e event.CreateEvent) bool {
+				// Check PDB_CREATE env variable
+				pdbcreate := os.Getenv("PDB_CREATE")
+				b, err := strconv.ParseBool(pdbcreate)
+				if err != nil {
+					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
+					b = false
+				}
+			    return b	
+			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				return triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger)
+				// Check PDB_CREATE env variable
+				pdbcreate := os.Getenv("PDB_CREATE")
+				b, err := strconv.ParseBool(pdbcreate)
+				if err != nil {
+					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
+					b = false
+				}
+			    return b && (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger)) 
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).

@@ -53,14 +53,6 @@ rules:
   - list
   - watch
 - apiGroups:
-    - ""
-  resources:
-    - namespaces
-  verbs:
-    - get
-    - list
-    - watch
-- apiGroups:
   - ""
   resources:
   - pods/status

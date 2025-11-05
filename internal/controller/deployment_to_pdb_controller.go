@@ -25,6 +25,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
+const PDBCreateAnnotationFalse = "false"
+const PDBCreateAnnotationTrue = "true"
+
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
@@ -57,6 +61,17 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
+	// Check for pdb-create annotation on deployment
+	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
+		b, err := strconv.ParseBool(val)
+		if err == nil && !b {
+			return reconcile.Result{}, nil
+		}
+		// Only "false" is supported, log a warning for any other value
+		log.Error(fmt.Errorf("Unsupported value for pdb-create annotation, only 'false' is supported"), "value", val)
+		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
+	}
+
 	// Check if PDB already exists for this Deployment
 	var pdbList policyv1.PodDisruptionBudgetList
 	err := r.List(ctx, &pdbList, &client.ListOptions{
@@ -84,7 +99,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
 		}
 	}
-
+	fmt.Printf("Creating pdb: %s", deployment.Name)
 	//variables
 	controller := true
 	blockOwnerDeletion := true
@@ -178,6 +193,26 @@ func triggerOnReplicaChange(e event.UpdateEvent, logger logr.Logger) bool {
 	return false
 }
 
+// triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
+// by comparing the annotations between old and new deployment
+
+// triggerOnAnnotationChange checks if a deployment update event should trigger reconciliation
+// by comparing the annotations between old and new deployment
+func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+	oldDeployment, okOld := e.ObjectOld.(*v1.Deployment)
+	newDeployment, okNew := e.ObjectNew.(*v1.Deployment)
+	if okOld && okNew {
+		oldVal := oldDeployment.Annotations[PDBCreateAnnotationKey]
+		newVal := newDeployment.Annotations[PDBCreateAnnotationKey]
+		if oldVal != newVal {
+			logger.Info("Update event detected, annotation value changed",
+				"oldValue", oldVal, "newValue", newVal)
+			return true
+		}
+	}
+	return false
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
@@ -187,8 +222,9 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				return triggerOnReplicaChange(e, logger)
+				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
 			},
+			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership
 		Complete(r)

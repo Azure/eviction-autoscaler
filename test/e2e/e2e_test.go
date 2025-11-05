@@ -146,7 +146,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Use `helm upgrade --install` so that the test can be re-run without manual cleanup.
 			// Not: we use pullPolicy=IfNotPresent is required for Kind e2e testing because
-			// We build and load the image locally into Kind cluster 
+			// We build and load the image locally into Kind cluster
 			// the image tag doesn't exist in any remote registry
 			// if pullPolicy=Always would fail trying to pull from remote registry
 			helmArgs := []string{
@@ -155,6 +155,7 @@ var _ = Describe("controller", Ordered, func() {
 				"--set", fmt.Sprintf("image.repository=%s", repo),
 				"--set", fmt.Sprintf("image.tag=%s", tag),
 				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "pdb.create=true",
 			}
 
 			cmd = exec.Command("helm", helmArgs...)
@@ -422,6 +423,66 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, verifyPdbNotExists, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, verifyEvictionAutoScalerNotExists, time.Minute, time.Second).Should(Succeed())
 
+			By("creating a test namespace for annotation-based PDB control")
+			testNs := "eviction-autoscaler-test"
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a test deployment in the test namespace with annotation")
+			cmd = exec.Command("kubectl", "create", "deployment", "nginx-test", "--image=nginx:latest",
+				"--namespace", testNs, "--dry-run=client", "-o", "yaml")
+			deployYaml, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			// Add annotation to deployment YAML
+			deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test",
+				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"", 1)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deployYamlStr)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			verifyNoPdb := func(ns, name string) error {
+				var pdbList = &policy.PodDisruptionBudgetList{}
+				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
+				Expect(err).NotTo(HaveOccurred())
+				for _, pdb := range pdbList.Items {
+					if pdb.Name == name {
+						return fmt.Errorf("expected no PDB for %s, but found one", name)
+					}
+				}
+				return nil
+			}
+
+			verifyPdbCreated := func(ns, name string) error {
+				var pdbList = &policy.PodDisruptionBudgetList{}
+				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
+				Expect(err).NotTo(HaveOccurred())
+				for _, pdb := range pdbList.Items {
+					if pdb.Name == name {
+						return nil
+					}
+				}
+				return fmt.Errorf("expected PDB for %s, but found none", name)
+			}
+
+			By("removing pdb-create annotation from the deployment and verifying PDB is created")
+			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", "--namespace", testNs,
+				"eviction-autoscaler.azure.com/pdb-create-", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("deleting the test deployment and verifying PDB is deleted")
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNs, "nginx-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
 			By("Scraping controller metrics at the end of the e2e test")
 
 			scrapeMetrics := func() error {
@@ -464,6 +525,7 @@ var _ = Describe("controller", Ordered, func() {
 			}
 
 			Expect(scrapeMetrics()).To(Succeed())
+
 		})
 	})
 })

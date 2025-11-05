@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"os"
 
 	"github.com/go-logr/logr/testr"
 	. "github.com/onsi/ginkgo/v2"
@@ -97,12 +96,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 	Describe("when a deployment is created", func() {
 		It("should create a PodDisruptionBudget", func() {
-			err := os.Setenv("PDB_CREATE", "true")
-			Expect(err).NotTo(HaveOccurred())
-			defer func() {
-				err := os.Unsetenv("PDB_CREATE")
-				Expect(err).NotTo(HaveOccurred())
-			}()
+			var err error
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: namespace,
@@ -252,14 +246,8 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		}
 	})
 
-	AfterEach(func() {
-		err := os.Unsetenv("PDB_CREATE")
-		Expect(err).NotTo(HaveOccurred())
-	})
-
 	It("should skip PDB creation if deployment annotation disables it", func() {
-		err := os.Setenv("KEY", "VALUE")
-		Expect(err).NotTo(HaveOccurred())
+		var err error
 		deployment.Annotations = map[string]string{PDBCreateAnnotationKey: "false"}
 		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
 

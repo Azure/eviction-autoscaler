@@ -65,7 +65,8 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Check for pdb-create annotation on deployment
 	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
-		if strings.ToLower(val) == PDBCreateAnnotationFalse {
+		b, err := strconv.ParseBool(val)
+		if err == nil && !b {
 			return reconcile.Result{}, nil
 		}
 		// Only "false" is supported, log a warning for any other value

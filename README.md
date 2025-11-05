@@ -15,7 +15,7 @@
 ## Introduction
 
 Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new rollouts and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
-This project uses node cordons or, alternatively, an eviction webhook to signal eviction-autoscaler Custom Resources that correspond to a PodDisruptionBudget and target a deployment. An eviction autoscaler controller then attempts to scale up a the targeted deployment (or scaleset if you're feeling brave) when the pdb's allowed disruptions is zero and scales down once evictions have stopped.
+This project uses node cordons or, alternatively, an eviction webhook to signal eviction-autoscaler Custom Resources that correspond to a PodDisruptionBudget and target a deployment. An eviction autoscaler controller then attempts to scale up the targeted deployment (or scaleset if you're feeling brave) when the pdb's allowed disruptions is zero and scales down once evictions have stopped.
 
 ### Why Not Overprovision?
 
@@ -26,8 +26,8 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 ## Features
 
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
-- **Optional Webhook**: Signals eviction-autoscale for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
-- **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
+- **Optional Webhook**: Signals eviction-autoscaler for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
+- **Eviction-autoscaler Controller**: Watches eviction-autoscaler resources. If there are recent eviction signals and the PDB's AllowedDisruptions is zero, it triggers a surge in the corresponding deployment. Once evictions have stopped for some cooldown period and allowed disruptions has risen above zero it scales down.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler)
 
@@ -79,6 +79,7 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
     helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
           --namespace eviction-autoscaler --create-namespace \
           --set pdb.create=true
+    ```
 
 > **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.  
 
@@ -155,7 +156,7 @@ metadata:
         eviction-autoscaler.azure.com/pdb-create: "false"
 ```
 
-This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider. ```
+This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
 
 ## Usage
 

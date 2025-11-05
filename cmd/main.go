@@ -161,8 +161,9 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 			os.Exit(1)
 		}
+		setupLog.Info("DeploymentToPDBReconciler  setup completed")
 	}
-	setupLog.Info("DeploymentToPDBReconciler  setup completed")
+	
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),

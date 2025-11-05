@@ -82,7 +82,7 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
 
 > **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.  
 
-3.(Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
+3. (Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
 
 Refer to the [Helm chart documentation](https://github.com/azure/eviction-autoscaler/tree/main/charts/eviction-autoscaler) for configuration options.
 

@@ -3,9 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"os"
 	"strconv"
-	"strings"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
@@ -223,25 +221,8 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
 		WithEventFilter(predicate.Funcs{
-			CreateFunc: func(e event.CreateEvent) bool {
-				// Check PDB_CREATE env variable
-				pdbcreate := os.Getenv("PDB_CREATE")
-				b, err := strconv.ParseBool(pdbcreate)
-				if err != nil {
-					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
-					b = false
-				}
-				return b
-			},
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				// Check PDB_CREATE env variable
-				pdbcreate := os.Getenv("PDB_CREATE")
-				b, err := strconv.ParseBool(pdbcreate)
-				if err != nil {
-					logger.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
-					b = false
-				}
-				return b && (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
+				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).

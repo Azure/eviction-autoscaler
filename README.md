@@ -80,7 +80,7 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
           --set pdb.create=true
     ```
 
-> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.  
+> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
 
 3. (Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
 
@@ -134,7 +134,7 @@ az k8s-extension create \
     --auto-upgrade-minor-version false
 ```
 
-> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. See the Helm installation section above for details and instructions on excluding specific deployments.
+> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones. 
 > **Note:** The `--auto-upgrade-minor-version false` option is only required if you want to disable automatic minor version upgrades.
 > **Note:** The `--release-train dev` option specifies that the extension will use the "dev" release train, which typically includes the latest development builds and experimental features.  
 > Other available release train options include `stable` (recommended for production workloads) and `preview` (for pre-release features).  

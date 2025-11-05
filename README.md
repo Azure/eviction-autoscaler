@@ -80,7 +80,49 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
           --set pdb.create=true
     ```
 
-> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
+> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.
+>
+> If a deployment already has a PDB whose label selector matches the deployment's pod template labels, eviction-autoscaler will **not** create a new PDB—even if `pdb.create=true`. This avoids duplicate PDBs and ensures existing disruption budgets are respected.
+>
+> For example, if you deploy an app without a PDB:
+>
+> ```yaml
+> apiVersion: apps/v1
+> kind: Deployment
+> metadata:
+>   name: my-app
+>   namespace: default
+> spec:
+>   replicas: 2
+>   selector:
+>     matchLabels:
+>       app: my-app
+>   template:
+>     metadata:
+>       labels:
+>         app: my-app
+>     spec:
+>       containers:
+>       - name: my-app
+>         image: nginx
+> ```
+>
+> With `pdb.create=true`, eviction-autoscaler will automatically create a matching PDB:
+>
+> ```yaml
+> apiVersion: policy/v1
+> kind: PodDisruptionBudget
+> metadata:
+>   name: my-app
+>   namespace: default
+> spec:
+>   minAvailable: 2
+>   selector:
+>     matchLabels:
+>       app: my-app
+> ```
+>
+> If a matching PDB already exists, eviction-autoscaler will not create another. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
 
 3. (Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
 
@@ -134,7 +176,7 @@ az k8s-extension create \
     --auto-upgrade-minor-version false
 ```
 
-> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones. 
+> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. Eviction-autoscaler determines whether a deployment already has a corresponding PDB by comparing the PDB’s label selector with the deployment’s pod template labels. This ensures that each deployment is protected from disruptions and avoids duplicate PDBs. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
 > **Note:** The `--auto-upgrade-minor-version false` option is only required if you want to disable automatic minor version upgrades.
 > **Note:** The `--release-train dev` option specifies that the extension will use the "dev" release train, which typically includes the latest development builds and experimental features.  
 > Other available release train options include `stable` (recommended for production workloads) and `preview` (for pre-release features).  

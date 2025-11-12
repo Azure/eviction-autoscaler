@@ -35,6 +35,9 @@ jobs:
       - name: Run tests
         run: make test
 
+      - name: Force rebuild golangci-lint
+        run: rm -f ./bin/golangci-lint-*
+
       - name: Lint
         run: make lint
 

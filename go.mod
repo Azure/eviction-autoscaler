@@ -81,7 +81,6 @@ require (
 )
 
 replace github.com/azure/eviction-autoscaler/config/webhook => ./config/webhook
-replace golang.org/x/tools => golang.org/x/tools v0.24.0
 
 require (
 	github.com/go-logr/logr v1.4.3

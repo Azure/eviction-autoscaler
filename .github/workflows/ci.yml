@@ -20,6 +20,17 @@ jobs:
       #  run: |
       #    sudo apt-get update
       #    sudo apt-get install -y make
+      - name: Clean Go build cache
+        run: go clean -cache
+
+      - name: Clean Go module cache
+        run: go clean -modcache
+
+      - name: Remove old binaries
+        run: rm -rf ./bin
+      
+      - name: Tidy Go modules
+        run: go mod tidy
 
       - name: Run tests
         run: make test

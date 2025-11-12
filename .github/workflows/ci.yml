@@ -21,7 +21,13 @@ jobs:
         with:
           go-version: '1.25.4'
 
+      - name: Clean Go test cache
+        run: go clean -testcache
+
       - name: Clean Go build cache
+        run: go clean -cache
+
+      - name: Clean Go module cache
         run: go clean -modcache
 
       #- name: Install dependencies

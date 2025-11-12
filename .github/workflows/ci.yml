@@ -18,11 +18,9 @@ jobs:
 
       - name: Verify Go version
         run: go version
-        
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25.4'
+
+      - name: Update golang.org/x/tools
+        run: go get golang.org/x/tools@latest   
       #- name: Install dependencies
       #  run: |
       #    sudo apt-get update
@@ -41,9 +39,6 @@ jobs:
 
       - name: Run tests
         run: make test
-
-      - name: Force rebuild golangci-lint
-        run: rm -f ./bin/golangci-lint-*
 
       - name: Lint
         run: make lint

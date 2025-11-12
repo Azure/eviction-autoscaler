@@ -17,10 +17,7 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Verify Go version
-        run: go version
-
-      - name: Update golang.org/x/tools
-        run: go get golang.org/x/tools@latest   
+        run: go version 
       #- name: Install dependencies
       #  run: |
       #    sudo apt-get update

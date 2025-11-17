@@ -29,9 +29,7 @@ jobs:
         run: make lint
 
       - name: Helm lint and template
-        run: |
-          make helm-lint
-          make helm-template
+        run: make helm-validate
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2

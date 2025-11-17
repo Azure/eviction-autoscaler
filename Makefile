@@ -62,6 +62,9 @@ vet: ## Run go vet against code.
 KIND_VERSION ?= v0.22.0
 KIND_BIN ?= $(LOCALBIN)/kind-$(KIND_VERSION)
 
+HELM_VERSION ?= v3.16.2
+HELM_BIN ?= $(LOCALBIN)/helm
+
 .PHONY: kind
 kind: $(KIND_BIN) ## Download kind locally if necessary.
 $(KIND_BIN): $(LOCALBIN)
@@ -90,6 +93,13 @@ lint: golangci-lint ## Run golangci-lint linter
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
+
+.PHONY: helm-validate
+helm-validate: helm ## Run helm lint and template on the chart
+	$(HELM_BIN) lint ./helm/eviction-autoscaler
+	@echo "Validating helm template rendering..."
+	@$(HELM_BIN) template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system 1>/dev/null && echo "✓ Helm template rendered successfully"
+
 
 ##@ Build
 
@@ -162,6 +172,20 @@ undeploy: uninstall ## Undeploy controller from the K8s cluster specified in ~/.
 LOCALBIN ?= $(shell pwd)/bin
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
+
+.PHONY: helm
+helm: $(HELM_BIN) ## Download helm locally if necessary.
+$(HELM_BIN): $(LOCALBIN)
+	@[ -f $(HELM_BIN) ] || { \
+		echo "Downloading helm $(HELM_VERSION)"; \
+		mkdir -p $(LOCALBIN); \
+		curl -Lo /tmp/helm.tar.gz https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz; \
+		tar -xzf /tmp/helm.tar.gz -C /tmp; \
+		mv /tmp/linux-amd64/helm $(HELM_BIN); \
+		chmod +x $(HELM_BIN); \
+		rm -rf /tmp/helm.tar.gz /tmp/linux-amd64; \
+	}
+
 
 ## Tool Binaries
 KUBECTL ?= kubectl

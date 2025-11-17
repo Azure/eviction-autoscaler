@@ -91,6 +91,14 @@ lint: golangci-lint ## Run golangci-lint linter
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
 
+.PHONY: helm-lint
+helm-lint: ## Run helm lint on the chart
+	helm lint ./helm/eviction-autoscaler
+
+.PHONY: helm-template
+helm-template: ## Run helm template to render the chart
+	helm template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system
+
 ##@ Build
 
 .PHONY: build

@@ -6,6 +6,7 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/samber/lo"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -23,6 +24,7 @@ import (
 )
 
 var errOwnerNotFound error = fmt.Errorf("owner not found")
+var errOwnerIsStatefulSet error = fmt.Errorf("owner is Statefulset")
 
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
@@ -60,11 +62,13 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return ctrl.Result{}, err
 		}
 
+		//if we generate pdb should just annotw with owner?
 		deploymentName, e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
-			if e == errOwnerNotFound {
+			if e == errOwnerIsStatefulSet {
 				return reconcile.Result{}, nil
 			}
+			//should we event on the pdb that we can't find an owner. We don't want to just leave in case pods show up later.
 			return reconcile.Result{}, e
 		}
 
@@ -151,15 +155,12 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	}
 	logger.Info("Number of pods found", "count", len(podList.Items))
 
-	if len(podList.Items) == 0 {
-		// TODO instead of an error which leads to a backoff retry quietly for a while then error?
-		return "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
-	}
-
+	ownerkinds := map[string]bool{}
 	// Iterate through each pod
 	for _, pod := range podList.Items {
 		// Check the OwnerReferences of each pod
 		for _, ownerRef := range pod.OwnerReferences {
+			ownerkinds[ownerRef.Kind] = true
 			if ownerRef.Kind == "ReplicaSet" {
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
@@ -179,7 +180,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 				}
 				// no replicaset owner just move on and see if any other pods have have something.
 			}
-			//// Optional: Handle StatefulSets if necessary
+			// Optional: Handle StatefulSets if necessary
 			//if ownerRef.Kind == "StatefulSet" {
 			//	statefulSet := &appsv1.StatefulSet{}
 			//	err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, statefulSet)
@@ -189,9 +190,16 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 			//	logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)
 			//	// Handle StatefulSet logic if required
 			//}
-
 		}
 	}
-	logger.Info("No Deployment owner found")
+
+	//so it may be the case that existing pod were ownerless or dameonset in which case we probably want to error until a real one shows up
+	//but stateful sets we know we don't support and will have pdbs
+	if ownerkinds["StatefulSet"] {
+		return "", errOwnerIsStatefulSet
+	}
+
+	logger.Info("No Deployment owner found", "owners", lo.Keys(ownerkinds))
+	// TODO instead of an error which leads to a backoff retry quietly for a while then error?
 	return "", errOwnerNotFound
 }

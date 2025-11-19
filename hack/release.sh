@@ -12,15 +12,15 @@ IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
 repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
 # Get the latest tag from the Git repository
-latest_git_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
+latest_git_tag=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
 
 if [[ -z "$latest_git_tag" ]]; then
-  echo "No version tags found in repository - skipping release"
+  echo "No new tags found - skipping release"
   exit 0
 fi
 
-# Extract version from tag (remove 'v' prefix)
-version="${latest_git_tag#v}"
+# Use the tag as version (no 'v' prefix to remove)
+version="${latest_git_tag}"
 echo "Latest Git tag: $latest_git_tag"
 echo "Version: $version"
 

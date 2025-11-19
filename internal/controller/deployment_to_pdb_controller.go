@@ -28,6 +28,8 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
+const PDBCreatedByAnnotationKey = "createdBy"
+const PDBCreatedByAnnotationValue = "DeploymentToPDBController"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -110,8 +112,8 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
 			Annotations: map[string]string{
-				"createdBy": "DeploymentToPDBController",
-				"target":    deployment.Name,
+				PDBCreatedByAnnotationKey: PDBCreatedByAnnotationValue,
+				"target":                  deployment.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
@@ -144,14 +146,14 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
-	
+
 	// Only update PDB if it was created by this controller
-	if pdb.Annotations["createdBy"] != "DeploymentToPDBController" {
+	if pdb.Annotations[PDBCreatedByAnnotationKey] != PDBCreatedByAnnotationValue {
 		logger.Info("Skipping PDB update - not created by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil
 	}
-	
+
 	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
 		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas

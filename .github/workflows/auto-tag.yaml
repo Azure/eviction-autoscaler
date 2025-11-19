@@ -1,0 +1,59 @@
+name: Auto-tag on Merge
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  auto-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all tags
+
+      - name: Get latest production tag
+        id: latesttag
+        run: |
+          git fetch --tags
+          # Get latest clean production version tag (without 'v' prefix or commit SHA)
+          LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="0.1.0"
+          fi
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: Get latest commit info
+        id: commit
+        run: |
+          COMMIT_SHA="$(git rev-parse --short HEAD)"
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_ENV
+
+      - name: Check if commit already tagged
+        id: check
+        run: |
+          # Check if this commit already has a development tag
+          EXISTING_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]+$' || true)
+          if [ -n "$EXISTING_TAG" ]; then
+            echo "Commit already tagged with: $EXISTING_TAG"
+            echo "do_tag=false" >> $GITHUB_ENV
+          else
+            echo "do_tag=true" >> $GITHUB_ENV
+          fi
+
+      - name: Create development tag
+        if: env.do_tag == 'true'
+        run: |
+          # Create tag with format: 0.1.0-abc1234 (based on production tag but with commit SHA)
+          DEV_TAG="${{ env.latest_tag }}-${{ env.commit_sha }}"
+          echo "Creating development tag: $DEV_TAG"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@users.noreply.github.com"
+          git tag $DEV_TAG
+          git push origin $DEV_TAG
+          echo "Created development tag: $DEV_TAG"

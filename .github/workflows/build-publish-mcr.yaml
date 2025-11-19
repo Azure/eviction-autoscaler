@@ -2,8 +2,8 @@ name: Build and publish to ACR
 
 on:
   push:
-    branches:
-      - main  # Or your release branch
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'  # Only trigger on clean version tags like 1.0.0, not 1.0.0-abc1234
   workflow_dispatch:
     inputs:
       branch:

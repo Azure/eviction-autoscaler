@@ -1,0 +1,92 @@
+name: Auto-tag on Merge and Weekly Tag
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at 00:00 UTC
+
+jobs:
+  auto-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all tags
+
+      - name: Get latest tag
+        id: latesttag
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git tag --sort=-creatordate | grep '^v[0-9]\+\.[0-9]\+\.[0-9]\+' | head -n1)
+          echo "latest_tag=$LATEST_TAG" >> $GITHUB_ENV
+
+      - name: Get latest commit info
+        id: commit
+        run: |
+          COMMIT_SHA="$(git rev-parse --short HEAD)"
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_ENV
+          COMMIT_MESSAGE="$(git log -1 --pretty=%B)"
+          echo "commit_message=$COMMIT_MESSAGE" >> $GITHUB_ENV
+
+      - name: Should we tag? (push event)
+        if: github.event_name == 'push'
+        id: shouldtag_push
+        run: |
+          # Only tag if not a tag push, and if target is main branch
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "do_tag=true" >> $GITHUB_ENV
+          else
+            echo "do_tag=false" >> $GITHUB_ENV
+          fi
+
+      - name: Should we tag? (schedule event)
+        if: github.event_name == 'schedule'
+        id: shouldtag_cron
+        run: |
+          # Find new commits since last tag
+          if [ -z "${{ env.latest_tag }}" ]; then
+            NEW_COMMITS=$(git rev-list origin/main --count)
+          else
+            NEW_COMMITS=$(git rev-list ${{ env.latest_tag }}..origin/main --count)
+          fi
+          if [ "$NEW_COMMITS" -gt "0" ]; then
+            echo "do_tag=true" >> $GITHUB_ENV
+          else
+            echo "do_tag=false" >> $GITHUB_ENV
+          fi
+
+      - name: Compute new tag version
+        if: env.do_tag == 'true'
+        id: bump
+        run: |
+          # If no existing tag, start at v0.1.0
+          if [ -z "${{ env.latest_tag }}" ]; then
+            TAG_BASE="v0.1.0"
+          else
+            TAG_BASE="${{ env.latest_tag }}"
+            VERSION=$(echo $TAG_BASE | sed 's/v//')
+            MAJOR=$(echo $VERSION | cut -d. -f1)
+            MINOR=$(echo $VERSION | cut -d. -f2)
+            PATCH=$(echo $VERSION | cut -d. -f3)
+            PATCH=$((PATCH+1))
+            TAG_BASE="v${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          # Add commit sha
+          AUTO_TAG="${TAG_BASE}-${{ env.commit_sha }}"
+          echo "new_tag=$AUTO_TAG" >> $GITHUB_ENV
+
+      - name: Create and push new tag
+        if: env.do_tag == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@users.noreply.github.com"
+          git tag ${{ env.new_tag }} origin/main
+          git push origin ${{ env.new_tag }}

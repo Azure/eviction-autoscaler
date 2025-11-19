@@ -11,35 +11,34 @@ RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
 repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
+# Get the latest tag from the Git repository
+latest_git_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
+
+if [[ -z "$latest_git_tag" ]]; then
+  echo "No new tags found - skipping release"
+  exit 0
+fi
+
+# Extract version from tag (remove 'v' prefix)
+version="${latest_git_tag#v}"
+echo "Latest Git tag: $latest_git_tag"
+echo "Version: $version"
+
+# Check if this version already exists in ACR
 set +e
-latest_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv 2>/tmp/acr_err | \
-  grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
-acr_err=$(< /tmp/acr_err)
+existing_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo_path" -o tsv 2>/dev/null | grep -E "^${version}$" || true)
 set -e
 
-if [[ -n "$acr_err" && "$acr_err" == *"is not found"* ]]; then
-  echo "ACR repository $repo_path not found, using base version."
-  base_version="0.1.0"
-elif [[ -z "$latest_tag" ]]; then
-  base_version="0.1.0"
-else
-  base_version="$latest_tag"
+if [[ -n "$existing_tag" ]]; then
+  echo "Version $version already exists in ACR - skipping release"
+  echo "To release a new version, create a new tag:"
+  echo "  git tag v<new-version>"
+  echo "  git push origin v<new-version>"
+  exit 1
 fi
-
-if [[ -z "$latest_tag" ]]; then
-  base_version="0.1.0"
-else
-  base_version="$latest_tag"
-fi
-
-# Increment patch version
-IFS='.' read -r major minor patch <<< "$base_version"
-patch=$((patch + 1))
-version="${major}.${minor}.${patch}"
 
 echo "Releasing eviction-autoscaler"
-echo "Latest tag: $latest_tag"
-echo "New version: $version"
+echo "New version to release: $version"
 echo "Commit: $commit_sha"
 echo "ACR: $RELEASE_ACR"
 

@@ -15,7 +15,7 @@ repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path cha
 latest_git_tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
 
 if [[ -z "$latest_git_tag" ]]; then
-  echo "No new tags found - skipping release"
+  echo "No version tags found in repository - skipping release"
   exit 0
 fi
 

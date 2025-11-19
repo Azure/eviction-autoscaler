@@ -144,6 +144,14 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
+	
+	// Only update PDB if it was created by this controller
+	if pdb.Annotations["createdBy"] != "DeploymentToPDBController" {
+		logger.Info("Skipping PDB update - not created by DeploymentToPDBController",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		return nil
+	}
+	
 	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
 		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas

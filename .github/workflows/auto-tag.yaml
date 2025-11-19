@@ -21,10 +21,10 @@ jobs:
         id: latesttag
         run: |
           git fetch --tags
-          # Get latest clean version tag (without commit SHA)
-          LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
+          # Get latest clean production version tag (without 'v' prefix or commit SHA)
+          LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
           if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v0.1.0"
+            LATEST_TAG="0.1.0"
           fi
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_ENV
 
@@ -38,7 +38,7 @@ jobs:
         id: check
         run: |
           # Check if this commit already has a development tag
-          EXISTING_TAG=$(git tag --points-at HEAD | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]+$' || true)
+          EXISTING_TAG=$(git tag --points-at HEAD | grep -E '^[0-9]+\.[0-9]+\.[0-9]+-[a-f0-9]+$' || true)
           if [ -n "$EXISTING_TAG" ]; then
             echo "Commit already tagged with: $EXISTING_TAG"
             echo "do_tag=false" >> $GITHUB_ENV
@@ -49,7 +49,7 @@ jobs:
       - name: Create development tag
         if: env.do_tag == 'true'
         run: |
-          # Create tag with format: v0.1.0-abc1234
+          # Create tag with format: 0.1.0-abc1234 (based on production tag but with commit SHA)
           DEV_TAG="${{ env.latest_tag }}-${{ env.commit_sha }}"
           echo "Creating development tag: $DEV_TAG"
           git config user.name "GitHub Actions"

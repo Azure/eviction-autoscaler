@@ -32,8 +32,8 @@ set -e
 if [[ -n "$existing_tag" ]]; then
   echo "Version $version already exists in ACR - skipping release"
   echo "To release a new version, create a new tag:"
-  echo "  git tag v<new-version>"
-  echo "  git push origin v<new-version>"
+  echo "  git tag <new-version>  (e.g., 1.0.1)"
+  echo "  git push origin <new-version>"
   exit 1
 fi
 

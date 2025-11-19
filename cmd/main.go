@@ -163,7 +163,6 @@ func main() {
 		}
 		setupLog.Info("DeploymentToPDBReconciler  setup completed")
 	}
-	
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),

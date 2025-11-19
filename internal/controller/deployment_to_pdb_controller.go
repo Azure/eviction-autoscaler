@@ -146,7 +146,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	logger := log.FromContext(ctx)
 	
 	// Only update PDB if it was created by this controller
-	if pdb.Annotations["createdBy"] != "DeploymentToPDBController" {
+	if pdb.Annotations == nil || pdb.Annotations["createdBy"] != "DeploymentToPDBController" {
 		logger.Info("Skipping PDB update - not created by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil

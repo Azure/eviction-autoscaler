@@ -28,8 +28,8 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
-const PDBCreatedByAnnotationKey = "createdBy"
-const ControllerName = "DeploymentToPDBController"
+const PDBOwnedByAnnotationKey = "ownedBy"
+const ControllerName = "EvictionAutoScaler"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -112,7 +112,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
 			Annotations: map[string]string{
-				PDBCreatedByAnnotationKey: ControllerName,
+				PDBOwnedByAnnotationKey: ControllerName,
 				"target":                  deployment.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
@@ -148,7 +148,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	logger := log.FromContext(ctx)
 
 	// Only update PDB if it was created by this controller
-	if pdb.Annotations == nil ||  pdb.Annotations[PDBCreatedByAnnotationKey] != ControllerName {
+	if pdb.Annotations == nil ||  pdb.Annotations[PDBOwnedByAnnotationKey] != ControllerName {
 		logger.Info("Skipping PDB update - not created by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil

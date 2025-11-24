@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -28,6 +29,7 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
+const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -70,6 +72,23 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// Only "false" is supported, log a warning for any other value
 		log.Error(fmt.Errorf("Unsupported value for pdb-create annotation, only 'false' is supported"), "value", val)
 		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
+	}
+
+	// Check if eviction autoscaler should be enabled
+	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
+	if deployment.Namespace != "kube-system" {
+		// Fetch the namespace to check for the annotation
+		namespace := &corev1.Namespace{}
+		err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, namespace)
+		if err != nil {
+			log.Error(err, "Failed to get namespace", "namespace", deployment.Namespace)
+			return reconcile.Result{}, err
+		}
+
+		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != "true" {
+			log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
+			return reconcile.Result{}, nil
+		}
 	}
 
 	// Check if PDB already exists for this Deployment

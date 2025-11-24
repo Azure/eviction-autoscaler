@@ -198,6 +198,59 @@ metadata:
 
 This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
 
+### Enabling Eviction Autoscaler for Specific Namespaces
+
+By default, eviction autoscaler is **enabled** for all deployments in the `kube-system` namespace. For deployments in other namespaces, you must explicitly enable the eviction autoscaler by adding the following annotation **to the namespace**:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  annotations:
+    eviction-autoscaler.azure.com/enable-eviction-autoscaler: "true"
+```
+
+This ensures that the eviction autoscaler only manages deployments in namespaces that are explicitly opted-in via annotation, except for `kube-system` which is enabled by default for critical system components.
+
+**Example:**
+
+First, create or annotate your namespace:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  annotations:
+    eviction-autoscaler.azure.com/enable-eviction-autoscaler: "true"
+```
+
+Then deploy your application in that namespace:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+      - name: my-app
+        image: nginx
+```
+
+All deployments in the `production` namespace will now be managed by the eviction autoscaler.
+
 ## Usage
 
 ```bash

@@ -24,6 +24,8 @@ import (
 
 var errOwnerNotFound error = fmt.Errorf("owner not found")
 
+const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
+
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
@@ -51,6 +53,23 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
 	// Track PDB existence
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
+
+	// Check if eviction autoscaler should be enabled for this PDB
+	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
+	if pdb.Namespace != "kube-system" {
+		// Fetch the namespace to check for the annotation
+		namespace := &corev1.Namespace{}
+		err = r.Get(ctx, k8s_types.NamespacedName{Name: pdb.Namespace}, namespace)
+		if err != nil {
+			logger.Error(err, "Failed to get namespace", "namespace", pdb.Namespace)
+			return reconcile.Result{}, err
+		}
+
+		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != "true" {
+			logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
+			return reconcile.Result{}, nil
+		}
+	}
 
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
 	var EvictionAutoScaler types.EvictionAutoScaler

@@ -13,6 +13,7 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -29,6 +30,7 @@ import (
 )
 
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
+const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
@@ -45,6 +47,7 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -60,6 +63,24 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
+
+	// Check if eviction autoscaler should be enabled for this namespace
+	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
+	if EvictionAutoScaler.Namespace != "kube-system" {
+		// Fetch the namespace to check for the annotation
+		namespace := &corev1.Namespace{}
+		err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Namespace}, namespace)
+		if err != nil {
+			logger.Error(err, "Failed to get namespace", "namespace", EvictionAutoScaler.Namespace)
+			return ctrl.Result{}, err
+		}
+
+		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != "true" {
+			logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
+			// Don't process evictions for namespaces without the annotation
+			return ctrl.Result{}, nil
+		}
+	}
 
 	// Fetch the PDB using a 1:1 name mapping
 	pdb := &policyv1.PodDisruptionBudget{}

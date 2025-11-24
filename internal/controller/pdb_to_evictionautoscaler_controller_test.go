@@ -283,7 +283,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable-eviction-autosca
 
 	Context("when PDB is in kube-system namespace", func() {
 		BeforeEach(func() {
-			namespace = "kube-system"
+			namespace = KubeSystemNamespace
 			deploymentName = "kube-system-deployment"
 
 			// Create deployment

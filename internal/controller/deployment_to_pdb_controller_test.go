@@ -413,7 +413,7 @@ var _ = Describe("DeploymentToPDBReconciler with enable-eviction-autoscaler anno
 	Context("when deployment is in kube-system namespace", func() {
 		BeforeEach(func() {
 			// Use kube-system namespace
-			namespace = "kube-system"
+			namespace = KubeSystemNamespace
 
 			deployment = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{

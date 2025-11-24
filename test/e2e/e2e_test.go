@@ -525,11 +525,10 @@ var _ = Describe("controller", Ordered, func() {
 				return nil
 			}
 
-
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbMinAvailable(testNs, "nginx-annotation-test", 3)
 			}, time.Minute, time.Second).Should(Succeed())
-			
+
 			By("verifying owner reference was removed from PDB after annotation removal")
 			verifyNoOwnerReference := func(ns, name string) error {
 				var pdb policy.PodDisruptionBudget
@@ -542,11 +541,11 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			
+
 			EventuallyWithOffset(1, func() error {
 				return verifyNoOwnerReference(testNs, "nginx-annotation-test")
 			}, time.Minute, time.Second).Should(Succeed())
-			
+
 			By("deleting deployment and verifying PDB is NOT deleted (user has taken ownership)")
 			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", "--namespace", testNs)
 			_, err = utils.Run(cmd)
@@ -589,7 +588,7 @@ var _ = Describe("controller", Ordered, func() {
 				}
 				return nil
 			}
-			
+
 			EventuallyWithOffset(1, func() error {
 				return verifyHasOwnerReference(testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())

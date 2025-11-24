@@ -24,8 +24,6 @@ import (
 
 var errOwnerNotFound error = fmt.Errorf("owner not found")
 
-const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
-
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client

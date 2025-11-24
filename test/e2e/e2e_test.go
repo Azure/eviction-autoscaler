@@ -565,6 +565,72 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("testing bidirectional ownership transfer")
+			By("creating a new deployment with PDB")
+			cmd = exec.Command("kubectl", "create", "deployment", "nginx-ownership-test", "--image=nginx:latest",
+				"--replicas=3", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for PDB to be created
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-ownership-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying PDB has owner reference initially")
+			verifyHasOwnerReference := func(ns, name string) error {
+				var pdb policy.PodDisruptionBudget
+				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
+				if err != nil {
+					return err
+				}
+				if len(pdb.OwnerReferences) == 0 {
+					return fmt.Errorf("PDB has no owner references")
+				}
+				return nil
+			}
+			
+			EventuallyWithOffset(1, func() error {
+				return verifyHasOwnerReference(testNs, "nginx-ownership-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("removing ownedBy annotation from PDB (user takes ownership)")
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+				"ownedBy-", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying owner reference was removed after annotation removal")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoOwnerReference(testNs, "nginx-ownership-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("adding ownedBy annotation back to PDB (user returns control)")
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+				"ownedBy=EvictionAutoScaler", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("triggering reconciliation by scaling deployment")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-ownership-test", "--namespace", testNs, "--replicas=4")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying owner reference was added back after annotation re-added")
+			EventuallyWithOffset(1, func() error {
+				return verifyHasOwnerReference(testNs, "nginx-ownership-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("deleting deployment and verifying PDB is now deleted (controller has control again)")
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-ownership-test", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// PDB should be deleted since owner reference is back
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNs, "nginx-ownership-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
 			By("Scraping controller metrics at the end of the e2e test")
 
 			scrapeMetrics := func() error {

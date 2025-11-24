@@ -148,40 +148,70 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
-	// Check if user has removed the ownedBy annotation to take ownership
-	if pdb.Annotations == nil || pdb.Annotations[PDBOwnedByAnnotationKey] != ControllerName {
-		// Check if PDB still has an owner reference to the deployment
-		hasOwnerRef := false
+	// Check if PDB has the ownedBy annotation
+	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+	
+	// Check if PDB has an owner reference to the deployment
+	hasOwnerRef := false
+	for _, ownerRef := range pdb.OwnerReferences {
+		if ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name {
+			hasOwnerRef = true
+			break
+		}
+	}
+
+	// Handle annotation and owner reference synchronization
+	if !hasAnnotation && hasOwnerRef {
+		// User removed annotation - remove owner reference to transfer ownership
+		logger.Info("Removing owner reference from PDB - user has taken ownership",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		
+		// Remove the owner reference
+		newOwnerRefs := []metav1.OwnerReference{}
 		for _, ownerRef := range pdb.OwnerReferences {
-			if ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name {
-				hasOwnerRef = true
-				break
-			}
+			if !(ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name) {
+				newOwnerRefs = append(newOwnerRefs, ownerRef)
+			} 
 		}
-
-		if hasOwnerRef {
-			// User removed annotation - remove owner reference to transfer ownership
-			logger.Info("Removing owner reference from PDB - user has taken ownership",
+		pdb.OwnerReferences = newOwnerRefs
+		
+		if err := r.Update(ctx, &pdb); err != nil {
+			logger.Error(err, "Failed to remove owner reference from PDB",
 				"namespace", pdb.Namespace, "name", pdb.Name)
-			
-			// Remove the owner reference
-			newOwnerRefs := []metav1.OwnerReference{}
-			for _, ownerRef := range pdb.OwnerReferences {
-				if !(ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name) {
-					newOwnerRefs = append(newOwnerRefs, ownerRef)
-				} 
-			}
-			pdb.OwnerReferences = newOwnerRefs
-			
-			if err := r.Update(ctx, &pdb); err != nil {
-				logger.Error(err, "Failed to update owner reference on PDB",
-					"namespace", pdb.Namespace, "name", pdb.Name)
-				return err
-			}
-			logger.Info("Successfully updated owner reference on PDB",
-				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
 		}
-
+		logger.Info("Successfully removed owner reference from PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		
+		logger.Info("Skipping PDB update - not owned by DeploymentToPDBController",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		return nil
+	} else if hasAnnotation && !hasOwnerRef {
+		// Annotation is present but owner reference is missing - add it back
+		logger.Info("Adding owner reference to PDB - controller taking control back",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		
+		controller := true
+		blockOwnerDeletion := true
+		
+		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
+			APIVersion:         "apps/v1",
+			Kind:               ResourceTypeDeployment,
+			Name:               deployment.Name,
+			UID:                deployment.UID,
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		})
+		
+		if err := r.Update(ctx, &pdb); err != nil {
+			logger.Error(err, "Failed to add owner reference to PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		logger.Info("Successfully added owner reference to PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+	} else if !hasAnnotation && !hasOwnerRef {
+		// No annotation and no owner reference - user owns this PDB
 		logger.Info("Skipping PDB update - not owned by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil

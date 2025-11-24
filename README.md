@@ -198,6 +198,57 @@ metadata:
 
 This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
 
+### PDB Ownership and Lifecycle Management
+
+When eviction-autoscaler creates a PodDisruptionBudget (PDB) for a deployment, it manages the PDB's lifecycle using both Kubernetes owner references and annotations:
+
+- **Owner Reference**: Links the PDB to its deployment, ensuring the PDB is deleted when the deployment is deleted
+- **Annotation**: `ownedBy: EvictionAutoScaler` marks the PDB as managed by eviction-autoscaler
+
+#### Taking Manual Control of a PDB
+
+If you want to take manual control of a PDB that was created by eviction-autoscaler, remove the `ownedBy` annotation:
+
+```bash
+kubectl annotate pdb <pdb-name> -n <namespace> ownedBy-
+```
+
+When the annotation is removed, eviction-autoscaler will:
+1. Detect the annotation removal on the next reconciliation
+2. Remove the owner reference from the PDB
+3. Stop managing the PDB
+
+After this, the PDB becomes user-managed and will **not** be deleted when the deployment is deleted. You take full responsibility for managing and cleaning up the PDB.
+
+**Example workflow:**
+
+```bash
+# Check the current PDB annotations
+kubectl get pdb my-app -n default -o jsonpath='{.metadata.annotations}'
+
+# Remove the ownedBy annotation to take control
+kubectl annotate pdb my-app -n default ownedBy-
+
+# The PDB is now yours to manage
+# Deleting the deployment will no longer delete the PDB
+kubectl delete deployment my-app -n default
+
+# You must manually delete the PDB when you're done with it
+kubectl delete pdb my-app -n default
+```
+
+**Re-establishing controller ownership:**
+
+If you want eviction-autoscaler to take control back of a PDB, simply add the annotation back:
+
+```bash
+# Add the annotation back to return control to eviction-autoscaler
+kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
+
+# The controller will re-establish the owner reference on the next reconciliation
+# The PDB will now be deleted when the deployment is deleted
+```
+
 ## Usage
 
 ```bash

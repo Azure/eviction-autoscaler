@@ -484,7 +484,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("Testing namespace annotation feature")
-			
+
 			// Test 1: Namespace without annotation should NOT create PDB
 			testNsNoAnnotation := "test-no-annotation"
 			By("creating a test namespace WITHOUT enable-eviction-autoscaler annotation")

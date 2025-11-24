@@ -147,9 +147,41 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
-	// Only update PDB if it was created by this controller
-	if pdb.Annotations == nil ||  pdb.Annotations[PDBOwnedByAnnotationKey] != ControllerName {
-		logger.Info("Skipping PDB update - not created by DeploymentToPDBController",
+	// Check if user has removed the ownedBy annotation to take ownership
+	if pdb.Annotations == nil || pdb.Annotations[PDBOwnedByAnnotationKey] != ControllerName {
+		// Check if PDB still has an owner reference to the deployment
+		hasOwnerRef := false
+		for _, ownerRef := range pdb.OwnerReferences {
+			if ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name {
+				hasOwnerRef = true
+				break
+			}
+		}
+
+		if hasOwnerRef {
+			// User removed annotation - remove owner reference to transfer ownership
+			logger.Info("Removing owner reference from PDB - user has taken ownership",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			
+			// Remove the owner reference
+			newOwnerRefs := []metav1.OwnerReference{}
+			for _, ownerRef := range pdb.OwnerReferences {
+				if !(ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name) {
+					newOwnerRefs = append(newOwnerRefs, ownerRef)
+				} 
+			}
+			pdb.OwnerReferences = newOwnerRefs
+			
+			if err := r.Update(ctx, &pdb); err != nil {
+				logger.Error(err, "Failed to update owner reference on PDB",
+					"namespace", pdb.Namespace, "name", pdb.Name)
+				return err
+			}
+			logger.Info("Successfully updated owner reference on PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+		}
+
+		logger.Info("Skipping PDB update - not owned by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil
 	}

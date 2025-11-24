@@ -483,6 +483,88 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyNoPdb(testNs, "nginx-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
+			By("creating a new deployment with PDB to test annotation removal behavior")
+			cmd = exec.Command("kubectl", "create", "deployment", "nginx-annotation-test", "--image=nginx:latest",
+				"--replicas=3", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait for PDB to be created
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-annotation-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("removing ownedBy annotation from PDB")
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-annotation-test", "--namespace", testNs,
+				"ownedBy-", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling deployment to 5 replicas and verifying PDB minAvailable is NOT updated")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-annotation-test", "--namespace", testNs, "--replicas=5")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait a bit for controller to potentially react
+			time.Sleep(10 * time.Second)
+
+			// Verify PDB minAvailable is still 3 (not updated to 5)
+			verifyPdbMinAvailable := func(ns, name string, expectedMin int32) error {
+				var pdb policy.PodDisruptionBudget
+				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
+				if err != nil {
+					return err
+				}
+				if pdb.Spec.MinAvailable == nil {
+					return fmt.Errorf("PDB minAvailable is nil")
+				}
+				actualMin := pdb.Spec.MinAvailable.IntVal
+				if actualMin != expectedMin {
+					return fmt.Errorf("expected PDB minAvailable to be %d, got %d", expectedMin, actualMin)
+				}
+				return nil
+			}
+
+
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(testNs, "nginx-annotation-test", 3)
+			}, time.Minute, time.Second).Should(Succeed())
+			
+			By("verifying owner reference was removed from PDB after annotation removal")
+			verifyNoOwnerReference := func(ns, name string) error {
+				var pdb policy.PodDisruptionBudget
+				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
+				if err != nil {
+					return err
+				}
+				if len(pdb.OwnerReferences) > 0 {
+					return fmt.Errorf("PDB still has owner references: %v", pdb.OwnerReferences)
+				}
+				return nil
+			}
+			
+			EventuallyWithOffset(1, func() error {
+				return verifyNoOwnerReference(testNs, "nginx-annotation-test")
+			}, time.Minute, time.Second).Should(Succeed())
+			
+			By("deleting deployment and verifying PDB is NOT deleted (user has taken ownership)")
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Wait a bit to ensure controller doesn't delete PDB
+			time.Sleep(10 * time.Second)
+
+			// PDB should still exist since owner reference was removed
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNs, "nginx-annotation-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("cleaning up the orphaned PDB")
+			cmd = exec.Command("kubectl", "delete", "pdb/nginx-annotation-test", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
 			By("Scraping controller metrics at the end of the e2e test")
 
 			scrapeMetrics := func() error {

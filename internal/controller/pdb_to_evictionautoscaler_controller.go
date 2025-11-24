@@ -36,6 +36,7 @@ type PDBToEvictionAutoScalerReconciler struct {
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;update;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes EvictionAutoScalers accordingly.
 func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {

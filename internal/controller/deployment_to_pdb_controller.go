@@ -31,6 +31,7 @@ const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
 const KubeSystemNamespace = "kube-system"
+const EnableEvictionAutoscalerTrue = "true"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -87,7 +88,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return reconcile.Result{}, err
 		}
 
-		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != "true" {
+		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != EnableEvictionAutoscalerTrue {
 			log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
 			return reconcile.Result{}, nil
 		}

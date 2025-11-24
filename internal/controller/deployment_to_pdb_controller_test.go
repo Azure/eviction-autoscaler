@@ -35,6 +35,9 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test",
+				Annotations: map[string]string{
+					EnableEvictionAutoscalerAnnotationKey: "true",
+				},
 			},
 		}
 
@@ -207,6 +210,9 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-skip-",
+				Annotations: map[string]string{
+					EnableEvictionAutoscalerAnnotationKey: "true",
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())

@@ -35,6 +35,9 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			namespaceObj := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test",
+					Annotations: map[string]string{
+						EnableEvictionAutoscalerAnnotationKey: "true",
+					},
 				},
 			}
 
@@ -434,6 +437,9 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			namespaceObj := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test",
+					Annotations: map[string]string{
+						EnableEvictionAutoscalerAnnotationKey: "true",
+					},
 				},
 			}
 

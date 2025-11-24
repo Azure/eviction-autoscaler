@@ -30,6 +30,7 @@ const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
+const ResourceTypeDeployment = "Deployment"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -118,7 +119,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "apps/v1",
-					Kind:               "Deployment",
+					Kind:               ResourceTypeDeployment,
 					Name:               deployment.Name,
 					UID:                deployment.UID,
 					Controller:         &controller,         // Mark as managed by this controller
@@ -152,7 +153,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		// Check if PDB still has an owner reference to the deployment
 		hasOwnerRef := false
 		for _, ownerRef := range pdb.OwnerReferences {
-			if ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name {
+			if ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name {
 				hasOwnerRef = true
 				break
 			}
@@ -166,7 +167,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			// Remove the owner reference
 			newOwnerRefs := []metav1.OwnerReference{}
 			for _, ownerRef := range pdb.OwnerReferences {
-				if !(ownerRef.Kind == "Deployment" && ownerRef.Name == deployment.Name) {
+				if !(ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deployment.Name) {
 					newOwnerRefs = append(newOwnerRefs, ownerRef)
 				} 
 			}

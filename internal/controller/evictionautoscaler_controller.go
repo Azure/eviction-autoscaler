@@ -30,7 +30,6 @@ import (
 )
 
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
-const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {

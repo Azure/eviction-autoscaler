@@ -483,6 +483,174 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyNoPdb(testNs, "nginx-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
+			By("Testing namespace annotation feature")
+			
+			// Test 1: Namespace without annotation should NOT create PDB
+			testNsNoAnnotation := "test-no-annotation"
+			By("creating a test namespace WITHOUT enable-eviction-autoscaler annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsNoAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in namespace without annotation")
+			cmd = exec.Command("kubectl", "create", "deployment", "nginx-no-anno", "--image=nginx:latest",
+				"--replicas=2", "--namespace", testNsNoAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/nginx-no-anno", "--namespace", testNsNoAnnotation, "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying NO PDB is created for deployment in namespace without annotation")
+			time.Sleep(10 * time.Second) // Give controller time to potentially create PDB
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNsNoAnnotation, "nginx-no-anno")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying NO EvictionAutoScaler is created for deployment in namespace without annotation")
+			verifyNoEvictionAutoScaler := func(ns, name string) error {
+				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
+				err := clientset.List(ctx, evictionAutoScalerList, client.InNamespace(ns))
+				Expect(err).NotTo(HaveOccurred())
+				for _, eas := range evictionAutoScalerList.Items {
+					if eas.Name == name {
+						return fmt.Errorf("expected no EvictionAutoScaler for %s, but found one", name)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, func() error {
+				return verifyNoEvictionAutoScaler(testNsNoAnnotation, "nginx-no-anno")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			// Test 2: Namespace WITH annotation should create PDB
+			testNsWithAnnotation := "test-with-annotation"
+			By("creating a test namespace WITH enable-eviction-autoscaler annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsWithAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("annotating the namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsWithAnnotation,
+				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in namespace with annotation")
+			cmd = exec.Command("kubectl", "create", "deployment", "nginx-with-anno", "--image=nginx:latest",
+				"--replicas=2", "--namespace", testNsWithAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/nginx-with-anno", "--namespace", testNsWithAnnotation, "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created for deployment in namespace with annotation")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNsWithAnnotation, "nginx-with-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler IS created for deployment in namespace with annotation")
+			verifyEvictionAutoScalerCreated := func(ns, name string) error {
+				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
+				err := clientset.List(ctx, evictionAutoScalerList, client.InNamespace(ns))
+				Expect(err).NotTo(HaveOccurred())
+				for _, eas := range evictionAutoScalerList.Items {
+					if eas.Name == name {
+						fmt.Printf("Found EvictionAutoScaler %s in namespace %s\n", name, ns)
+						return nil
+					}
+				}
+				return fmt.Errorf("expected EvictionAutoScaler for %s, but found none", name)
+			}
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(testNsWithAnnotation, "nginx-with-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying PDB has correct minAvailable value")
+			verifyPdbMinAvailable := func(ns, name string, expectedMin int32) error {
+				var pdbList = &policy.PodDisruptionBudgetList{}
+				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
+				Expect(err).NotTo(HaveOccurred())
+				for _, pdb := range pdbList.Items {
+					if pdb.Name == name {
+						if pdb.Spec.MinAvailable != nil {
+							if val := pdb.Spec.MinAvailable.IntValue(); int32(val) != expectedMin {
+								return fmt.Errorf("PDB '%s' has MinAvailable set to %d (expected %d)", pdb.Name, val, expectedMin)
+							}
+							fmt.Printf("PDB '%s' has MinAvailable correctly set to %d\n", pdb.Name, expectedMin)
+							return nil
+						}
+						return fmt.Errorf("PDB '%s' has nil MinAvailable", pdb.Name)
+					}
+				}
+				return fmt.Errorf("PDB %s not found", name)
+			}
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(testNsWithAnnotation, "nginx-with-anno", 2)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 3: kube-system namespace should be enabled by default
+			By("creating a deployment in kube-system namespace")
+			cmd = exec.Command("kubectl", "create", "deployment", "test-kube-system", "--image=nginx:latest",
+				"--replicas=1", "--namespace", "kube-system")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready in kube-system")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/test-kube-system", "--namespace", "kube-system", "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created for deployment in kube-system (enabled by default)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated("kube-system", "test-kube-system")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler IS created for deployment in kube-system")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated("kube-system", "test-kube-system")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 4: Adding annotation to namespace should enable eviction autoscaler for existing deployments
+			By("annotating the namespace without annotation to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsNoAnnotation,
+				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("triggering reconciliation by scaling deployment")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-no-anno", "--replicas=3",
+				"--namespace", testNsNoAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS now created after annotation is added")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNsNoAnnotation, "nginx-no-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler IS now created after annotation is added")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(testNsNoAnnotation, "nginx-no-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Cleanup test resources
+			By("cleaning up test namespaces")
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsNoAnnotation)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsWithAnnotation)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-system", "--namespace", "kube-system")
+			_, _ = utils.Run(cmd)
+
 			By("Scraping controller metrics at the end of the e2e test")
 
 			scrapeMetrics := func() error {

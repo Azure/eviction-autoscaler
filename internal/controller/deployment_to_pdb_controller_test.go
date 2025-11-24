@@ -380,3 +380,186 @@ var _ = Describe("DeploymentToPDBReconciler triggerOnReplicaChange", func() {
 		}),
 	)
 })
+
+var _ = Describe("DeploymentToPDBReconciler with enable-eviction-autoscaler annotation", func() {
+	var (
+		namespace  string
+		deployment *appsv1.Deployment
+		r          *DeploymentToPDBReconciler
+		ctx        context.Context
+	)
+
+	const deploymentName = "test-deployment"
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		s := scheme.Scheme
+		Expect(appsv1.AddToScheme(s)).To(Succeed())
+		Expect(policyv1.AddToScheme(s)).To(Succeed())
+
+		r = &DeploymentToPDBReconciler{
+			Client: k8sClient,
+			Scheme: s,
+		}
+	})
+
+	Context("when deployment is in kube-system namespace", func() {
+		BeforeEach(func() {
+			// Use kube-system namespace
+			namespace = "kube-system"
+
+			deployment = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(2),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "test"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+		})
+
+		It("should create PDB by default without annotation", func() {
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+			}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pdb.Name).To(Equal(deploymentName))
+		})
+	})
+
+	Context("when deployment is in non-kube-system namespace", func() {
+		BeforeEach(func() {
+			// Create a test namespace
+			namespaceObj := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-enable-",
+				},
+			}
+			Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+			namespace = namespaceObj.Name
+
+			deployment = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(2),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": "test"},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": "test"},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+		})
+
+		It("should NOT create PDB without annotation", func() {
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+			}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should create PDB when annotation is set to true on namespace", func() {
+			// Update namespace with annotation
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "true"}
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+			}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(pdb.Name).To(Equal(deploymentName))
+		})
+
+		It("should NOT create PDB when annotation is set to false on namespace", func() {
+			// Update namespace with annotation
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "false"}
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+			}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
+		It("should NOT create PDB when annotation is set to empty string on namespace", func() {
+			// Update namespace with annotation
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: ""}
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+			}
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+			Expect(err).To(HaveOccurred())
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+})

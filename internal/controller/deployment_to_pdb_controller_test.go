@@ -336,7 +336,7 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(pdb.Annotations[PDBOwnedByAnnotationKey]).To(Equal(ControllerName))
-		Expect(len(pdb.OwnerReferences)).To(BeNumerically(">", 0))
+		Expect(pdb.OwnerReferences).ToNot(BeEmpty())
 
 		// Create EvictionAutoScaler CR (required for updateMinAvailableAsNecessary to be called)
 		eas := &myappsv1.EvictionAutoScaler{
@@ -362,7 +362,7 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		// Verify owner reference was removed
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(len(pdb.OwnerReferences)).To(Equal(0))
+		Expect(pdb.OwnerReferences).To(BeEmpty())
 	})
 
 	It("should add owner reference back when annotation is re-added", func() {
@@ -402,7 +402,7 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		// Verify owner reference was removed
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(len(pdb.OwnerReferences)).To(Equal(0))
+		Expect(pdb.OwnerReferences).To(BeEmpty())
 
 		// Add the annotation back (simulating user returning control)
 		pdb.Annotations = map[string]string{
@@ -417,7 +417,7 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		// Verify owner reference was added back
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(len(pdb.OwnerReferences)).To(BeNumerically(">", 0))
+		Expect(pdb.OwnerReferences).ToNot(BeEmpty())
 		Expect(pdb.OwnerReferences[0].Kind).To(Equal(ResourceTypeDeployment))
 		Expect(pdb.OwnerReferences[0].Name).To(Equal(deploymentName))
 	})

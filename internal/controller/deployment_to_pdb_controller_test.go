@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 
+	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/go-logr/logr/testr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -46,6 +47,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		s := scheme.Scheme
 		Expect(appsv1.AddToScheme(s)).To(Succeed())
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
+		Expect(myappsv1.AddToScheme(s)).To(Succeed())
 
 		surge := intstr.FromInt(1)
 		// Create the reconciler instance
@@ -289,6 +291,7 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		s := scheme.Scheme
 		Expect(appsv1.AddToScheme(s)).To(Succeed())
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
+		Expect(myappsv1.AddToScheme(s)).To(Succeed())
 
 		r = &DeploymentToPDBReconciler{
 			Client: k8sClient,
@@ -335,6 +338,19 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		Expect(pdb.Annotations[PDBOwnedByAnnotationKey]).To(Equal(ControllerName))
 		Expect(len(pdb.OwnerReferences)).To(BeNumerically(">", 0))
 
+		// Create EvictionAutoScaler CR (required for updateMinAvailableAsNecessary to be called)
+		eas := &myappsv1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+			},
+			Spec: myappsv1.EvictionAutoScalerSpec{},
+			Status: myappsv1.EvictionAutoScalerStatus{
+				TargetGeneration: deployment.GetGeneration(),
+			},
+		}
+		Expect(k8sClient.Create(ctx, eas)).To(Succeed())
+
 		// Remove the ownedBy annotation
 		pdb.Annotations = map[string]string{}
 		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
@@ -361,6 +377,19 @@ var _ = Describe("DeploymentToPDBReconciler ownership transfer", func() {
 		pdb := &policyv1.PodDisruptionBudget{}
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).ToNot(HaveOccurred())
+
+		// Create EvictionAutoScaler CR (required for updateMinAvailableAsNecessary to be called)
+		eas := &myappsv1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+			},
+			Spec: myappsv1.EvictionAutoScalerSpec{},
+			Status: myappsv1.EvictionAutoScalerStatus{
+				TargetGeneration: deployment.GetGeneration(),
+			},
+		}
+		Expect(k8sClient.Create(ctx, eas)).To(Succeed())
 
 		// Remove the ownedBy annotation (simulating user taking ownership)
 		pdb.Annotations = map[string]string{}

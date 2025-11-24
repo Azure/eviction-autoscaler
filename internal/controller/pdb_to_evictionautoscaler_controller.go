@@ -64,7 +64,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return reconcile.Result{}, err
 		}
 
-		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != "true" {
+		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != EnableEvictionAutoscalerTrue {
 			logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
 			return reconcile.Result{}, nil
 		}

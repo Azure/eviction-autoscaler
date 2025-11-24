@@ -65,7 +65,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if eviction autoscaler should be enabled for this namespace
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	if EvictionAutoScaler.Namespace != "kube-system" {
+	if EvictionAutoScaler.Namespace != KubeSystemNamespace {
 		// Fetch the namespace to check for the annotation
 		namespace := &corev1.Namespace{}
 		err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Namespace}, namespace)

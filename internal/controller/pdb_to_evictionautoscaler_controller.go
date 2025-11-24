@@ -55,7 +55,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 	// Check if eviction autoscaler should be enabled for this PDB
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	if pdb.Namespace != "kube-system" {
+	if pdb.Namespace != KubeSystemNamespace {
 		// Fetch the namespace to check for the annotation
 		namespace := &corev1.Namespace{}
 		err = r.Get(ctx, k8s_types.NamespacedName{Name: pdb.Namespace}, namespace)

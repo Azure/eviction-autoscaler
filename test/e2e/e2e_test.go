@@ -610,11 +610,6 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("triggering reconciliation by scaling deployment")
-			cmd = exec.Command("kubectl", "scale", "deployment/nginx-ownership-test", "--namespace", testNs, "--replicas=4")
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-
 			By("verifying owner reference was added back after annotation re-added")
 			EventuallyWithOffset(1, func() error {
 				return verifyHasOwnerReference(testNs, "nginx-ownership-test")

@@ -6,6 +6,7 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -47,6 +48,20 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		return reconcile.Result{}, err
 	}
 
+	deploymentName, e := r.discoverDeployment(ctx, &pdb)
+	if e != nil {
+		if e == errOwnerNotFound {
+			return reconcile.Result{}, nil
+		}
+		return reconcile.Result{}, e
+	}
+
+	// Handle ownership transfer based on ownedBy annotation
+	err = r.handleOwnershipTransfer(ctx, &pdb, deploymentName)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	// Update PDB metrics to check if this PDB was created by our deployment controller
 	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
 	// Track PDB existence
@@ -59,15 +74,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
-
-		deploymentName, e := r.discoverDeployment(ctx, &pdb)
-		if e != nil {
-			if e == errOwnerNotFound {
-				return reconcile.Result{}, nil
-			}
-			return reconcile.Result{}, e
-		}
-
+		// EvictionAutoScaler not found, create it
 		//variables
 		controller := true
 		blockOwnerDeletion := true
@@ -116,17 +123,95 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	return reconcile.Result{}, nil
 }
 
+// handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
+func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.Context, pdb *policyv1.PodDisruptionBudget, deploymentName string) error {
+	logger := log.FromContext(ctx)
+
+	// Check if PDB has the ownedBy annotation
+	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+
+	// Check if PDB has an owner reference to a deployment
+	hasOwnerRef := false
+	var deploymentOwnerIdx int
+	for idx, ownerRef := range pdb.OwnerReferences {
+		if ownerRef.Kind == ResourceTypeDeployment {
+			hasOwnerRef = true
+			deploymentOwnerIdx = idx
+			break
+		}
+	}
+
+	// Handle annotation and owner reference synchronization
+	if !hasAnnotation && hasOwnerRef {
+		// User removed annotation - remove owner reference to transfer ownership
+		logger.Info("Removing owner reference from PDB - user has taken ownership",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+
+		// Remove the deployment owner reference
+		newOwnerRefs := []metav1.OwnerReference{}
+		for idx, ownerRef := range pdb.OwnerReferences {
+			if idx != deploymentOwnerIdx {
+				newOwnerRefs = append(newOwnerRefs, ownerRef)
+			}
+		}
+		pdb.OwnerReferences = newOwnerRefs
+
+		if err := r.Update(ctx, pdb); err != nil {
+			logger.Error(err, "Failed to remove owner reference from PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		logger.Info("Successfully removed owner reference from PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+	} else if hasAnnotation && !hasOwnerRef {
+		// Annotation is present but owner reference is missing - add it back
+		logger.Info("Adding owner reference to PDB - controller taking control back",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+
+		// Get the deployment to obtain its UID
+		deployment := &appsv1.Deployment{}
+		err := r.Get(ctx, k8s_types.NamespacedName{Name: deploymentName, Namespace: pdb.Namespace}, deployment)
+		if err != nil {
+			logger.Error(err, "Failed to get deployment",
+				"namespace", pdb.Namespace, "name", deploymentName)
+			return err
+		}
+
+		controller := true
+		blockOwnerDeletion := true
+
+		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
+			APIVersion:         "apps/v1",
+			Kind:               ResourceTypeDeployment,
+			Name:               deployment.Name,
+			UID:                deployment.UID,
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		})
+
+		if err := r.Update(ctx, pdb); err != nil {
+			logger.Error(err, "Failed to add owner reference to PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		logger.Info("Successfully added owner reference to PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+	}
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
 		WithEventFilter(predicate.Funcs{
-			// Only trigger for Create events
+			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				//ToDo: theoretically you could have a pdb update and change
-				// its label selectors in which case you might need to update the deployment target?
-				return false
+				// Trigger on ownedBy annotation changes
+				return triggerOnPDBAnnotationChange(e, logger)
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
@@ -194,4 +279,28 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	}
 	logger.Info("No Deployment owner found")
 	return "", errOwnerNotFound
+}
+
+// triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
+// by comparing the ownedBy annotation between old and new PDB
+func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
+	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
+	if okOld && okNew {
+		oldVal := ""
+		newVal := ""
+		if oldPDB.Annotations != nil {
+			oldVal = oldPDB.Annotations[PDBOwnedByAnnotationKey]
+		}
+		if newPDB.Annotations != nil {
+			newVal = newPDB.Annotations[PDBOwnedByAnnotationKey]
+		}
+		if oldVal != newVal {
+			logger.Info("PDB update event detected, ownedBy annotation changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", oldVal, "newValue", newVal)
+			return true
+		}
+	}
+	return false
 }

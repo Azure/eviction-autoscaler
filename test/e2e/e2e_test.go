@@ -162,6 +162,12 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
+			By("annotating the eviction-autoscaler namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", namespace,
+				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true", "--overwrite")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler-controller-manager",

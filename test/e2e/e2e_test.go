@@ -435,6 +435,12 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("annotating the test namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
 			By("creating a test deployment in the test namespace with annotation")
 			cmd = exec.Command("kubectl", "create", "deployment", "nginx-test", "--image=nginx:latest",
 				"--namespace", testNs, "--dry-run=client", "-o", "yaml")

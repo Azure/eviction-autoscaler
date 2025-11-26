@@ -728,24 +728,6 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("verifying PDB has correct minAvailable value")
-			verifyPdbMinAvailable := func(ns, name string, expectedMin int32) error {
-				var pdbList = &policy.PodDisruptionBudgetList{}
-				err = clientset.List(ctx, pdbList, client.InNamespace(ns))
-				Expect(err).NotTo(HaveOccurred())
-				for _, pdb := range pdbList.Items {
-					if pdb.Name == name {
-						if pdb.Spec.MinAvailable != nil {
-							if val := pdb.Spec.MinAvailable.IntValue(); int32(val) != expectedMin {
-								return fmt.Errorf("PDB '%s' has MinAvailable set to %d (expected %d)", pdb.Name, val, expectedMin)
-							}
-							fmt.Printf("PDB '%s' has MinAvailable correctly set to %d\n", pdb.Name, expectedMin)
-							return nil
-						}
-						return fmt.Errorf("PDB '%s' has nil MinAvailable", pdb.Name)
-					}
-				}
-				return fmt.Errorf("PDB %s not found", name)
-			}
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbMinAvailable(testNsWithAnnotation, "nginx-with-anno", 2)
 			}, time.Minute, time.Second).Should(Succeed())

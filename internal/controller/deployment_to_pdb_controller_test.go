@@ -29,7 +29,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 	)
 
 	BeforeEach(func() {
-		ctx = context.Background().WithLogger(logcore.GetTestLogger())
+		ctx = context.Background()
 	
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -275,8 +275,7 @@ var _ = Describe("DeploymentToPDBReconciler triggerOnReplicaChange", func() {
 
 	DescribeTable("should correctly determine when to trigger on deployment updates",
 		func(tc testCase) {
-			ctx  := context.Background().WithLogger(logcore.GetTestLogger())
-			logger := log.FromContext(ctx)
+			logger := logcore.GetTestLogger()
 			updateEvent := event.UpdateEvent{
 				ObjectOld: tc.oldObject,
 				ObjectNew: tc.newObject,

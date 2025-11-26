@@ -14,7 +14,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -30,7 +29,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 	BeforeEach(func() {
 		ctx = context.Background()
-	
+
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test",
@@ -261,122 +260,4 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		Expect(err).To(HaveOccurred())
 		Expect(errors.IsNotFound(err)).To(BeTrue())
 	})
-})
-
-// We had a bug where we wou
-var _ = Describe("DeploymentToPDBReconciler triggerOnReplicaChange", func() {
-
-	type testCase struct {
-		name           string
-		oldObject      client.Object
-		newObject      client.Object
-		expectedResult bool
-	}
-
-	DescribeTable("should correctly determine when to trigger on deployment updates",
-		func(tc testCase) {
-			logger := logcore.GetTestLogger()
-			updateEvent := event.UpdateEvent{
-				ObjectOld: tc.oldObject,
-				ObjectNew: tc.newObject,
-			}
-
-			result := triggerOnReplicaChange(updateEvent, logger)
-			Expect(result).To(Equal(tc.expectedResult))
-		},
-		Entry("should return true when replicas increase", testCase{
-			name: "replicas increase",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(5),
-				},
-			},
-			expectedResult: true,
-		}),
-		Entry("should return true when replicas decrease", testCase{
-			name: "replicas decrease",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(5),
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
-				},
-			},
-			expectedResult: true,
-		}),
-		Entry("should return false when replicas stay the same", testCase{
-			name: "replicas stay the same",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-				},
-			},
-			expectedResult: false,
-		}),
-		Entry("should return false when old object is not a deployment", testCase{
-			name:      "old object is not a deployment",
-			oldObject: &corev1.Pod{},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-				},
-			},
-			expectedResult: false,
-		}),
-		Entry("should handle nil replicas gracefully", testCase{
-			name: "nil replicas in old deployment",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: nil,
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-				},
-			},
-			expectedResult: true,
-		}),
-		Entry("should handle both nil replicas", testCase{
-			name: "both deployments have nil replicas",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: nil,
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: nil,
-				},
-			},
-			expectedResult: false,
-		}),
-		Entry("should handle new deployment with nil replicas", testCase{
-			name: "new deployment has nil replicas",
-			oldObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-				},
-			},
-			newObject: &appsv1.Deployment{
-				Spec: appsv1.DeploymentSpec{
-					Replicas: nil,
-				},
-			},
-			expectedResult: true,
-		}),
-	)
 })

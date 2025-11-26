@@ -730,7 +730,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("verifying PDB has correct minAvailable value")
 			verifyPdbMinAvailable := func(ns, name string, expectedMin int32) error {
 				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
+				err = clientset.List(ctx, pdbList, client.InNamespace(ns))
 				Expect(err).NotTo(HaveOccurred())
 				for _, pdb := range pdbList.Items {
 					if pdb.Name == name {

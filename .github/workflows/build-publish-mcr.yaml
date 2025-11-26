@@ -1,0 +1,93 @@
+name: Build and publish to ACR
+
+on:
+  push:
+    branches:
+      - main  # Or your release branch
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to run the workflow'
+        required: true
+        default: 'main'    
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on:
+      labels: [self-hosted, "1ES.Pool=1es-aks-eviction-autoscaler-pool-ubuntu"]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.23'
+
+    - name: Setup required tools
+      shell: bash
+      run: |
+        set -e
+
+        # Update package lists and install basic dependencies (excluding docker.io to avoid containerd conflict)
+        sudo apt-get update
+        sudo apt-get install -y curl jq make ca-certificates apt-transport-https gnupg lsb-release
+
+        # Install Docker using the official script (recommended way)
+        if ! command -v docker >/dev/null 2>&1; then
+          echo "Installing Docker..."
+          curl -fsSL https://get.docker.com | sudo sh
+        fi
+
+        # Install Homebrew non-interactively if missing, persist env for subsequent steps
+        if ! command -v brew >/dev/null 2>&1; then
+          echo "Installing Homebrew..."
+          NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          # Persist Homebrew env for later steps in this job
+          /home/linuxbrew/.linuxbrew/bin/brew shellenv | grep -E '^(export |PATH=)' | sed -E 's/^export ([^=]+)=([^\"]+)$/\1=\2/' | grep -v '^PATH=' >> $GITHUB_ENV
+          /home/linuxbrew/.linuxbrew/bin/brew shellenv | grep '^export PATH=' | sed -E 's/^export PATH="([^"]+)".*$/\1/' >> $GITHUB_PATH
+          eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+        fi
+
+        # Update and install required packages via brew
+        brew install yq cosign trivy azure-cli crane
+
+        echo "All tools installed successfully."
+
+    - name: Verify Docker installation
+      run: docker --version
+
+    - name: Verify Azure CLI installation
+      run: az --version
+
+    - name: Verify yq installation
+      run: yq --version
+
+    - name: Verify cosign installation
+      run: cosign version
+
+    - name: Verify trivy installation
+      run: trivy --version
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: v3.12.0
+
+    - name: Make release.sh executable
+      run: chmod +x ./hack/release.sh 
+
+    - name: 'Login to the ACR'
+      env:
+        RELEASE_ACR: aksmcrimagescommon #owned by aks dev infra
+      run: |
+        az login --identity
+        az acr login -n $RELEASE_ACR
+        ./hack/release.sh

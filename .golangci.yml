@@ -1,5 +1,5 @@
 run:
-  timeout: 5m
+  timeout: 10m
   allow-parallel-runners: true
 
 issues:
@@ -21,7 +21,7 @@ linters:
   enable:
     - dupl
     - errcheck
-    - exportloopref
+    - copyloopvar
     - ginkgolinter
     - goconst
     - gocyclo
@@ -32,6 +32,8 @@ linters:
     - ineffassign
     - lll
     - misspell
+    - nilnil         # Checks for redundant nil checks
+    - noctx          # Finds HTTP requests without context
     - nakedret
     - prealloc
     - staticcheck

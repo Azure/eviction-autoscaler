@@ -21,6 +21,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -39,6 +40,7 @@ import (
 
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
+	_ "github.com/azure/eviction-autoscaler/internal/metrics"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -145,14 +147,23 @@ func main() {
 	}
 	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
 
-	if err = (&controllers.DeploymentToPDBReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
-		os.Exit(1)
+	pdbcreate := os.Getenv("PDB_CREATE")
+	b, err := strconv.ParseBool(pdbcreate)
+	if err != nil {
+		setupLog.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
+		b = false
 	}
-	setupLog.Info("DeploymentToPDBReconciler  setup completed")
+	if b {
+		if err = (&controllers.DeploymentToPDBReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
+			os.Exit(1)
+		}
+		setupLog.Info("DeploymentToPDBReconciler  setup completed")
+	}
+	
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),

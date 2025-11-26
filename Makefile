@@ -59,9 +59,27 @@ fmt: ## Run go fmt against code.
 vet: ## Run go vet against code.
 	go vet ./...
 
+KIND_VERSION ?= v0.22.0
+KIND_BIN ?= $(LOCALBIN)/kind-$(KIND_VERSION)
+
+HELM_VERSION ?= v3.16.2
+HELM_BIN ?= $(LOCALBIN)/helm
+
+.PHONY: kind
+kind: $(KIND_BIN) ## Download kind locally if necessary.
+$(KIND_BIN): $(LOCALBIN)
+	@[ -f $(KIND_BIN) ] || { \
+		echo "Downloading kind $(KIND_VERSION)"; \
+		curl -Lo $(KIND_BIN) https://kind.sigs.k8s.io/dl/$(KIND_VERSION)/kind-linux-amd64; \
+		chmod +x $(KIND_BIN); \
+	}
+	@ln -sf $(KIND_BIN) $(LOCALBIN)/kind
+
+export PATH := $(LOCALBIN):$(PATH)
+
 .PHONY: test
 test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" GOTOOLCHAIN=go1.25.0+auto go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
@@ -75,6 +93,13 @@ lint: golangci-lint ## Run golangci-lint linter
 .PHONY: lint-fix
 lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 	$(GOLANGCI_LINT) run --fix
+
+.PHONY: helm-validate
+helm-validate: helm ## Run helm lint and template on the chart
+	$(HELM_BIN) lint ./helm/eviction-autoscaler
+	@echo "Validating helm template rendering..."
+	@$(HELM_BIN) template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system 1>/dev/null && echo "✓ Helm template rendered successfully"
+
 
 ##@ Build
 
@@ -114,12 +139,6 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 	- $(CONTAINER_TOOL) buildx rm k8s-pdb-autoscaler-builder
 	rm Dockerfile.cross
 
-.PHONY: build-installer
-build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
-	mkdir -p dist
-	cd config/manager && $(KUSTOMIZE) edit set image paulgmiller/k8s-pdb-autoscaler=${IMG}
-	$(KUSTOMIZE) build config/default > dist/install.yaml
-
 ##@ Deployment
 
 ifndef ignore-not-found
@@ -127,21 +146,25 @@ ifndef ignore-not-found
 endif
 
 .PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
+install: ## Install the controller using Helm.
+	helm upgrade --install eviction-autoscaler ./helm/eviction-autoscaler \
+		--namespace kube-system --create-namespace \
+		--set image.repository=mcr.microsoft.com/oss/v2/eviction-autoscaler/eviction-autoscaler \
+		--set image.tag=v1.0.1
 
 .PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/crd | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+uninstall: ## Uninstall the controller using Helm.
+	helm uninstall eviction-autoscaler --namespace kube-system
 
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image paulgmiller/k8s-pdb-autoscaler=${IMG}
-	$(KUSTOMIZE) build config/default | $(KUBECTL) apply -f -
+deploy: ## Deploy controller with custom image to the K8s cluster specified in ~/.kube/config.
+	helm upgrade --install eviction-autoscaler ./helm/eviction-autoscaler \
+		--namespace kube-system --create-namespace \
+		--set image.repository=$(shell echo ${IMG} | cut -d: -f1) \
+		--set image.tag=$(shell echo ${IMG} | cut -d: -f2)
 
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUSTOMIZE) build config/default | $(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: uninstall ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
 
 ##@ Dependencies
 
@@ -150,23 +173,30 @@ LOCALBIN ?= $(shell pwd)/bin
 $(LOCALBIN):
 	mkdir -p $(LOCALBIN)
 
+.PHONY: helm
+helm: $(HELM_BIN) ## Download helm locally if necessary.
+$(HELM_BIN): $(LOCALBIN)
+	@[ -f $(HELM_BIN) ] || { \
+		echo "Downloading helm $(HELM_VERSION)"; \
+		mkdir -p $(LOCALBIN); \
+		curl -Lo /tmp/helm.tar.gz https://get.helm.sh/helm-$(HELM_VERSION)-linux-amd64.tar.gz; \
+		tar -xzf /tmp/helm.tar.gz -C /tmp; \
+		mv /tmp/linux-amd64/helm $(HELM_BIN); \
+		chmod +x $(HELM_BIN); \
+		rm -rf /tmp/helm.tar.gz /tmp/linux-amd64; \
+	}
+
+
 ## Tool Binaries
 KUBECTL ?= kubectl
-KUSTOMIZE ?= $(LOCALBIN)/kustomize-$(KUSTOMIZE_VERSION)
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
 
 ## Tool Versions
-KUSTOMIZE_VERSION ?= v5.4.1
-CONTROLLER_TOOLS_VERSION ?= v0.15.0
+CONTROLLER_TOOLS_VERSION ?= latest
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v1.62.2
-
-.PHONY: kustomize
-kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
-$(KUSTOMIZE): $(LOCALBIN)
-	$(call go-install-tool,$(KUSTOMIZE),sigs.k8s.io/kustomize/kustomize/v5,$(KUSTOMIZE_VERSION))
+GOLANGCI_LINT_VERSION ?= latest
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -192,7 +222,7 @@ define go-install-tool
 set -e; \
 package=$(2)@$(3) ;\
 echo "Downloading $${package}" ;\
-GOBIN=$(LOCALBIN) go install $${package} ;\
+GOTOOLCHAIN=go1.25.0+auto GOBIN=$(LOCALBIN) go install $${package} ;\
 mv "$$(echo "$(1)" | sed "s/-$(3)$$//")" $(1) ;\
 }
 endef

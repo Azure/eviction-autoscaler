@@ -5,7 +5,6 @@
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI Pipeline](https://github.com/azure/eviction-autoscaler/actions/workflows/ci.yml/badge.svg)](https://github.com/azure/eviction-autoscaler/actions/workflows/ci.yml)
 
-
 ## Table of Contents
 
 - [Introduction](#introduction)
@@ -16,7 +15,7 @@
 ## Introduction
 
 Kubernetes (k8s) deployments already have a max surge concept, and there's no reason this surge should only apply to new rollouts and not to node maintenance or other situations where PodDisruptionBudget (PDB)-protected pods need to be evicted.
-This project uses node cordons or, alternatively, an eviction webhook to signal eviction-autoscaler Custom Resources that correspond to a PodDisruptionBudget and target a deployment. An eviction autoscaler controller then attempts to scale up a the targeted deployment (or scaleset if you're feeling brave) when the pdb's allowed disruptions is zero and scales down once evictions have stopped.
+This project uses node cordons to signal eviction-autoscaler Custom Resources that correspond to a PodDisruptionBudget and target a deployment. An eviction autoscaler controller then attempts to scale up a the targeted deployment (or scaleset if you're feeling brave) when the pdb's allowed disruptions is zero and scales down once evictions have stopped.
 
 ### Why Not Overprovision?
 
@@ -24,35 +23,32 @@ Overprovisioning isn't free. Sometimes it makes sense to run as cost-effectively
 
 Your app might also experience issues for unrelated reasons, and a maintenance event shouldn't result in downtime if adding extra replicas can save you.
 
-
-
 ## Features
 
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
-- **Optional Webhook**: Signals eviction-autoscale for any pod getting an evicted. See [issue #10](https://github.com/azure/eviction-autoscaler/issues/10) for more information.
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler)
-
-
 
 ```mermaid
 graph TD;
     Cordon[Cordon]
     NodeController[Cordoned Node Controller]
-    Eviction[Eviction]
-    Webhook[Admission Webhook]
-    CRD[Custom Resource Definition]
+    CRD[Eviction Autoscaler Custom Resource]
     Controller[Eviction-Autoscaler Controller]
     Deployment[Deployment or StatefulSet]
+    PDB[Pod Disruption Budget]
+    PDBController[Optional PDB creator]
+
 
     Cordon -->|Triggers| NodeController
     NodeController -->|writes spec| CRD
-    Eviction -->|Triggers| Webhook
-    Webhook -->|writes spec| CRD 
     CRD -->|spec watched by| Controller
     Controller -->|surges and shrinks| Deployment
     Controller -->|Writes status| CRD
+    Controller -->|reads allowed disruptions | PDB
+    PDBController -->|watches | Deployment
+    PDBController -->|creates if not exist| PDB
 ```
 
 ## Installation
@@ -65,18 +61,195 @@ graph TD;
 
 ### Install
 
-Clone the repository and install the dependencies:
+You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resource Provider (RP) or via Helm.
+
+### Install via Helm
+
+1. Add the eviction-autoscaler Helm repository:
+
+    ```bash
+    helm repo add eviction-autoscaler https://azure.github.io/eviction-autoscaler/charts
+    helm repo update
+    ```
+
+2. Install the chart into your cluster:
+
+    ```bash
+    helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+          --namespace eviction-autoscaler --create-namespace \
+          --set pdb.create=true
+    ```
+
+> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.
+>
+> If a deployment already has a PDB whose label selector matches the deployment's pod template labels, eviction-autoscaler will **not** create a new PDB—even if `pdb.create=true`. This avoids duplicate PDBs and ensures existing disruption budgets are respected.
+>
+> For example, if you deploy an app without a PDB:
+>
+> ```yaml
+> apiVersion: apps/v1
+> kind: Deployment
+> metadata:
+>   name: my-app
+>   namespace: default
+> spec:
+>   replicas: 2
+>   selector:
+>     matchLabels:
+>       app: my-app
+>   template:
+>     metadata:
+>       labels:
+>         app: my-app
+>     spec:
+>       containers:
+>       - name: my-app
+>         image: nginx
+> ```
+>
+> With `pdb.create=true`, eviction-autoscaler will automatically create a matching PDB:
+>
+> ```yaml
+> apiVersion: policy/v1
+> kind: PodDisruptionBudget
+> metadata:
+>   name: my-app
+>   namespace: default
+> spec:
+>   minAvailable: 2
+>   selector:
+>     matchLabels:
+>       app: my-app
+> ```
+>
+> If a matching PDB already exists, eviction-autoscaler will not create another. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
+
+3. (Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
+
+Refer to the [Helm Values](https://github.com/Azure/eviction-autoscaler/blob/main/helm/eviction-autoscaler/values.yaml) for configuration options.
+
+### Install via Azure Kubernetes Extension RP
+
+Follow the steps below to register the required features and deploy the extension to your AKS cluster.
+
+#### 1. Register the Extensions Feature
 
 ```bash
-git clone https://github.com/azure/eviction-autoscaler.git
-cd k8s-pdb-autoscaler
-hack/install.sh
+az feature register --namespace Microsoft.KubernetesConfiguration --name Extensions
 ```
 
-TODO Add configuration options. Figure out if we want kustomize used for e2e to be installer.
+Wait until the feature state is `Registered`:
+
+```bash
+az feature show --namespace Microsoft.KubernetesConfiguration --name Extensions
+```
+
+#### 2. Register the Kubernetes Configuration Provider
+
+```bash
+az provider register -n Microsoft.KubernetesConfiguration
+```
+
+#### 3. Create an AKS Cluster (example)
+
+```bash
+az aks create \
+        --resource-group <your-resource-group> \
+        --name <your-aks-cluster-name> \
+        --node-count 2 \
+        --generate-ssh-keys
+```
+
+#### 4. Deploy the Eviction-Autoscaler Extension
+
+```bash
+az k8s-extension create \
+    --cluster-name <your-cluster-name> \
+    --cluster-type managedClusters \
+    --extension-type microsoft.evictionautoscaler \
+    --name <your-extension-name> \
+    --resource-group <your-resource-group-name> \
+    --release-train dev \
+    --config AgentTimeoutInMinutes=30 \
+    --subscription <your-subscription-id> \
+    --version 0.1.2 \
+    --auto-upgrade-minor-version false
+```
+
+> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. Eviction-autoscaler determines whether a deployment already has a corresponding PDB by comparing the PDB’s label selector with the deployment’s pod template labels. This ensures that each deployment is protected from disruptions and avoids duplicate PDBs. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
+> **Note:** The `--auto-upgrade-minor-version false` option is only required if you want to disable automatic minor version upgrades.
+> **Note:** The `--release-train dev` option specifies that the extension will use the "dev" release train, which typically includes the latest development builds and experimental features.  
+> Other available release train options include `stable` (recommended for production workloads) and `preview` (for pre-release features).  
+> Use `dev` for testing or development environments, `preview` for evaluating upcoming features, and `stable` for production deployments.
+
+Refer to the [extension documentation](https://github.com/azure/eviction-autoscaler/tree/main/charts/eviction-autoscaler) for configuration options.
+
+Configuration options will be documented here in future updates. If you have suggestions, please open an issue or PR.
+
+### Excluding Deployments from Automatic PDB Creation
+
+If you want to exclude a specific deployment from automatic PodDisruptionBudget (PDB) creation, add the following annotation to its manifest:
+
+```yaml
+metadata:
+    annotations:
+        eviction-autoscaler.azure.com/pdb-create: "false"
+```
+
+This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
+
+### PDB Ownership and Lifecycle Management
+
+When eviction-autoscaler creates a PodDisruptionBudget (PDB) for a deployment, it manages the PDB's lifecycle using both Kubernetes owner references and annotations:
+
+- **Owner Reference**: Links the PDB to its deployment, ensuring the PDB is deleted when the deployment is deleted
+- **Annotation**: `ownedBy: EvictionAutoScaler` marks the PDB as managed by eviction-autoscaler
+
+#### Taking Manual Control of a PDB
+
+If you want to take manual control of a PDB that was created by eviction-autoscaler, remove the `ownedBy` annotation:
+
+```bash
+kubectl annotate pdb <pdb-name> -n <namespace> ownedBy-
+```
+
+When the annotation is removed, eviction-autoscaler will:
+1. Detect the annotation removal (which triggers reconciliation)
+2. Remove the owner reference from the PDB
+3. Stop managing the PDB
+
+After this, the PDB becomes user-managed and will **not** be deleted when the deployment is deleted. You take full responsibility for managing and cleaning up the PDB.
+
+**Example workflow:**
+
+```bash
+# Check the current PDB annotations
+kubectl get pdb my-app -n default -o jsonpath='{.metadata.annotations}'
+
+# Remove the ownedBy annotation to take control
+kubectl annotate pdb my-app -n default ownedBy-
+
+# The PDB is now yours to manage
+# Deleting the deployment will no longer delete the PDB
+kubectl delete deployment my-app -n default
+
+# You must manually delete the PDB when you're done with it
+kubectl delete pdb my-app -n default
+```
+
+**Re-establishing controller ownership:**
+
+If you want eviction-autoscaler to take control back of a PDB, simply add the annotation back:
+
+```bash
+# Add the annotation back to return control to eviction-autoscaler
+kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
+
+# The controller will re-establish the owner reference on the next reconciliation
+# The PDB will now be deleted when the deployment is deleted
+```
 
 ## Usage
-Here's how to see how this might work.
 
 ```bash
 kubectl create ns laboratory
@@ -85,31 +258,32 @@ kubectl create deployment -n laboratory piggie --image nginx
 # show a starting state
 kubectl get pods -n laboratory
 kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 0
-kubectl get pdbwatcher piggie -n laboratory -o yaml
+kubectl get evictionautoscalers piggie -n laboratory -o yaml
 # cordon
 NODE=$(kubectl get pods -n laboratory -l app=piggie -o=jsonpath='{.items[*].spec.nodeName}')
 kubectl cordon $NODE
 # show we've scaled up
 kubectl get pods -n laboratory
 kubectl get poddisruptionbudget piggie -n laboratory -o yaml # should be allowed disruptions 1
-kubectl get pdbwatcher piggie -n laboratory -o yaml
+kubectl get evictionautoscalers piggie -n laboratory -o yaml
 # actually kick the node off now that pdb isn't at zero.
 kubectl drain $NODE --delete-emptydir-data --ignore-daemonsets
 
 ```
+
 Here's a drain of  Node on a to node cluster that is running the [aks store demo](https://github.com/Azure-Samples/aks-store-demo) (4 deployments and two stateful sets). You can see the drains being rejected then going through on the left and new pods being surged in on the right.
 
 ![Screenshot 2024-09-07 173336](https://github.com/user-attachments/assets/c7407ae5-6fcd-48d4-900d-32a7c6ca8b08)
 
-## Shout out 
+## Shout out
 
-This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler). 
+This project originated as an intern project and is still available at [github.com/Javier090/k8s-pdb-autoscaler](https://github.com/Javier090/k8s-pdb-autoscaler).
 
 ## Contributing
 
 This project welcomes contributions and suggestions.  Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us
-the rights to use your contribution. For details, visit https://cla.opensource.microsoft.com.
+the rights to use your contribution. For details, visit <https://cla.opensource.microsoft.com>.
 
 When you submit a pull request, a CLA bot will automatically determine whether you need to provide
 a CLA and decorate the PR appropriately (e.g., status check, comment). Simply follow the instructions
@@ -119,15 +293,10 @@ This project has adopted the [Microsoft Open Source Code of Conduct](https://ope
 For more information see the [Code of Conduct FAQ](https://opensource.microsoft.com/codeofconduct/faq/) or
 contact [opencode@microsoft.com](mailto:opencode@microsoft.com) with any additional questions or comments.
 
-
-
 ## Trademarks
 
-This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft 
-trademarks or logos is subject to and must follow 
+This project may contain trademarks or logos for projects, products, or services. Authorized use of Microsoft
+trademarks or logos is subject to and must follow
 [Microsoft's Trademark & Brand Guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks/usage/general).
 Use of Microsoft trademarks or logos in modified versions of this project must not cause confusion or imply Microsoft sponsorship.
 Any use of third-party trademarks or logos are subject to those third-party's policies.
-
-  
-

@@ -1,0 +1,83 @@
+# =============================================================================
+# USER CONFIGURATION - Main settings users typically need to customize
+# =============================================================================
+
+# Container image configuration
+image:
+  repository: paulgmiller/k8s-pdb-autoscaler
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+# Controller configuration - the main settings users need to customize
+controllerConfig:
+  # Metrics configuration
+  metrics:
+    enabled: true
+  
+  # Namespace watching configuration
+  namespaces:
+    # Watch mode: "all" or "none"
+    # - "all": Watch all namespaces 
+    # - "none": Disable controller
+    watchMode: "all"
+  
+  # PDB creation configuration
+  pdb:
+    create: true
+
+
+
+# ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)
+serviceAccount:
+  annotations: {}
+
+# =============================================================================
+# INTERNAL CONFIGURATION - Fixed settings with sensible defaults
+# These are not intended for user customization
+# =============================================================================
+
+# Deployment configuration (fixed)
+replicaCount: 1
+
+# PodDisruptionBudget for the controller itself
+pdb:
+  enabled: true
+  minAvailable: 1
+
+# Security contexts (fixed for security)
+podSecurityContext:
+  runAsNonRoot: true
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+# Health checks (fixed)
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8081
+  initialDelaySeconds: 15
+  periodSeconds: 20
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8081
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+# Port configuration (fixed)
+ports:
+  metrics: 8080
+  health: 8081

@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -46,6 +48,17 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		return reconcile.Result{}, err
 	}
 
+	// Handle ownership transfer based on ownedBy annotation
+	err = r.handleOwnershipTransfer(ctx, &pdb)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	// Update PDB metrics to check if this PDB was created by our deployment controller
+	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
+	// Track PDB existence
+	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
+
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
 	var EvictionAutoScaler types.EvictionAutoScaler
 	err = r.Get(ctx, req.NamespacedName, &EvictionAutoScaler)
@@ -54,14 +67,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return ctrl.Result{}, err
 		}
 
-		deploymentName, e := r.discoverDeployment(ctx, &pdb)
+		deploymentName, _ , e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
-			if e == errOwnerNotFound {
-				return reconcile.Result{}, nil
-			}
 			return reconcile.Result{}, e
 		}
 
+		// EvictionAutoScaler not found, create it
 		//variables
 		controller := true
 		blockOwnerDeletion := true
@@ -100,48 +111,130 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
 		}
+
+		// Track EvictionAutoScaler creation
+		metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
+
 		logger.Info("Created EvictionAutoScaler")
 	}
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
 }
 
+// handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
+func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
+	logger := log.FromContext(ctx)
+
+	// Check if PDB has the ownedBy annotation
+	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+
+	// Check if PDB has an owner reference to a deployment
+	hasOwnerRef := false
+	var deploymentOwnerIdx int
+	for idx, ownerRef := range pdb.OwnerReferences {
+		if ownerRef.Kind == ResourceTypeDeployment {
+			hasOwnerRef = true
+			deploymentOwnerIdx = idx
+			break
+		}
+	}
+
+	// Handle annotation and owner reference synchronization
+	if !hasAnnotation && hasOwnerRef {
+		// User removed annotation - remove owner reference to transfer ownership
+		logger.Info("Removing owner reference from PDB - user has taken ownership",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+			
+		// Remove the deployment owner reference
+		newOwnerRefs := []metav1.OwnerReference{}
+		for idx, ownerRef := range pdb.OwnerReferences {
+			if idx != deploymentOwnerIdx {
+				newOwnerRefs = append(newOwnerRefs, ownerRef)
+			}
+		}
+		pdb.OwnerReferences = newOwnerRefs
+
+		if err := r.Update(ctx, pdb); err != nil {
+			logger.Error(err, "Failed to remove owner reference from PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		logger.Info("Successfully removed owner reference from PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+	} else if hasAnnotation && !hasOwnerRef {
+		// Annotation is present but owner reference is missing - add it back
+		logger.Info("Adding owner reference to PDB - controller taking control back",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+
+		deploymentName, deploymentUID, err := r.discoverDeployment(ctx, pdb)
+		if err != nil {
+			logger.Error(err, "Failed to get deployment",
+				"namespace", pdb.Namespace, "name", deploymentName)
+			return err
+		}
+
+		controller := true
+		blockOwnerDeletion := true
+
+		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
+			APIVersion:         "apps/v1",
+			Kind:               ResourceTypeDeployment,
+			Name:               deploymentName,
+			UID:                deploymentUID,
+			Controller:         &controller,
+			BlockOwnerDeletion: &blockOwnerDeletion,
+		})
+
+		if err := r.Update(ctx, pdb); err != nil {
+			logger.Error(err, "Failed to add owner reference to PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		logger.Info("Successfully added owner reference to PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+	}
+
+	return nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
 		WithEventFilter(predicate.Funcs{
-			// Only trigger for Create and Delete events
+			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				//ToDo: theoretically you could have a pdb update and change
-				// its label selectors in which case you might need to update the deployment target?
-				return false
+				// Trigger on ownedBy annotation changes
+				return triggerOnPDBAnnotationChange(e, logger)
 			},
+			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
 		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership
 		Complete(r)
 }
 
-func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, error) {
+func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, k8s_types.UID, error) {
 	logger := log.FromContext(ctx)
 
 	// Convert PDB label selector to Kubernetes selector
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
-		return "", fmt.Errorf("error converting label selector: %v", err)
+		return "", "", fmt.Errorf("error converting label selector: %v", err)
 	}
 	logger.Info("PDB Selector", "selector", pdb.Spec.Selector)
 
 	podList := &corev1.PodList{}
 	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace, LabelSelector: selector})
 	if err != nil {
-		return "", fmt.Errorf("error listing pods: %v", err)
+		return "", "", fmt.Errorf("error listing pods: %v", err)
 	}
 	logger.Info("Number of pods found", "count", len(podList.Items))
 
 	if len(podList.Items) == 0 {
-		return "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
+		// TODO instead of an error which leads to a backoff retry quietly for a while then error?
+		return "", "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
 	}
 
 	// Iterate through each pod
@@ -152,7 +245,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
 				if apierrors.IsNotFound(err) {
-					return "", fmt.Errorf("error fetching ReplicaSet: %v", err)
+					return "", "", fmt.Errorf("error fetching ReplicaSet: %v", err)
 				}
 
 				// Log ReplicaSet details
@@ -162,7 +255,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 				for _, rsOwnerRef := range replicaSet.OwnerReferences {
 					if rsOwnerRef.Kind == "Deployment" {
 						logger.Info("Found Deployment owner", "deployment", rsOwnerRef.Name)
-						return rsOwnerRef.Name, nil
+						return rsOwnerRef.Name, rsOwnerRef.UID, nil
 					}
 				}
 				// no replicaset owner just move on and see if any other pods have have something.
@@ -172,7 +265,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 			//	statefulSet := &appsv1.StatefulSet{}
 			//	err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, statefulSet)
 			//	if apierrors.IsNotFound(err) {
-			//		return "", fmt.Errorf("error fetching StatefulSet: %v", err)
+			//		return "", "", fmt.Errorf("error fetching StatefulSet: %v", err)
 			//	}
 			//	logger.Info("Found StatefulSet owner", "statefulSet", statefulSet.Name)
 			//	// Handle StatefulSet logic if required
@@ -181,5 +274,31 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 		}
 	}
 	logger.Info("No Deployment owner found")
-	return "", errOwnerNotFound
+	return "", "", errOwnerNotFound
+}
+
+// triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
+// by comparing the ownedBy annotation between old and new PDB
+func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
+	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
+	if okOld && okNew {
+		oldVal := tryGet(oldPDB.Annotations, PDBOwnedByAnnotationKey)
+		newVal := tryGet(newPDB.Annotations, PDBOwnedByAnnotationKey)
+		if oldVal != newVal {
+			logger.Info("PDB update event detected, ownedBy annotation changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", oldVal, "newValue", newVal)
+			return true
+		}
+	}
+	return false
+}
+
+// tryGet safely retrieves a value from a map, returning empty string if map is nil
+func tryGet(m map[string]string, key string) string {
+	if m == nil {
+		return ""
+	}
+	return m[key]
 }

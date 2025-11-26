@@ -214,7 +214,7 @@ kubectl annotate pdb <pdb-name> -n <namespace> ownedBy-
 ```
 
 When the annotation is removed, eviction-autoscaler will:
-1. Detect the annotation removal on the next reconciliation
+1. Detect the annotation removal (which triggers reconciliation)
 2. Remove the owner reference from the PDB
 3. Stop managing the PDB
 

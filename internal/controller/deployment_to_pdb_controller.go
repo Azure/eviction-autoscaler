@@ -32,6 +32,9 @@ const PDBCreateAnnotationTrue = "true"
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
 const KubeSystemNamespace = "kube-system"
 const EnableEvictionAutoscalerTrue = "true"
+const PDBOwnedByAnnotationKey = "ownedBy"
+const ControllerName = "EvictionAutoScaler"
+const ResourceTypeDeployment = "Deployment"
 
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
@@ -132,13 +135,13 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			Name:      r.generatePDBName(deployment.Name),
 			Namespace: deployment.Namespace,
 			Annotations: map[string]string{
-				"createdBy": "DeploymentToPDBController",
-				"target":    deployment.Name,
+				PDBOwnedByAnnotationKey: ControllerName,
+				"target":                deployment.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion:         "apps/v1",
-					Kind:               "Deployment",
+					Kind:               ResourceTypeDeployment,
 					Name:               deployment.Name,
 					UID:                deployment.UID,
 					Controller:         &controller,         // Mark as managed by this controller
@@ -166,6 +169,16 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
+
+	// Check if PDB has the ownedBy annotation - if not, skip updates (user owns it)
+	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+
+	if !hasAnnotation {
+		logger.Info("Skipping PDB update - not owned by DeploymentToPDBController",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		return nil
+	}
+
 	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
 		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas

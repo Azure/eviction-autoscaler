@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: crash-script
+  namespace: demo
+data:
+  crash.sh: |
+    #!/bin/bash
+    echo "Pod starting up..."
+    
+    # Create health files initially
+    touch /tmp/healthy
+    touch /tmp/ready
+    
+    # Run for 10 minutes then fail
+    sleep 600
+    
+    echo "Simulating crash after 10 minutes"
+    rm -f /tmp/healthy /tmp/ready
+    exit 1
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: time-crash-app
+  namespace: demo
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: time-crash
+  template:
+    metadata:
+      labels:
+        app: time-crash
+    spec:
+      containers:
+      - name: app
+        image: busybox
+        command: ["/bin/sh", "/scripts/crash.sh"]
+        volumeMounts:
+        - name: script
+          mountPath: /scripts
+        livenessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/healthy
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        readinessProbe:
+          exec:
+            command:
+            - cat
+            - /tmp/ready
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: script
+        configMap:
+          name: crash-script
+          defaultMode: 0755

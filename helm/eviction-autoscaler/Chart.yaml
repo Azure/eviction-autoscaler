@@ -1,0 +1,17 @@
+apiVersion: v2
+name: eviction-autoscaler
+description: A Helm chart for the eviction-autoscaler controller
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - kubernetes
+  - autoscaler
+  - pdb
+  - eviction
+home: https://github.com/Azure/eviction-autoscaler
+sources:
+  - https://github.com/Azure/eviction-autoscaler
+maintainers:
+  - name: Azure
+    url: https://github.com/Azure

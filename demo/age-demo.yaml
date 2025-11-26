@@ -1,0 +1,74 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: age-demo-script
+  namespace: demo
+data:
+  crash-oldest.sh: |
+    #!/bin/bash
+    echo "Pod starting - checking if I should crash..."
+    
+    # Get my own creation time
+    MY_NAME=$(hostname)
+    MY_CREATION=$(kubectl get pod $MY_NAME -n demo -o jsonpath='{.metadata.creationTimestamp}')
+    echo "My creation time: $MY_CREATION"
+    
+    # Get all pods in the same deployment and sort by age
+    DEPLOYMENT_PODS=$(kubectl get pods -n demo -l app=age-demo --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[*].metadata.name}')
+    echo "All pods: $DEPLOYMENT_PODS"
+    
+    # Check if I'm the oldest pod
+    OLDEST_POD=$(echo $DEPLOYMENT_PODS | awk '{print $1}')
+    echo "Oldest pod: $OLDEST_POD"
+    
+    if [ "$MY_NAME" = "$OLDEST_POD" ]; then
+        echo "I am the oldest pod! Starting crash loop after 30 seconds..."
+        sleep 30
+        echo "Crashing now as the oldest pod..."
+        exit 1
+    else
+        echo "I'm not the oldest pod, staying healthy..."
+        # Stay alive and healthy
+        while true; do
+            sleep 30
+            echo "Still healthy at $(date)"
+        done
+    fi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: age-demo-app
+  namespace: demo
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: age-demo
+  template:
+    metadata:
+      labels:
+        app: age-demo
+    spec:
+      serviceAccountName: pod-reader
+      containers:
+      - name: age-demo
+        image: bitnami/kubectl:latest
+        command: ["/bin/bash"]
+        args: ["/scripts/crash-oldest.sh"]
+        volumeMounts:
+        - name: script-volume
+          mountPath: /scripts
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "128Mi"
+            cpu: "200m"
+      volumes:
+      - name: script-volume
+        configMap:
+          name: age-demo-script
+          defaultMode: 0755

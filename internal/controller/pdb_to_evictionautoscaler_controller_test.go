@@ -255,3 +255,207 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		})
 	})
 })
+
+var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() {
+	var (
+		reconciler     *PDBToEvictionAutoScalerReconciler
+		namespace      string
+		deploymentName = "ownership-test-deployment"
+		ctx            context.Context
+		deployment     *appsv1.Deployment
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		// Create namespace
+		namespaceObj := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ownership-",
+			},
+		}
+		Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+		namespace = namespaceObj.Name
+
+		s := scheme.Scheme
+		Expect(appsv1.AddToScheme(s)).To(Succeed())
+		Expect(policyv1.AddToScheme(s)).To(Succeed())
+		Expect(types.AddToScheme(s)).To(Succeed())
+
+		reconciler = &PDBToEvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: s,
+		}
+
+		// Create deployment
+		deployment = &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(3),
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "ownership-test"},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Labels: map[string]string{"app": "ownership-test"},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{
+							{Name: "nginx", Image: "nginx:latest"},
+						},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		// Create ReplicaSet owned by deployment
+		rs := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName + "-rs",
+				Namespace: namespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "apps/v1",
+						Kind:       "Deployment",
+						Name:       deploymentName,
+						UID:        deployment.UID,
+					},
+				},
+			},
+			Spec: appsv1.ReplicaSetSpec{
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "ownership-test"},
+				},
+				Template: deployment.Spec.Template,
+			},
+		}
+		Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+
+		// Create Pod owned by ReplicaSet
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-pod",
+				Namespace: namespace,
+				Labels:    map[string]string{"app": "ownership-test"},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: "apps/v1",
+						Kind:       "ReplicaSet",
+						Name:       rs.Name,
+						UID:        rs.UID,
+					},
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{
+					{Name: "nginx", Image: "nginx:latest"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+	})
+
+	It("should remove owner reference when ownedBy annotation is removed", func() {
+		// Create PDB with owner reference and annotation
+		controller := true
+		blockOwnerDeletion := true
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Annotations: map[string]string{
+					PDBOwnedByAnnotationKey: ControllerName,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "apps/v1",
+						Kind:               ResourceTypeDeployment,
+						Name:               deploymentName,
+						UID:                deployment.UID,
+						Controller:         &controller,
+						BlockOwnerDeletion: &blockOwnerDeletion,
+					},
+				},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 3},
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "ownership-test"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+		// Remove the ownedBy annotation
+		pdb.Annotations = map[string]string{}
+		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+		// Reconcile
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+		}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify owner reference was removed
+		updatedPDB := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, updatedPDB)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Check that deployment owner reference was removed
+		hasDeploymentOwner := false
+		for _, ownerRef := range updatedPDB.OwnerReferences {
+			if ownerRef.Kind == ResourceTypeDeployment {
+				hasDeploymentOwner = true
+				break
+			}
+		}
+		Expect(hasDeploymentOwner).To(BeFalse())
+	})
+
+	It("should add owner reference back when ownedBy annotation is re-added", func() {
+		// Create PDB without owner reference but with annotation
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Annotations: map[string]string{
+					PDBOwnedByAnnotationKey: ControllerName,
+				},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 3},
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "ownership-test"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+		// Reconcile
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+		}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify owner reference was added
+		updatedPDB := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, updatedPDB)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Check that deployment owner reference was added
+		hasDeploymentOwner := false
+		for _, ownerRef := range updatedPDB.OwnerReferences {
+			if ownerRef.Kind == ResourceTypeDeployment && ownerRef.Name == deploymentName {
+				hasDeploymentOwner = true
+				break
+			}
+		}
+		Expect(hasDeploymentOwner).To(BeTrue())
+	})
+})

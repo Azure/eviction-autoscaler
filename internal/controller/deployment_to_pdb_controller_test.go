@@ -3,8 +3,6 @@ package controllers
 import (
 	"context"
 
-	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
-	"github.com/go-logr/logr/testr"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -47,7 +45,6 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		s := scheme.Scheme
 		Expect(appsv1.AddToScheme(s)).To(Succeed())
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
-		Expect(myappsv1.AddToScheme(s)).To(Succeed())
 
 		surge := intstr.FromInt(1)
 		// Create the reconciler instance

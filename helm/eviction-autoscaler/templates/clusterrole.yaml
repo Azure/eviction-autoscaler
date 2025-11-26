@@ -13,6 +13,7 @@ rules:
   - apps
   resources:
   - deployments
+  - statefulsets
   verbs:
   - get
   - list
@@ -25,28 +26,11 @@ rules:
   verbs:
   - get
   - list
-  - update
-  - watch
-- apiGroups:
-  - apps
-  resources:
-  - statefulsets
-  verbs:
-  - get
-  - list
-  - update
-  - watch
+  - watch  
 - apiGroups:
   - ""
   resources:
   - nodes
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - ""
-  resources:
   - pods
   verbs:
   - get
@@ -110,5 +94,5 @@ roleRef:
   name: {{ include "eviction-autoscaler.fullname" . }}-manager-role
 subjects:
 - kind: ServiceAccount
-  name: {{ include "eviction-autoscaler.fullname" . }}-controller-manager
+  name: {{ include "eviction-autoscaler.fullname" . }}
   namespace: {{ .Release.Namespace }}

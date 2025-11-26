@@ -164,7 +164,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
-				"deployment/eviction-autoscaler-controller-manager",
+				"deployment/eviction-autoscaler",
 				"--namespace", namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())

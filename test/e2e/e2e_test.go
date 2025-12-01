@@ -485,7 +485,14 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("creating a new deployment with PDB to test annotation removal behavior")
 			cmd = exec.Command("kubectl", "create", "deployment", "nginx-annotation-test", "--image=nginx:latest",
-				"--replicas=3", "--namespace", testNs)
+				"--replicas=3", "--namespace", testNs, "--dry-run=client", "-o", "yaml")
+			deployYamlAnnotationTest, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			// Add maxUnavailable=0 to ensure PDB is created
+			deployYamlAnnotationTestStr := strings.Replace(string(deployYamlAnnotationTest), "spec:",
+				"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deployYamlAnnotationTestStr)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -567,7 +574,14 @@ var _ = Describe("controller", Ordered, func() {
 			By("testing bidirectional ownership transfer")
 			By("creating a new deployment with PDB")
 			cmd = exec.Command("kubectl", "create", "deployment", "nginx-ownership-test", "--image=nginx:latest",
-				"--replicas=3", "--namespace", testNs)
+				"--replicas=3", "--namespace", testNs, "--dry-run=client", "-o", "yaml")
+			deployYamlOwnershipTest, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			// Add maxUnavailable=0 to ensure PDB is created
+			deployYamlOwnershipTestStr := strings.Replace(string(deployYamlOwnershipTest), "spec:",
+				"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deployYamlOwnershipTestStr)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

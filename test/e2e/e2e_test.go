@@ -429,18 +429,20 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a test deployment in the test namespace with annotation")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-test", "--image=nginx:latest",
-				"--namespace", testNs, "--dry-run=client", "-o", "yaml")
-			deployYaml, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
-			// Add annotation to deployment YAML
-			deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test",
-				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"", 1)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(deployYamlStr)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred())
+		By("creating a test deployment in the test namespace with annotation")
+		cmd = exec.Command("kubectl", "create", "deployment", "nginx-test", "--image=nginx:latest",
+			"--namespace", testNs, "--dry-run=client", "-o", "yaml")
+		deployYaml, err := utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		// Add annotation and maxUnavailable=0 to deployment YAML
+		deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test",
+			"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"", 1)
+		deployYamlStr = strings.Replace(deployYamlStr, "spec:",
+			"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+		cmd = exec.Command("kubectl", "apply", "-f", "-")
+		cmd.Stdin = strings.NewReader(deployYamlStr)
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred()
 
 			verifyNoPdb := func(ns, name string) error {
 				var pdbList = &policy.PodDisruptionBudgetList{}

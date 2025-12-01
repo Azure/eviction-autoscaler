@@ -437,8 +437,9 @@ var _ = Describe("controller", Ordered, func() {
 		// Add annotation and maxUnavailable=0 to deployment YAML
 		deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test",
 			"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"", 1)
-		deployYamlStr = strings.Replace(deployYamlStr, "spec:",
-			"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+		// Add strategy after replicas
+		deployYamlStr = strings.Replace(deployYamlStr, "replicas: 1\n  selector:",
+			"replicas: 1\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0\n  selector:", 1)
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(deployYamlStr)
 		_, err = utils.Run(cmd)
@@ -491,8 +492,8 @@ var _ = Describe("controller", Ordered, func() {
 			deployYamlAnnotationTest, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			// Add maxUnavailable=0 to ensure PDB is created
-			deployYamlAnnotationTestStr := strings.Replace(string(deployYamlAnnotationTest), "spec:",
-				"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+			deployYamlAnnotationTestStr := strings.Replace(string(deployYamlAnnotationTest), "replicas: 3\n  selector:",
+				"replicas: 3\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0\n  selector:", 1)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(deployYamlAnnotationTestStr)
 			_, err = utils.Run(cmd)
@@ -580,8 +581,8 @@ var _ = Describe("controller", Ordered, func() {
 			deployYamlOwnershipTest, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			// Add maxUnavailable=0 to ensure PDB is created
-			deployYamlOwnershipTestStr := strings.Replace(string(deployYamlOwnershipTest), "spec:",
-				"spec:\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0", 1)
+			deployYamlOwnershipTestStr := strings.Replace(string(deployYamlOwnershipTest), "replicas: 3\n  selector:",
+				"replicas: 3\n  strategy:\n    type: RollingUpdate\n    rollingUpdate:\n      maxUnavailable: 0\n  selector:", 1)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
 			cmd.Stdin = strings.NewReader(deployYamlOwnershipTestStr)
 			_, err = utils.Run(cmd)

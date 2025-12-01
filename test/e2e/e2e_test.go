@@ -443,7 +443,7 @@ var _ = Describe("controller", Ordered, func() {
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(deployYamlStr)
 		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred()
+		Expect(err).NotTo(HaveOccurred())
 
 			verifyNoPdb := func(ns, name string) error {
 				var pdbList = &policy.PodDisruptionBudgetList{}

@@ -80,7 +80,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxUnavailable != nil {
 		maxUnavailable := *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
 		if (maxUnavailable.Type == intstr.Int && maxUnavailable.IntVal != 0) ||
-			(maxUnavailable.Type == intstr.String && maxUnavailable.StrVal != "0" && maxUnavailable.StrVal != "0%") {
+			(maxUnavailable.Type == intstr.String && maxUnavailable.StrVal != "0%") {
 			log.Info("Skipping PDB creation for deployment with maxUnavailable != 0",
 				"deployment", deployment.Name, "namespace", deployment.Namespace, "maxUnavailable", maxUnavailable)
 			return reconcile.Result{}, nil

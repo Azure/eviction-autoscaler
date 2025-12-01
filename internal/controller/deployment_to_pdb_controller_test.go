@@ -286,7 +286,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 		It("should create a PodDisruptionBudget if maxUnavailable is string '0%'", func() {
 			// Create a deployment with maxUnavailable set to "0%" (percentage string)
-			maxUnavailableZeroPercent := intstr.FromString("0%")
+			maxUnavailableZeroPercent := intstr.FromString("0%") // Explicitly set to 0% to ensure PDB is created
 			surge := intstr.FromInt(1)
 			deploymentWithMaxUnavailableZeroPercent := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{

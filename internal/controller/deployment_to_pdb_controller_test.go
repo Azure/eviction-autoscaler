@@ -412,31 +412,28 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			Expect(pdb.Name).To(Equal("deployment-with-max-unavailable-zero-percent"))
 		})
 
-		It("should create a PodDisruptionBudget if maxUnavailable is nil", func() {
-			// Create a deployment without maxUnavailable set (nil)
-			surge := intstr.FromInt(1)
-			deploymentWithNilMaxUnavailable := &appsv1.Deployment{
+		It("should create a PodDisruptionBudget if maxUnavailable is nil (no RollingUpdate strategy)", func() {
+			// Create a deployment without RollingUpdate strategy set (nil)
+			deploymentWithNilStrategy := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-with-nil-max-unavailable",
+					Name:      "deployment-with-nil-strategy",
 					Namespace: namespace,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: int32Ptr(3),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							"app": "example-nil-max-unavailable",
+							"app": "example-nil-strategy",
 						},
 					},
 					Strategy: appsv1.DeploymentStrategy{
-						RollingUpdate: &appsv1.RollingUpdateDeployment{
-							MaxSurge:       &surge,
-							MaxUnavailable: nil, // Explicitly set to nil
-						},
+						Type:          appsv1.RecreateDeploymentStrategyType,
+						RollingUpdate: nil, // No rolling update strategy
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
-								"app": "example-nil-max-unavailable",
+								"app": "example-nil-strategy",
 							},
 						},
 						Spec: corev1.PodSpec{
@@ -452,12 +449,12 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			}
 
 			// Create the deployment
-			Expect(r.Client.Create(ctx, deploymentWithNilMaxUnavailable)).To(Succeed())
+			Expect(r.Client.Create(ctx, deploymentWithNilStrategy)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
 					Namespace: namespace,
-					Name:      "deployment-with-nil-max-unavailable",
+					Name:      "deployment-with-nil-strategy",
 				},
 			}
 
@@ -465,14 +462,14 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			_, err := r.Reconcile(ctx, req)
 			Expect(err).ToNot(HaveOccurred())
 
-			// Check that PDB WAS created
+			// Check that PDB WAS created (since there's no maxUnavailable check when RollingUpdate is nil)
 			pdb := &policyv1.PodDisruptionBudget{}
 			err = r.Client.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
-				Name:      "deployment-with-nil-max-unavailable",
+				Name:      "deployment-with-nil-strategy",
 			}, pdb)
 			Expect(err).ToNot(HaveOccurred())
-			Expect(pdb.Name).To(Equal("deployment-with-nil-max-unavailable"))
+			Expect(pdb.Name).To(Equal("deployment-with-nil-strategy"))
 		})
 	})
 

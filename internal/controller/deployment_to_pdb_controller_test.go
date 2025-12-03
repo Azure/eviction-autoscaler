@@ -240,42 +240,13 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		It("should create a PodDisruptionBudget if maxUnavailable is string '0%'", func() {
 			// Create a deployment with maxUnavailable set to "0%" (percentage string)
 			maxUnavailableZeroPercent := intstr.FromString("0%") // Explicitly set to 0% to ensure PDB is created
-			surge := intstr.FromInt(1)
-			deploymentWithMaxUnavailableZeroPercent := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-with-max-unavailable-zero-percent",
-					Namespace: namespace,
-				},
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": "example-max-unavailable-zero-percent",
-						},
-					},
-					Strategy: appsv1.DeploymentStrategy{
-						RollingUpdate: &appsv1.RollingUpdateDeployment{
-							MaxSurge:       &surge,
-							MaxUnavailable: &maxUnavailableZeroPercent,
-						},
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "example-max-unavailable-zero-percent",
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "nginx",
-									Image: "nginx:latest",
-								},
-							},
-						},
-					},
-				},
-			}
+			deploymentWithMaxUnavailableZeroPercent := createDeployment(
+				"deployment-with-max-unavailable-zero-percent",
+				namespace,
+				"example-max-unavailable-zero-percent",
+				3,
+				&maxUnavailableZeroPercent,
+			)
 
 			// Create the deployment
 			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailableZeroPercent)).To(Succeed())
@@ -303,38 +274,17 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 		It("should create a PodDisruptionBudget if maxUnavailable is nil (no RollingUpdate strategy)", func() {
 			// Create a deployment without RollingUpdate strategy set (nil)
-			deploymentWithNilStrategy := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-with-nil-strategy",
-					Namespace: namespace,
-				},
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": "example-nil-strategy",
-						},
-					},
-					Strategy: appsv1.DeploymentStrategy{
-						Type:          appsv1.RecreateDeploymentStrategyType,
-						RollingUpdate: nil, // No rolling update strategy
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "example-nil-strategy",
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "nginx",
-									Image: "nginx:latest",
-								},
-							},
-						},
-					},
-				},
+			deploymentWithNilStrategy := createDeployment(
+				"deployment-with-nil-strategy",
+				namespace,
+				"example-nil-strategy",
+				3,
+				nil, // No maxUnavailable
+			)
+			// Override strategy to Recreate
+			deploymentWithNilStrategy.Spec.Strategy = appsv1.DeploymentStrategy{
+				Type:          appsv1.RecreateDeploymentStrategyType,
+				RollingUpdate: nil, // No rolling update strategy
 			}
 
 			// Create the deployment
@@ -424,29 +374,10 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 			Scheme: s,
 		}
 
-		deployment = &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      deploymentName,
-				Namespace: namespace,
-				Labels:    map[string]string{"app": "skip"},
-			},
-			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(2),
-				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "skip"},
-				},
-				Template: corev1.PodTemplateSpec{
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{"app": "skip"},
-					},
-					Spec: corev1.PodSpec{
-						Containers: []corev1.Container{
-							{Name: "nginx", Image: "nginx:latest"},
-						},
-					},
-				},
-			},
-		}
+		// Use helper to create deployment
+		maxUnavailable := intstr.FromInt(0)
+		deployment = createDeployment(deploymentName, namespace, "skip", 2, &maxUnavailable)
+		deployment.Labels = map[string]string{"app": "skip"}
 	})
 
 	It("should skip PDB creation if deployment annotation disables it", func() {

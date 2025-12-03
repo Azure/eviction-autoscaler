@@ -17,6 +17,52 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// createDeployment is a helper function to create a deployment for testing
+func createDeployment(name, namespace, appLabel string, replicas int32, maxUnavailable *intstr.IntOrString) *appsv1.Deployment {
+	surge := intstr.FromInt(1)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					"app": appLabel,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"app": appLabel,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "nginx",
+							Image: "nginx:latest",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Only set strategy if maxUnavailable is provided
+	if maxUnavailable != nil {
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+			RollingUpdate: &appsv1.RollingUpdateDeployment{
+				MaxSurge:       &surge,
+				MaxUnavailable: maxUnavailable,
+			},
+		}
+	}
+
+	return deployment
+}
+
 var _ = Describe("DeploymentToPDBReconciler", func() {
 	var namespace string
 	const deploymentName = "example-deployment"
@@ -45,7 +91,6 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		Expect(appsv1.AddToScheme(s)).To(Succeed())
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 
-		surge := intstr.FromInt(1)
 		maxUnavailable := intstr.FromInt(0) // Explicitly set to 0 to ensure PDB is created
 		// Create the reconciler instance
 		r = &DeploymentToPDBReconciler{
@@ -53,42 +98,8 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			Scheme: s,
 		}
 
-		// Define a Deployment to test
-		deployment = &appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      deploymentName,
-				Namespace: namespace,
-			},
-			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(3),
-				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{
-						"app": "example",
-					},
-				},
-				Strategy: appsv1.DeploymentStrategy{
-					RollingUpdate: &appsv1.RollingUpdateDeployment{
-						MaxSurge:       &surge,
-						MaxUnavailable: &maxUnavailable,
-					},
-				},
-				Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
-					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{
-							"app": "example",
-						},
-					},
-					Spec: corev1.PodSpec{ // Use corev1.PodSpec
-						Containers: []corev1.Container{ // Use corev1.Container
-							{
-								Name:  "nginx",
-								Image: "nginx:latest",
-							},
-						},
-					},
-				},
-			},
-		}
+		// Define a Deployment to test using helper
+		deployment = createDeployment(deploymentName, namespace, "example", 3, &maxUnavailable)
 
 		// Create the deployment
 		Expect(r.Client.Create(ctx, deployment)).To(Succeed())
@@ -161,42 +172,13 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		It("should not create a PodDisruptionBudget if maxUnavailable is not 0", func() {
 			// Create a deployment with maxUnavailable set to 25%
 			maxUnavailablePercent := intstr.FromString("25%")
-			surge := intstr.FromInt(1)
-			deploymentWithMaxUnavailable := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-with-max-unavailable",
-					Namespace: namespace,
-				},
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": "example-max-unavailable",
-						},
-					},
-					Strategy: appsv1.DeploymentStrategy{
-						RollingUpdate: &appsv1.RollingUpdateDeployment{
-							MaxSurge:       &surge,
-							MaxUnavailable: &maxUnavailablePercent,
-						},
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "example-max-unavailable",
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "nginx",
-									Image: "nginx:latest",
-								},
-							},
-						},
-					},
-				},
-			}
+			deploymentWithMaxUnavailable := createDeployment(
+				"deployment-with-max-unavailable",
+				namespace,
+				"example-max-unavailable",
+				3,
+				&maxUnavailablePercent,
+			)
 
 			// Create the deployment
 			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailable)).To(Succeed())
@@ -224,42 +206,13 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		It("should not create a PodDisruptionBudget if maxUnavailable is an integer > 0", func() {
 			// Create a deployment with maxUnavailable set to 1 (integer)
 			maxUnavailableInt := intstr.FromInt(1)
-			surge := intstr.FromInt(1)
-			deploymentWithMaxUnavailableInt := &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "deployment-with-max-unavailable-int",
-					Namespace: namespace,
-				},
-				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(3),
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{
-							"app": "example-max-unavailable-int",
-						},
-					},
-					Strategy: appsv1.DeploymentStrategy{
-						RollingUpdate: &appsv1.RollingUpdateDeployment{
-							MaxSurge:       &surge,
-							MaxUnavailable: &maxUnavailableInt,
-						},
-					},
-					Template: corev1.PodTemplateSpec{
-						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{
-								"app": "example-max-unavailable-int",
-							},
-						},
-						Spec: corev1.PodSpec{
-							Containers: []corev1.Container{
-								{
-									Name:  "nginx",
-									Image: "nginx:latest",
-								},
-							},
-						},
-					},
-				},
-			}
+			deploymentWithMaxUnavailableInt := createDeployment(
+				"deployment-with-max-unavailable-int",
+				namespace,
+				"example-max-unavailable-int",
+				3,
+				&maxUnavailableInt,
+			)
 
 			// Create the deployment
 			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailableInt)).To(Succeed())

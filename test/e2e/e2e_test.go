@@ -17,12 +17,14 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,6 +63,51 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
+
+// deploymentTemplate creates a deployment YAML with maxUnavailable=0
+func deploymentTemplate(name, namespace string, replicas int32) (string, error) {
+	const tmpl = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  replicas: {{.Replicas}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+`
+	t, err := template.New("deployment").Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	data := struct {
+		Name      string
+		Namespace string
+		Replicas  int32
+	}{
+		Name:      name,
+		Namespace: namespace,
+		Replicas:  replicas,
+	}
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
@@ -430,15 +477,10 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 		By("creating a test deployment in the test namespace with annotation")
-		cmd = exec.Command("sed", "-e", "s/DEPLOYMENT_NAME/nginx-test/g",
-			"-e", "s/NAMESPACE/"+testNs+"/g",
-			"-e", "s/REPLICAS/1/g",
-			"-e", "s/APP_LABEL/nginx-test/g",
-			"test/e2e/test-deployment.yaml")
-		deployYaml, err := utils.Run(cmd)
+		deployYaml, err := deploymentTemplate("nginx-test", testNs, 1)
 		Expect(err).NotTo(HaveOccurred())
 		// Add annotation to disable PDB creation
-		deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test\n  namespace:",
+		deployYamlStr := strings.Replace(deployYaml, "name: nginx-test\n  namespace:",
 			"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
 		cmd = exec.Command("kubectl", "apply", "-f", "-")
 		cmd.Stdin = strings.NewReader(deployYamlStr)
@@ -487,15 +529,10 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("creating a new deployment with PDB to test annotation removal behavior")
-			cmd = exec.Command("sed", "-e", "s/DEPLOYMENT_NAME/nginx-annotation-test/g",
-				"-e", "s/NAMESPACE/"+testNs+"/g",
-				"-e", "s/REPLICAS/3/g",
-				"-e", "s/APP_LABEL/nginx-annotation-test/g",
-				"test/e2e/test-deployment.yaml")
-			deployYamlAnnotationTest, err := utils.Run(cmd)
+			deployYaml, err := deploymentTemplate("nginx-annotation-test", testNs, 3)
 			Expect(err).NotTo(HaveOccurred())
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(string(deployYamlAnnotationTest))
+			cmd.Stdin = strings.NewReader(deployYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -576,15 +613,10 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("testing bidirectional ownership transfer")
 			By("creating a new deployment with PDB")
-			cmd = exec.Command("sed", "-e", "s/DEPLOYMENT_NAME/nginx-ownership-test/g",
-				"-e", "s/NAMESPACE/"+testNs+"/g",
-				"-e", "s/REPLICAS/3/g",
-				"-e", "s/APP_LABEL/nginx-ownership-test/g",
-				"test/e2e/test-deployment.yaml")
-			deployYamlOwnershipTest, err := utils.Run(cmd)
+			deployYaml, err := deploymentTemplate("nginx-ownership-test", testNs, 3)
 			Expect(err).NotTo(HaveOccurred())
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(string(deployYamlOwnershipTest))
+			cmd.Stdin = strings.NewReader(deployYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

@@ -1,0 +1,22 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: DEPLOYMENT_NAME
+  namespace: NAMESPACE
+spec:
+  replicas: REPLICAS
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: APP_LABEL
+  template:
+    metadata:
+      labels:
+        app: APP_LABEL
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest

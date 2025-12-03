@@ -477,13 +477,13 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a test deployment in the test namespace with annotation")
-			deployYaml, err := deploymentTemplate("nginx-test", testNs, 1)
+			nginxTestYaml, err := deploymentTemplate("nginx-test", testNs, 1)
 			Expect(err).NotTo(HaveOccurred())
 			// Add annotation to disable PDB creation
-			deployYamlStr := strings.Replace(deployYaml, "name: nginx-test\n  namespace:",
+			nginxTestYamlStr := strings.Replace(nginxTestYaml, "name: nginx-test\n  namespace:",
 				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(deployYamlStr)
+			cmd.Stdin = strings.NewReader(nginxTestYamlStr)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -529,10 +529,10 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("creating a new deployment with PDB to test annotation removal behavior")
-			deployYaml, err := deploymentTemplate("nginx-annotation-test", testNs, 3)
+			nginxAnnotationTestYaml, err := deploymentTemplate("nginx-annotation-test", testNs, 3)
 			Expect(err).NotTo(HaveOccurred())
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(deployYaml)
+			cmd.Stdin = strings.NewReader(nginxAnnotationTestYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -613,10 +613,10 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("testing bidirectional ownership transfer")
 			By("creating a new deployment with PDB")
-			deployYaml, err := deploymentTemplate("nginx-ownership-test", testNs, 3)
+			nginxOwnershipTestYaml, err := deploymentTemplate("nginx-ownership-test", testNs, 3)
 			Expect(err).NotTo(HaveOccurred())
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(deployYaml)
+			cmd.Stdin = strings.NewReader(nginxOwnershipTestYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

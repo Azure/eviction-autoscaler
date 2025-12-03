@@ -75,16 +75,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
 	}
 
-	// Check if the deployment has maxUnavailable != 0
-	// If so, don't create a PDB since the deployment already allows downtime
-	if deployment.Spec.Strategy.RollingUpdate != nil && deployment.Spec.Strategy.RollingUpdate.MaxUnavailable != nil {
-		maxUnavailable := *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
-		if (maxUnavailable.Type == intstr.Int && maxUnavailable.IntVal != 0) ||
-			(maxUnavailable.Type == intstr.String && maxUnavailable.StrVal != "0%") {
-			log.Info("Skipping PDB creation for deployment with maxUnavailable != 0",
-				"deployment", deployment.Name, "namespace", deployment.Namespace, "maxUnavailable", maxUnavailable)
-			return reconcile.Result{}, nil
-		}
+	// Skip PDB creation if deployment allows downtime via maxUnavailable
+	if hasNonZeroMaxUnavailable(&deployment) {
+		log.Info("Skipping PDB creation for deployment with maxUnavailable != 0",
+			"deployment", deployment.Name, "namespace", deployment.Namespace)
+		return reconcile.Result{}, nil
 	}
 
 	// Check if PDB already exists for this Deployment
@@ -236,6 +231,23 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 		}
 	}
 	return false
+}
+
+// hasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
+// Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
+func hasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
+	if deployment.Spec.Strategy.RollingUpdate == nil {
+		return false
+	}
+	maxUnavailable := deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
+	if maxUnavailable == nil {
+		return false
+	}
+	if maxUnavailable.Type == intstr.Int {
+		return maxUnavailable.IntVal != 0
+	}
+	// String type - check for "0" or "0%"
+	return maxUnavailable.StrVal != "0" && maxUnavailable.StrVal != "0%"
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -214,11 +214,12 @@ spec:
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxUnavailable: 1  # Allows 1 pod to be unavailable
+      maxSurge: 25%           # This doesn't affect PDB creation
+      maxUnavailable: 1       # Allows 1 pod to be unavailable - skips PDB creation
   # ... rest of spec
 ```
 
-In this case, since `maxUnavailable: 1`, the deployment is explicitly designed to tolerate one pod being down. Creating a PDB would conflict with this configuration.
+In this case, since `maxUnavailable: 1`, the deployment is explicitly designed to tolerate one pod being down. Creating a PDB would conflict with this configuration. Note that `maxSurge` does not affect PDB creation - only `maxUnavailable` matters.
 
 If you want a PDB for such a deployment, you can either:
 - Set `maxUnavailable: 0` in the deployment strategy, or

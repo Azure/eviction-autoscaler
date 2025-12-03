@@ -476,16 +476,16 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-		By("creating a test deployment in the test namespace with annotation")
-		deployYaml, err := deploymentTemplate("nginx-test", testNs, 1)
-		Expect(err).NotTo(HaveOccurred())
-		// Add annotation to disable PDB creation
-		deployYamlStr := strings.Replace(deployYaml, "name: nginx-test\n  namespace:",
-			"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
-		cmd = exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(deployYamlStr)
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred())
+			By("creating a test deployment in the test namespace with annotation")
+			deployYaml, err := deploymentTemplate("nginx-test", testNs, 1)
+			Expect(err).NotTo(HaveOccurred())
+			// Add annotation to disable PDB creation
+			deployYamlStr := strings.Replace(deployYaml, "name: nginx-test\n  namespace:",
+				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(deployYamlStr)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
 
 			verifyNoPdb := func(ns, name string) error {
 				var pdbList = &policy.PodDisruptionBudgetList{}

@@ -707,8 +707,10 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a deployment in namespace without annotation")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-no-anno", "--image=nginx:latest",
-				"--replicas=2", "--namespace", testNsNoAnnotation)
+			nginxNoAnnoYaml, err := deploymentTemplate("nginx-no-anno", testNsNoAnnotation, 2)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nginxNoAnnoYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -754,8 +756,10 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a deployment in namespace with annotation")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-with-anno", "--image=nginx:latest",
-				"--replicas=2", "--namespace", testNsWithAnnotation)
+			nginxWithAnnoYaml, err := deploymentTemplate("nginx-with-anno", testNsWithAnnotation, 2)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nginxWithAnnoYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -794,8 +798,10 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Test 3: kube-system namespace should be enabled by default
 			By("creating a deployment in kube-system namespace")
-			cmd = exec.Command("kubectl", "create", "deployment", "test-kube-system", "--image=nginx:latest",
-				"--replicas=1", "--namespace", "kube-system")
+			testKubeSystemYaml, err := deploymentTemplate("test-kube-system", "kube-system", 1)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(testKubeSystemYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

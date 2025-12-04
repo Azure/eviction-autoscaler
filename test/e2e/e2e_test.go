@@ -172,26 +172,26 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("loading the the manager(Operator) image on Kind")
 			err = utils.LoadImageToKindClusterWithName(projectimage, kindClusterName)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-		By("creating ingress-nginx namespace with enable annotation")
-		cmd = exec.Command("kubectl", "create", "namespace", "ingress-nginx")
-		_, err = utils.Run(cmd)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			By("creating ingress-nginx namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", "ingress-nginx")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-		By("annotating ingress-nginx namespace to enable eviction autoscaler")
-		cmd = exec.Command("kubectl", "annotate", "namespace", "ingress-nginx",
-			"eviction-autoscaler.azure.com/enable=true")
-		_, err = utils.Run(cmd)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			By("annotating ingress-nginx namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "ingress-nginx",
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-		By("deploying nginx onto the cluster using template")
-		ingressNginxYaml, err := deploymentTemplate("ingress-nginx", "ingress-nginx", 1)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())
-		cmd = exec.Command("kubectl", "apply", "-f", "-")
-		cmd.Stdin = strings.NewReader(ingressNginxYaml)
-		_, err = utils.Run(cmd)
-		ExpectWithOffset(1, err).NotTo(HaveOccurred())			// Deploy the controller using the Helm chart
+			By("deploying nginx onto the cluster using template")
+			ingressNginxYaml, err := deploymentTemplate("ingress-nginx", "ingress-nginx", 1)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(ingressNginxYaml)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred()) // Deploy the controller using the Helm chart
 			By("deploying the controller-manager with Helm")
 
 			// Split the image into repository and tag so we can

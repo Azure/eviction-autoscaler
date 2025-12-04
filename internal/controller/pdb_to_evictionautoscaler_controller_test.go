@@ -464,7 +464,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 })
 
 
-var _ = Describe("PDBToEvictionAutoScalerReconciler with enable-eviction-autoscaler annotation", func() {
+var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", func() {
 	var (
 		reconciler     *PDBToEvictionAutoScalerReconciler
 		namespace      string

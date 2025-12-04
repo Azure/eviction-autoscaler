@@ -162,6 +162,16 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("DeploymentToPDBReconciler  setup completed")
+
+		// Set up NamespaceReconciler to cleanup resources when annotation is disabled
+		if err = (&controllers.NamespaceReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "NamespaceReconciler")
+			os.Exit(1)
+		}
+		setupLog.Info("NamespaceReconciler setup completed")
 	}
 	
 

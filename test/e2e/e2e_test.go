@@ -844,11 +844,96 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyEvictionAutoScalerCreated(testNsNoAnnotation, "nginx-no-anno")
 			}, time.Minute, time.Second).Should(Succeed())
 
+			// Test 5: Disabling annotation should cleanup all resources
+			testNsDisableAnnotation := "test-disable-annotation"
+			By("creating a test namespace and enabling eviction autoscaler")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsDisableAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsDisableAnnotation,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in the namespace")
+			nginxDisableTestYaml, err := deploymentTemplate("nginx-disable-test", testNsDisableAnnotation, 2)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nginxDisableTestYaml)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("disabling eviction autoscaler by setting annotation to false")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsDisableAnnotation,
+				"eviction-autoscaler.azure.com/enable=false", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is deleted after annotation is set to false")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is deleted after annotation is set to false")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoEvictionAutoScaler(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("re-enabling eviction autoscaler by setting annotation back to true")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsDisableAnnotation,
+				"eviction-autoscaler.azure.com/enable=true", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling deployment to trigger reconciliation")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-disable-test", "--replicas=3",
+				"--namespace", testNsDisableAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is recreated after annotation is enabled again")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is recreated after annotation is enabled again")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("removing the annotation entirely")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsDisableAnnotation,
+				"eviction-autoscaler.azure.com/enable-")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is deleted after annotation is removed")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is deleted after annotation is removed")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoEvictionAutoScaler(testNsDisableAnnotation, "nginx-disable-test")
+			}, time.Minute, time.Second).Should(Succeed())
+
 			// Cleanup test resources
 			By("cleaning up test namespaces")
 			cmd = exec.Command("kubectl", "delete", "namespace", testNsNoAnnotation)
 			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNsWithAnnotation)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsDisableAnnotation)
 			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-system", "--namespace", "kube-system")
 			_, _ = utils.Run(cmd)

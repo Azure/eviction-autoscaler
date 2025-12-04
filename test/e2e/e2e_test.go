@@ -17,12 +17,14 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,6 +63,51 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
+
+// deploymentTemplate creates a deployment YAML with maxUnavailable=0
+func deploymentTemplate(name, namespace string, replicas int32) (string, error) {
+	const tmpl = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+spec:
+  replicas: {{.Replicas}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+`
+	t, err := template.New("deployment").Parse(tmpl)
+	if err != nil {
+		return "", err
+	}
+	var buf bytes.Buffer
+	data := struct {
+		Name      string
+		Namespace string
+		Replicas  int32
+	}{
+		Name:      name,
+		Namespace: namespace,
+		Replicas:  replicas,
+	}
+	if err := t.Execute(&buf, data); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
@@ -430,15 +477,13 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a test deployment in the test namespace with annotation")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-test", "--image=nginx:latest",
-				"--namespace", testNs, "--dry-run=client", "-o", "yaml")
-			deployYaml, err := utils.Run(cmd)
+			nginxTestYaml, err := deploymentTemplate("nginx-test", testNs, 1)
 			Expect(err).NotTo(HaveOccurred())
-			// Add annotation to deployment YAML
-			deployYamlStr := strings.Replace(string(deployYaml), "name: nginx-test",
-				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"", 1)
+			// Add annotation to disable PDB creation
+			nginxTestYamlStr := strings.Replace(nginxTestYaml, "name: nginx-test\n  namespace:",
+				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
 			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(deployYamlStr)
+			cmd.Stdin = strings.NewReader(nginxTestYamlStr)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -484,8 +529,10 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("creating a new deployment with PDB to test annotation removal behavior")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-annotation-test", "--image=nginx:latest",
-				"--replicas=3", "--namespace", testNs)
+			nginxAnnotationTestYaml, err := deploymentTemplate("nginx-annotation-test", testNs, 3)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nginxAnnotationTestYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -566,8 +613,10 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("testing bidirectional ownership transfer")
 			By("creating a new deployment with PDB")
-			cmd = exec.Command("kubectl", "create", "deployment", "nginx-ownership-test", "--image=nginx:latest",
-				"--replicas=3", "--namespace", testNs)
+			nginxOwnershipTestYaml, err := deploymentTemplate("nginx-ownership-test", testNs, 3)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(nginxOwnershipTestYaml)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

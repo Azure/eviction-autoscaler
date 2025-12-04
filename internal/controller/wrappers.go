@@ -9,10 +9,12 @@ import (
 )
 
 type Surger interface {
+	//GetGeneration() int64
 	GetReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
+	//Update(ctx context.Context, obj Object, opts ...UpdateOption) error
 	AddAnnotation(string, string)
 	RemoveAnnotation(string)
 }
@@ -102,6 +104,7 @@ func GetSurger(kind string) (Surger, error) {
 	} else {
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}
+
 }
 
 // AddAnnotation will reset and add new annotation map every time this func is called

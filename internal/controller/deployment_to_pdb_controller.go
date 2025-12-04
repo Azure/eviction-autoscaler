@@ -29,7 +29,7 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
-const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable-eviction-autoscaler"
+const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
 const KubeSystemNamespace = "kube-system"
 const EnableEvictionAutoscalerTrue = "true"
 const PDBOwnedByAnnotationKey = "ownedBy"

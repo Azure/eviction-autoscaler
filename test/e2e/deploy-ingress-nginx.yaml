@@ -3,7 +3,7 @@ kind: Namespace
 metadata:
   name: ingress-nginx
   annotations:
-    eviction-autoscaler.azure.com/enable-eviction-autoscaler: "true"
+    eviction-autoscaler.azure.com/enable: "true"
 ---
 apiVersion: apps/v1
 kind: Deployment

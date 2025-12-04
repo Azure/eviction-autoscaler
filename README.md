@@ -208,7 +208,7 @@ kind: Namespace
 metadata:
   name: production
   annotations:
-    eviction-autoscaler.azure.com/enable-eviction-autoscaler: "true"
+    eviction-autoscaler.azure.com/enable: "true"
 ```
 
 This ensures that the eviction autoscaler only manages deployments in namespaces that are explicitly opted-in via annotation, except for `kube-system` which is enabled by default for critical system components.
@@ -223,7 +223,7 @@ kind: Namespace
 metadata:
   name: production
   annotations:
-    eviction-autoscaler.azure.com/enable-eviction-autoscaler: "true"
+    eviction-autoscaler.azure.com/enable: "true"
 ```
 
 Then deploy your application in that namespace:

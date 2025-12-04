@@ -164,7 +164,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("annotating the eviction-autoscaler namespace to enable eviction autoscaler")
 			cmd = exec.Command("kubectl", "annotate", "namespace", namespace,
-				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true", "--overwrite")
+				"eviction-autoscaler.azure.com/enable=true", "--overwrite")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -437,7 +437,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("annotating the test namespace to enable eviction autoscaler")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
-				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+				"eviction-autoscaler.azure.com/enable=true")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -641,7 +641,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Test 1: Namespace without annotation should NOT create PDB
 			testNsNoAnnotation := "test-no-annotation"
-			By("creating a test namespace WITHOUT enable-eviction-autoscaler annotation")
+			By("creating a test namespace WITHOUT enable annotation")
 			cmd = exec.Command("kubectl", "create", "namespace", testNsNoAnnotation)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -682,14 +682,14 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Test 2: Namespace WITH annotation should create PDB
 			testNsWithAnnotation := "test-with-annotation"
-			By("creating a test namespace WITH enable-eviction-autoscaler annotation")
+			By("creating a test namespace WITH enable annotation")
 			cmd = exec.Command("kubectl", "create", "namespace", testNsWithAnnotation)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("annotating the namespace to enable eviction autoscaler")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNsWithAnnotation,
-				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+				"eviction-autoscaler.azure.com/enable=true")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -758,7 +758,7 @@ var _ = Describe("controller", Ordered, func() {
 			// Test 4: Adding annotation to namespace should enable eviction autoscaler for existing deployments
 			By("annotating the namespace without annotation to enable eviction autoscaler")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNsNoAnnotation,
-				"eviction-autoscaler.azure.com/enable-eviction-autoscaler=true")
+				"eviction-autoscaler.azure.com/enable=true")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

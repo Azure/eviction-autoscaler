@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
+	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	v1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
@@ -18,7 +18,7 @@ import (
 // Returns true if the namespace is kube-system (always enabled) or has the enable annotation set to "true".
 func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string) (bool, error) {
 	// kube-system namespace is always enabled
-	if namespaceName == KubeSystemNamespace {
+	if namespaceName == metav1.NamespaceSystem {
 		return true, nil
 	}
 

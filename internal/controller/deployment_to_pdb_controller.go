@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
@@ -13,7 +12,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -21,6 +19,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -30,7 +29,6 @@ const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
-const KubeSystemNamespace = "kube-system"
 const EnableEvictionAutoscalerTrue = "true"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
@@ -78,6 +76,18 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	if !isEnabled {
 		log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
+		// Clean up PDB if it exists and was created by this controller
+		// EvictionAutoScaler will be cascade deleted automatically via ownerReference
+		pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		if found && pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName {
+			log.Info("Deleting PDB for deployment in disabled namespace (EvictionAutoScaler will be cascade deleted)", "pdb", pdb.Name)
+			if err := r.Delete(ctx, pdb); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -197,6 +207,82 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 	return false
 }
 
+// EnqueueDeploymentsInNamespace enqueues all deployments in a namespace when namespace annotation changes
+type EnqueueDeploymentsInNamespace struct {
+	Client client.Client
+}
+
+// Create handles namespace create events (no-op)
+func (e *EnqueueDeploymentsInNamespace) Create(ctx context.Context, evt event.CreateEvent, q handler.Queue) {
+	// Don't enqueue on namespace creation
+}
+
+// Update handles namespace update events and enqueues all deployments in that namespace
+func (e *EnqueueDeploymentsInNamespace) Update(ctx context.Context, evt event.UpdateEvent, q handler.Queue) {
+	logger := log.FromContext(ctx)
+
+	oldNs, okOld := evt.ObjectOld.(*corev1.Namespace)
+	newNs, okNew := evt.ObjectNew.(*corev1.Namespace)
+	if !okOld || !okNew {
+		return
+	}
+
+	// Skip kube-system namespace
+	if newNs.Name == metav1.NamespaceSystem {
+		return
+	}
+
+	// Check if enable annotation changed
+	oldVal := ""
+	newVal := ""
+	if oldNs.Annotations != nil {
+		oldVal = oldNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
+	}
+	if newNs.Annotations != nil {
+		newVal = newNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
+	}
+
+	// Only trigger if annotation changed
+	wasEnabled := oldVal == EnableEvictionAutoscalerTrue
+	isEnabled := newVal == EnableEvictionAutoscalerTrue
+
+	if wasEnabled == isEnabled {
+		return // No change in enabled state
+	}
+
+	logger.Info("Namespace annotation changed, enqueuing all deployments",
+		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
+
+	// List all deployments in the namespace
+	var deploymentList v1.DeploymentList
+	if err := e.Client.List(ctx, &deploymentList, client.InNamespace(newNs.Name)); err != nil {
+		logger.Error(err, "Failed to list deployments in namespace", "namespace", newNs.Name)
+		return
+	}
+
+	// Enqueue each deployment for reconciliation
+	for _, deployment := range deploymentList.Items {
+		q.Add(reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Name:      deployment.Name,
+				Namespace: deployment.Namespace,
+			},
+		})
+	}
+
+	logger.Info("Enqueued deployments for reconciliation", "namespace", newNs.Name, "count", len(deploymentList.Items))
+}
+
+// Delete handles namespace delete events (no-op, cascade deletion handles cleanup)
+func (e *EnqueueDeploymentsInNamespace) Delete(ctx context.Context, evt event.DeleteEvent, q handler.Queue) {
+	// Namespace deletion will cascade delete all resources
+}
+
+// Generic handles generic events (no-op)
+func (e *EnqueueDeploymentsInNamespace) Generic(ctx context.Context, evt event.GenericEvent, q handler.Queue) {
+	// Not used
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
@@ -204,6 +290,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
+		Watches(&corev1.Namespace{}, &EnqueueDeploymentsInNamespace{Client: r.Client}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))

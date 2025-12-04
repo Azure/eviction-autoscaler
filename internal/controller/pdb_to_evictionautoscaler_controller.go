@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -69,6 +70,19 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 	if !isEnabled {
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
+		// Only delete EvictionAutoScaler for user-owned PDbs
+		// Controller-owned PDbs will be deleted by DeploymentToPDBReconciler, which cascade-deletes the EvictionAutoScaler
+		isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+		if !isControllerOwned {
+			var eas types.EvictionAutoScaler
+			err = r.Get(ctx, req.NamespacedName, &eas)
+			if err == nil {
+				logger.Info("Deleting EvictionAutoScaler for user-owned PDB in disabled namespace", "eas", eas.Name)
+				if err := r.Delete(ctx, &eas); err != nil {
+					return reconcile.Result{}, client.IgnoreNotFound(err)
+				}
+			}
+		}
 		return reconcile.Result{}, nil
 	}
 
@@ -100,8 +114,8 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"createdBy": "PDBToEvictionAutoScalerController",
-					"target":    deploymentName,
+					"ownedBy": "EvictionAutoScaler",
+					"target":  deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
@@ -210,12 +224,89 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 	return nil
 }
 
+// EnqueuePDBsInNamespace enqueues all PDBs in a namespace when namespace annotation changes
+type EnqueuePDBsInNamespace struct {
+	Client client.Client
+}
+
+// Create handles namespace create events (no-op)
+func (e *EnqueuePDBsInNamespace) Create(ctx context.Context, evt event.CreateEvent, q handler.Queue) {
+	// Don't enqueue on namespace creation
+}
+
+// Update handles namespace update events and enqueues all PDBs in that namespace
+func (e *EnqueuePDBsInNamespace) Update(ctx context.Context, evt event.UpdateEvent, q handler.Queue) {
+	logger := log.FromContext(ctx)
+
+	oldNs, okOld := evt.ObjectOld.(*corev1.Namespace)
+	newNs, okNew := evt.ObjectNew.(*corev1.Namespace)
+	if !okOld || !okNew {
+		return
+	}
+
+	// Skip kube-system namespace
+	if newNs.Name == metav1.NamespaceSystem {
+		return
+	}
+
+	// Check if enable annotation changed
+	oldVal := ""
+	newVal := ""
+	if oldNs.Annotations != nil {
+		oldVal = oldNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
+	}
+	if newNs.Annotations != nil {
+		newVal = newNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
+	}
+
+	// Only trigger if annotation changed
+	wasEnabled := oldVal == EnableEvictionAutoscalerTrue
+	isEnabled := newVal == EnableEvictionAutoscalerTrue
+
+	if wasEnabled == isEnabled {
+		return // No change in enabled state
+	}
+
+	logger.Info("Namespace annotation changed, enqueuing all PDBs",
+		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
+
+	// List all PDBs in the namespace
+	var pdbList policyv1.PodDisruptionBudgetList
+	if err := e.Client.List(ctx, &pdbList, client.InNamespace(newNs.Name)); err != nil {
+		logger.Error(err, "Failed to list PDBs in namespace", "namespace", newNs.Name)
+		return
+	}
+
+	// Enqueue each PDB for reconciliation
+	for _, pdb := range pdbList.Items {
+		q.Add(reconcile.Request{
+			NamespacedName: k8s_types.NamespacedName{
+				Name:      pdb.Name,
+				Namespace: pdb.Namespace,
+			},
+		})
+	}
+
+	logger.Info("Enqueued PDBs for reconciliation", "namespace", newNs.Name, "count", len(pdbList.Items))
+}
+
+// Delete handles namespace delete events (no-op, cascade deletion handles cleanup)
+func (e *EnqueuePDBsInNamespace) Delete(ctx context.Context, evt event.DeleteEvent, q handler.Queue) {
+	// Namespace deletion will cascade delete all resources
+}
+
+// Generic handles generic events (no-op)
+func (e *EnqueuePDBsInNamespace) Generic(ctx context.Context, evt event.GenericEvent, q handler.Queue) {
+	// Not used
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
+		Watches(&corev1.Namespace{}, &EnqueuePDBsInNamespace{Client: r.Client}).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {

@@ -69,107 +69,53 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Increment deployment count for metrics
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
-	// Check for pdb-create annotation on deployment
-	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
-		b, err := strconv.ParseBool(val)
-		if err == nil && !b {
-			return reconcile.Result{}, nil
-		}
-		// Only "false" is supported, log a warning for any other value
-		log.Error(fmt.Errorf("Unsupported value for pdb-create annotation, only 'false' is supported"), "value", val)
-		return reconcile.Result{}, fmt.Errorf("unsupported value for pdb-create annotation: %s, only 'false' is supported", val)
-	}
-
 	// Check if eviction autoscaler should be enabled
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	if deployment.Namespace != KubeSystemNamespace {
-		// Fetch the namespace to check for the annotation
-		namespace := &corev1.Namespace{}
-		err := r.Get(ctx, types.NamespacedName{Name: deployment.Namespace}, namespace)
-		if err != nil {
-			log.Error(err, "Failed to get namespace", "namespace", deployment.Namespace)
-			return reconcile.Result{}, err
-		}
-
-		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != EnableEvictionAutoscalerTrue {
-			log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
-			return reconcile.Result{}, nil
-		}
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, deployment.Namespace)
+	if err != nil {
+		log.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", deployment.Namespace)
+		return reconcile.Result{}, err
 	}
-	
-	// Skip PDB creation if deployment allows downtime via maxUnavailable
-	if hasNonZeroMaxUnavailable(&deployment) {
-		log.Info("Skipping PDB creation for deployment with maxUnavailable != 0",
-			"deployment", deployment.Name, "namespace", deployment.Namespace)
+	if !isEnabled {
+		log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
+		return reconcile.Result{}, nil
+	}
+
+	// Check if PDB creation should be skipped for this deployment
+	if shouldSkip, reason := ShouldSkipPDBCreation(&deployment); shouldSkip {
+		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
+			"namespace", deployment.Namespace, "reason", reason)
 		return reconcile.Result{}, nil
 	}
 
 	// Check if PDB already exists for this Deployment
-	var pdbList policyv1.PodDisruptionBudgetList
-	err := r.List(ctx, &pdbList, &client.ListOptions{
-		Namespace: deployment.Namespace,
-	})
+	pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	for _, pdb := range pdbList.Items {
-		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+
+	if found {
+		// PDB already exists, check for EvictionAutoScaler and update if needed
+		EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
+		err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("error converting label selector: %w", err)
+			//TODO don't ignore not found. Retry and fix unittest DeploymentToPDBReconciler when a deployment is created [It] should not create a PodDisruptionBudget if one already matches
+			return reconcile.Result{}, client.IgnoreNotFound(err)
 		}
-
-		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
-			// PDB already exists, nothing to do
-			EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
-			err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
-			if err != nil {
-				//TODO don't ignore not found. Retry and fix unittest DeploymentToPDBReconciler when a deployment is created [It] should not create a PodDisruptionBudget if one already matches
-				return reconcile.Result{}, client.IgnoreNotFound(err)
-			}
-			// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
-			// update pdb minReplicas to current deployment replicas
-			return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, pdb)
-		}
+		// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
+		// update pdb minReplicas to current deployment replicas
+		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, *pdb)
 	}
 
-	//variables
-	controller := true
-	blockOwnerDeletion := true
-
-	// Create a new PDB for the Deployment
-	pdb := &policyv1.PodDisruptionBudget{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      r.generatePDBName(deployment.Name),
-			Namespace: deployment.Namespace,
-			Annotations: map[string]string{
-				PDBOwnedByAnnotationKey: ControllerName,
-				"target":                deployment.Name,
-			},
-			OwnerReferences: []metav1.OwnerReference{
-				{
-					APIVersion:         "apps/v1",
-					Kind:               ResourceTypeDeployment,
-					Name:               deployment.Name,
-					UID:                deployment.UID,
-					Controller:         &controller,         // Mark as managed by this controller
-					BlockOwnerDeletion: &blockOwnerDeletion, // Prevent deletion of the PDB until the deployment is deleted
-				},
-			},
-		},
-		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &intstr.IntOrString{IntVal: *deployment.Spec.Replicas},
-			Selector:     &metav1.LabelSelector{MatchLabels: deployment.Spec.Selector.MatchLabels},
-		},
-	}
-
-	if err := r.Create(ctx, pdb); err != nil {
+	// Create a new PDB for the Deployment using helper function
+	if err := CreatePDBForDeployment(ctx, r.Client, &deployment); err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// Track PDB creation event
 	metrics.PDBCreationCounter.WithLabelValues(deployment.Namespace, deployment.Name).Inc()
 
-	log.Info("Created PodDisruptionBudget", "namespace", pdb.Namespace, "name", pdb.Name)
+	log.Info("Created PodDisruptionBudget", "namespace", deployment.Namespace, "name", deployment.Name)
 	return reconcile.Result{}, nil
 }
 
@@ -216,10 +162,6 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	return nil
 }
 
-func (r *DeploymentToPDBReconciler) generatePDBName(deploymentName string) string {
-	return deploymentName
-}
-
 // triggerOnReplicaChange checks if a deployment update event should trigger reconciliation
 // by comparing the number of replicas between old and new deployment
 func triggerOnReplicaChange(e event.UpdateEvent, logger logr.Logger) bool {
@@ -253,23 +195,6 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 		}
 	}
 	return false
-}
-
-// hasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
-// Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
-func hasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return false
-	}
-	maxUnavailable := deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
-	if maxUnavailable == nil {
-		return false
-	}
-	if maxUnavailable.Type == intstr.Int {
-		return maxUnavailable.IntVal != 0
-	}
-	// String type - check for "0" or "0%"
-	return maxUnavailable.StrVal != "0" && maxUnavailable.StrVal != "0%"
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -65,20 +65,15 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if eviction autoscaler should be enabled for this namespace
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	if EvictionAutoScaler.Namespace != KubeSystemNamespace {
-		// Fetch the namespace to check for the annotation
-		namespace := &corev1.Namespace{}
-		err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Namespace}, namespace)
-		if err != nil {
-			logger.Error(err, "Failed to get namespace", "namespace", EvictionAutoScaler.Namespace)
-			return ctrl.Result{}, err
-		}
-
-		if val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]; !ok || val != EnableEvictionAutoscalerTrue {
-			logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
-			// Don't process evictions for namespaces without the annotation
-			return ctrl.Result{}, nil
-		}
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, EvictionAutoScaler.Namespace)
+	if err != nil {
+		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", EvictionAutoScaler.Namespace)
+		return ctrl.Result{}, err
+	}
+	if !isEnabled {
+		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
+		// Don't process evictions for namespaces without the annotation
+		return ctrl.Result{}, nil
 	}
 
 	// Fetch the PDB using a 1:1 name mapping

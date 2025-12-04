@@ -198,6 +198,35 @@ metadata:
 
 This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
 
+### Deployments with MaxUnavailable
+
+Eviction-autoscaler automatically skips PDB creation for deployments that have a `maxUnavailable` value other than 0 in their rolling update strategy. This is because such deployments already tolerate some level of downtime during updates or maintenance.
+
+For example, the following deployment will **not** get an automatic PDB:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%           # This doesn't affect PDB creation
+      maxUnavailable: 1       # Allows 1 pod to be unavailable - skips PDB creation
+  # ... rest of spec
+```
+
+In this case, since `maxUnavailable: 1`, the deployment is explicitly designed to tolerate one pod being down. Creating a PDB would conflict with this configuration. Note that `maxSurge` does not affect PDB creation - only `maxUnavailable` matters.
+
+If you want a PDB for such a deployment, you can either:
+- Set `maxUnavailable: 0` in the deployment strategy, or
+- Manually create and manage the PDB yourself
+
+This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
+
 ### Enabling Eviction Autoscaler for Specific Namespaces
 
 By default, eviction autoscaler is **enabled** for all deployments in the `kube-system` namespace. For deployments in other namespaces, you must explicitly enable the eviction autoscaler by adding the following annotation **to the namespace**:

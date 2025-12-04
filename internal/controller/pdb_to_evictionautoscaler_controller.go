@@ -85,7 +85,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return ctrl.Result{}, err
 		}
 
-		deploymentName, _ , e := r.discoverDeployment(ctx, &pdb)
+		deploymentName, _, e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
 			return reconcile.Result{}, e
 		}
@@ -162,7 +162,7 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		// User removed annotation - remove owner reference to transfer ownership
 		logger.Info("Removing owner reference from PDB - user has taken ownership",
 			"namespace", pdb.Namespace, "name", pdb.Name)
-			
+
 		// Remove the deployment owner reference
 		newOwnerRefs := []metav1.OwnerReference{}
 		for idx, ownerRef := range pdb.OwnerReferences {

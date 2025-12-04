@@ -13,7 +13,6 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -36,6 +35,7 @@ type EvictionAutoScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Filter   filter
 }
 
 const cooldown = 1 * time.Minute
@@ -65,7 +65,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if eviction autoscaler should be enabled for this namespace
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, EvictionAutoScaler.Namespace)
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, EvictionAutoScaler.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", EvictionAutoScaler.Namespace)
 		return ctrl.Result{}, err

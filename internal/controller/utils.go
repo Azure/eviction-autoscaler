@@ -4,36 +4,13 @@ import (
 	"context"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	v1 "k8s.io/api/apps/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// IsEvictionAutoscalerEnabled checks if eviction autoscaler is enabled for a given namespace.
-// Returns true if the namespace is kube-system (always enabled) or has the enable annotation set to "true".
-func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string) (bool, error) {
-	// kube-system namespace is always enabled
-	if namespaceName == KubeSystemNamespace {
-		return true, nil
-	}
-
-	// Fetch the namespace to check for the annotation
-	namespace := &corev1.Namespace{}
-	err := c.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace)
-	if err != nil {
-		return false, fmt.Errorf("failed to get namespace %s: %w", namespaceName, err)
-	}
-
-	// Check if annotation is present and set to "true"
-	// Missing annotation or annotation != "true" (including "false") disables the controller
-	val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]
-	return ok && val == EnableEvictionAutoscalerTrue, nil
-}
 
 // ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
 // Returns true if:

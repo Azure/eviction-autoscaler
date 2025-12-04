@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -41,6 +42,7 @@ import (
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
 	_ "github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -64,6 +66,8 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var evictionWebhook bool
+	var optin bool
+	var hardcodedns string
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -78,11 +82,17 @@ func main() {
 		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, "+
 			"if false will rely on node cordon for signal")
 
+	//make env var?
+	flag.BoolVar(&optin, "opt-in", false,
+		"Watch all namespaces. By default we watch all ")
+	flag.StringVar(&hardcodedns, "namespaces", "", "These namespaces will be actioned on if opt-in is true and will be ignored if opt-in is false even if no explicit annotation is set")
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
+
+	nsfilter := namespacefilter.New(strings.Split(hardcodedns, ","), optin)
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
@@ -141,6 +151,7 @@ func main() {
 	if err = (&controllers.EvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
@@ -157,27 +168,19 @@ func main() {
 		if err = (&controllers.DeploymentToPDBReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
+			Filter: nsfilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 			os.Exit(1)
 		}
 		setupLog.Info("DeploymentToPDBReconciler  setup completed")
 
-		// Set up NamespaceReconciler to cleanup resources when annotation is disabled
-		if err = (&controllers.NamespaceReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "NamespaceReconciler")
-			os.Exit(1)
-		}
-		setupLog.Info("NamespaceReconciler setup completed")
 	}
-	
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

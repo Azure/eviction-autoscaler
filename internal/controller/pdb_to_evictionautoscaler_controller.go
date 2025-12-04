@@ -30,6 +30,7 @@ type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Filter   filter
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -62,7 +63,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 	// Check if eviction autoscaler should be enabled for this PDB
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace)
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, pdb.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", pdb.Namespace)
 		return reconcile.Result{}, err

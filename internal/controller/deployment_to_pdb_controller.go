@@ -2,18 +2,15 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -29,18 +26,22 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBCreateAnnotationFalse = "false"
 const PDBCreateAnnotationTrue = "true"
-const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
 const KubeSystemNamespace = "kube-system"
 const EnableEvictionAutoscalerTrue = "true"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
 const ResourceTypeDeployment = "Deployment"
 
+type filter interface {
+	Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error)
+}
+
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Filter   filter
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
@@ -71,7 +72,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Check if eviction autoscaler should be enabled
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, deployment.Namespace)
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, deployment.Namespace)
 	if err != nil {
 		log.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", deployment.Namespace)
 		return reconcile.Result{}, err

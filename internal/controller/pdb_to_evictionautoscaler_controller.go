@@ -266,10 +266,12 @@ func (e *EnqueuePDBsInNamespace) Update(ctx context.Context, evt event.UpdateEve
 	// In opt-out mode: enabled unless annotation is "false"
 	wasEnabled := (e.EnableAll && oldVal != "false") || (!e.EnableAll && oldVal == EnableEvictionAutoscalerTrue)
 	isEnabled := (e.EnableAll && newVal != "false") || (!e.EnableAll && newVal == EnableEvictionAutoscalerTrue)
-	
+
 	if wasEnabled == isEnabled {
 		return // No change in enabled state
-	}	logger.Info("Namespace annotation changed, enqueuing all PDBs",
+	}
+
+	logger.Info("Namespace annotation changed, enqueuing all PDBs",
 		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
 
 	// List all PDBs in the namespace

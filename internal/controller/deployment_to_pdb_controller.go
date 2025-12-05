@@ -249,10 +249,12 @@ func (e *EnqueueDeploymentsInNamespace) Update(ctx context.Context, evt event.Up
 	// In opt-out mode: enabled unless annotation is "false"
 	wasEnabled := (e.EnableAll && oldVal != "false") || (!e.EnableAll && oldVal == EnableEvictionAutoscalerTrue)
 	isEnabled := (e.EnableAll && newVal != "false") || (!e.EnableAll && newVal == EnableEvictionAutoscalerTrue)
-	
+
 	if wasEnabled == isEnabled {
 		return // No change in enabled state
-	}	logger.Info("Namespace annotation changed, enqueuing all deployments",
+	}
+
+	logger.Info("Namespace annotation changed, enqueuing all deployments",
 		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
 
 	// List all deployments in the namespace

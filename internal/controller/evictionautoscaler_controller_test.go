@@ -133,7 +133,9 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 			Filter: &testFilter{},
-		}			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+		}
+
+		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())

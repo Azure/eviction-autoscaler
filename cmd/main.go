@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -64,6 +65,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var evictionWebhook bool
+	var enableAll bool
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -77,6 +79,10 @@ func main() {
 	flag.BoolVar(&evictionWebhook, "eviction-webhook", false,
 		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, "+
 			"if false will rely on node cordon for signal")
+	flag.BoolVar(&enableAll, "enable-all", false,
+		"Enable eviction autoscaler for all namespaces by default (opt-out mode). "+
+			"When false (default), namespaces must opt-in with annotation. "+
+			"When true, namespaces must opt-out with annotation set to false")
 
 	opts := zap.Options{
 		Development: true,
@@ -147,6 +153,38 @@ func main() {
 	}
 	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
 
+	// Parse ENABLED_BY_DEFAULT environment variable
+	enabledByDefaultStr := os.Getenv("ENABLED_BY_DEFAULT")
+	enabledByDefault, err := strconv.ParseBool(enabledByDefaultStr)
+	if err != nil {
+		setupLog.Info("Failed to parse ENABLED_BY_DEFAULT env variable, defaulting to false (opt-in mode)", "error", err)
+		enabledByDefault = false
+	}
+	
+	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
+	// Only used in opt-in mode (enabledByDefault=false)
+	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
+	var actionedNamespaces []string
+	if actionedNamespacesStr != "" {
+		actionedNamespaces = strings.Split(actionedNamespacesStr, ",")
+		// Trim whitespace from each namespace
+		for i := range actionedNamespaces {
+			actionedNamespaces[i] = strings.TrimSpace(actionedNamespaces[i])
+		}
+	} else {
+		// Default to kube-system if not specified
+		actionedNamespaces = []string{"kube-system"}
+	}
+	
+	if enabledByDefault {
+		setupLog.Info("Eviction autoscaler configuration", 
+			"mode", "opt-out (all namespaces enabled by default, can opt-out via annotation)")
+	} else {
+		setupLog.Info("Eviction autoscaler configuration", 
+			"mode", "opt-in (only actioned namespaces enabled)",
+			"actionedNamespaces", actionedNamespaces)
+	}
+
 	pdbcreate := os.Getenv("PDB_CREATE")
 	b, err := strconv.ParseBool(pdbcreate)
 	if err != nil {
@@ -155,8 +193,10 @@ func main() {
 	}
 	if b {
 		if err = (&controllers.DeploymentToPDBReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
+			Client:             mgr.GetClient(),
+			Scheme:             mgr.GetScheme(),
+			EnabledByDefault:   enabledByDefault,
+			ActionedNamespaces: actionedNamespaces,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 			os.Exit(1)
@@ -165,8 +205,10 @@ func main() {
 	}
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:             mgr.GetClient(),
+		Scheme:             mgr.GetScheme(),
+		EnabledByDefault:   enabledByDefault,
+		ActionedNamespaces: actionedNamespaces,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

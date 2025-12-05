@@ -227,42 +227,114 @@ If you want a PDB for such a deployment, you can either:
 
 This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
 
-### Enabling Eviction Autoscaler for Specific Namespaces
+### Namespace Control: Opt-In vs Opt-Out Mode
 
-By default, eviction autoscaler is **enabled** for all deployments in the `kube-system` namespace. For deployments in other namespaces, you must explicitly enable the eviction autoscaler by adding the following annotation **to the namespace**:
+Eviction autoscaler provides flexible namespace-level control with two operational modes:
+
+#### Opt-In Mode (Default)
+
+By default, eviction autoscaler operates in **opt-in mode** (`enabledByDefault: false`). In this mode:
+
+- **All namespaces are disabled by default**
+- Namespaces listed in `actionedNamespaces` are **automatically enabled** (default: `[kube-system]`)
+- **Namespace annotations are ignored** - only the `actionedNamespaces` list determines which namespaces are enabled
+
+**Configuration via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=false \
+  --set controllerConfig.namespaces.actionedNamespaces="{kube-system,production,staging}"
+```
+
+**Configuration via values.yaml:**
+
+```yaml
+controllerConfig:
+  namespaces:
+    enabledByDefault: false
+    actionedNamespaces:
+      - kube-system
+      - production
+      - staging
+```
+
+In opt-in mode, only the namespaces in `actionedNamespaces` will have eviction autoscaler enabled, regardless of any annotations on the namespaces.
+
+#### Opt-Out Mode
+
+When `enabledByDefault: true` is set, eviction autoscaler operates in **opt-out mode**:
+
+- **All namespaces are enabled by default**
+- The `actionedNamespaces` list is **ignored**
+- Namespaces can be **disabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "false"`
+
+**Configuration via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=true
+```
+
+**Configuration via values.yaml:**
+
+```yaml
+controllerConfig:
+  namespaces:
+    enabledByDefault: true
+```
+
+**Disabling a namespace in opt-out mode:**
 
 ```yaml
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: production
+  name: development
   annotations:
-    eviction-autoscaler.azure.com/enable: "true"
+    eviction-autoscaler.azure.com/enable: "false"  # Explicitly disable
 ```
 
-This ensures that the eviction autoscaler only manages deployments in namespaces that are explicitly opted-in via annotation, except for `kube-system` which is enabled by default for critical system components.
+Or using kubectl:
 
-**Example:**
+```bash
+kubectl annotate namespace development eviction-autoscaler.azure.com/enable=false
+```
 
-First, create or annotate your namespace:
+#### Configuration Comparison
+
+| Mode | Default Behavior | How to Enable | How to Disable | `actionedNamespaces` Used? |
+|------|------------------|---------------|----------------|----------------------------|
+| **Opt-In** (default) | All disabled | Add to `actionedNamespaces` list | Remove from `actionedNamespaces` list | ✅ Yes |
+| **Opt-Out** | All enabled | Enabled by default | Add annotation `enable: "false"` | ❌ No (ignored) |
+
+**Note:** The `kube-system` namespace defaults to enabled in opt-in mode via the `actionedNamespaces` list. This ensures critical system components are protected by default.
+
+#### Example: Enabling Specific Namespaces (Opt-In Mode)
 
 ```yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: production
-  annotations:
-    eviction-autoscaler.azure.com/enable: "true"
+# values.yaml
+controllerConfig:
+  namespaces:
+    enabledByDefault: false  # Opt-in mode
+    actionedNamespaces:
+      - kube-system
+      - production
+      - staging
 ```
 
-Then deploy your application in that namespace:
+Deploy your application:
 
 ```yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: my-app
-  namespace: production
+  namespace: production  # Enabled because it's in actionedNamespaces
 spec:
   replicas: 3
   selector:
@@ -278,7 +350,7 @@ spec:
         image: nginx
 ```
 
-All deployments in the `production` namespace will now be managed by the eviction autoscaler.
+Deployments in `production` and `staging` namespaces will be managed by eviction autoscaler. Deployments in other namespaces (e.g., `development`, `testing`) will be ignored.
 
 ### PDB Ownership and Lifecycle Management
 

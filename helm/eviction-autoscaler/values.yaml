@@ -25,10 +25,20 @@ controllerConfig:
   
   # Namespace watching configuration
   namespaces:
-    # Watch mode: "all" or "none"
-    # - "all": Watch all namespaces 
-    # - "none": Disable controller
-    watchMode: "all"
+    
+    # Default enable behavior for namespaces
+    # - false (opt-in): Eviction autoscaler is disabled by default. 
+    #                   Namespaces must explicitly set annotation "eviction-autoscaler.azure.com/enable=true"
+    # - true (opt-out): Eviction autoscaler is enabled by default.
+    #                   Namespaces can opt-out with annotation "eviction-autoscaler.azure.com/enable=false"
+    enabledByDefault: false
+    
+    # Namespaces to action on when in opt-in mode (enabledByDefault=false)
+    # When opt-in: Only these namespaces will have eviction autoscaler enabled (ignores annotations)
+    # When opt-out: This setting is ignored, all namespaces are enabled by default
+    # Default: ["kube-system"]
+    actionedNamespaces:
+      - kube-system
   
   # PDB creation configuration
   pdb:

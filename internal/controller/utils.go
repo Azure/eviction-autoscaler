@@ -15,24 +15,36 @@ import (
 )
 
 // IsEvictionAutoscalerEnabled checks if eviction autoscaler is enabled for a given namespace.
-// Returns true if the namespace is kube-system (always enabled) or has the enable annotation set to "true".
-func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string) (bool, error) {
-	// kube-system namespace is always enabled
-	if namespaceName == metav1.NamespaceSystem {
-		return true, nil
+// Parameters:
+// - namespaceName: the namespace to check
+// - enabledByDefault: controls default behavior (opt-in vs opt-out mode)
+// - actionedNamespaces: list of namespaces to action on (only used in opt-in mode)
+// 
+// Behavior:
+// - Opt-in mode (enabledByDefault=false): Only namespaces in actionedNamespaces list are enabled
+// - Opt-out mode (enabledByDefault=true): All namespaces enabled by default, can opt-out via annotation
+func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string, enabledByDefault bool, actionedNamespaces []string) (bool, error) {
+	// In opt-in mode, check if namespace is in the actioned list
+	if !enabledByDefault {
+		for _, ns := range actionedNamespaces {
+			if namespaceName == ns {
+				return true, nil
+			}
+		}
+		// Not in actioned list in opt-in mode, return false
+		return false, nil
 	}
 
-	// Fetch the namespace to check for the annotation
+	// Opt-out mode: fetch namespace to check annotation
 	namespace := &corev1.Namespace{}
 	err := c.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace)
 	if err != nil {
 		return false, fmt.Errorf("failed to get namespace %s: %w", namespaceName, err)
 	}
 
-	// Check if annotation is present and set to "true"
-	// Missing annotation or annotation != "true" (including "false") disables the controller
 	val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]
-	return ok && val == EnableEvictionAutoscalerTrue, nil
+	// Opt-out mode: enabled by default, disabled only if explicitly set to "false"
+	return !ok || val != "false", nil
 }
 
 // ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment

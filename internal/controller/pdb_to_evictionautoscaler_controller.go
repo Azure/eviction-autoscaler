@@ -29,8 +29,9 @@ var errOwnerNotFound error = fmt.Errorf("owner not found")
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	EnableAll bool // If true, enable for all namespaces by default (opt-out mode)
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -63,7 +64,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 	// Check if eviction autoscaler should be enabled for this PDB
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace)
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace, r.EnabledByDefault, r.ActionedNamespaces)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", pdb.Namespace)
 		return reconcile.Result{}, err
@@ -226,7 +227,8 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 
 // EnqueuePDBsInNamespace enqueues all PDBs in a namespace when namespace annotation changes
 type EnqueuePDBsInNamespace struct {
-	Client client.Client
+	Client    client.Client
+	EnableAll bool
 }
 
 // Create handles namespace create events (no-op)
@@ -260,14 +262,14 @@ func (e *EnqueuePDBsInNamespace) Update(ctx context.Context, evt event.UpdateEve
 	}
 
 	// Only trigger if annotation changed
-	wasEnabled := oldVal == EnableEvictionAutoscalerTrue
-	isEnabled := newVal == EnableEvictionAutoscalerTrue
-
+	// In opt-in mode: enabled if annotation is "true"
+	// In opt-out mode: enabled unless annotation is "false"
+	wasEnabled := (e.EnableAll && oldVal != "false") || (!e.EnableAll && oldVal == EnableEvictionAutoscalerTrue)
+	isEnabled := (e.EnableAll && newVal != "false") || (!e.EnableAll && newVal == EnableEvictionAutoscalerTrue)
+	
 	if wasEnabled == isEnabled {
 		return // No change in enabled state
-	}
-
-	logger.Info("Namespace annotation changed, enqueuing all PDBs",
+	}	logger.Info("Namespace annotation changed, enqueuing all PDBs",
 		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
 
 	// List all PDBs in the namespace
@@ -306,7 +308,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
-		Watches(&corev1.Namespace{}, &EnqueuePDBsInNamespace{Client: r.Client}).
+		Watches(&corev1.Namespace{}, &EnqueuePDBsInNamespace{Client: r.Client, EnableAll: r.EnableAll}).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {

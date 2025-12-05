@@ -33,10 +33,9 @@ const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	Recorder           record.EventRecorder
-	EnableAll          bool     // If true, enable for all namespaces by default (opt-out mode)
-	ActionedNamespaces []string // List of namespaces to always enable (opt-in mode)
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+	Filter   filter
 }
 
 const cooldown = 1 * time.Minute

@@ -37,8 +37,9 @@ const ResourceTypeDeployment = "Deployment"
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
+	EnableAll bool // If true, enable for all namespaces by default (opt-out mode)
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
@@ -69,7 +70,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 
 	// Check if eviction autoscaler should be enabled
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, deployment.Namespace)
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, deployment.Namespace, r.EnabledByDefault, r.ActionedNamespaces)
 	if err != nil {
 		log.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", deployment.Namespace)
 		return reconcile.Result{}, err
@@ -209,7 +210,8 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 
 // EnqueueDeploymentsInNamespace enqueues all deployments in a namespace when namespace annotation changes
 type EnqueueDeploymentsInNamespace struct {
-	Client client.Client
+	Client    client.Client
+	EnableAll bool
 }
 
 // Create handles namespace create events (no-op)
@@ -243,14 +245,14 @@ func (e *EnqueueDeploymentsInNamespace) Update(ctx context.Context, evt event.Up
 	}
 
 	// Only trigger if annotation changed
-	wasEnabled := oldVal == EnableEvictionAutoscalerTrue
-	isEnabled := newVal == EnableEvictionAutoscalerTrue
-
+	// In opt-in mode: enabled if annotation is "true"
+	// In opt-out mode: enabled unless annotation is "false"
+	wasEnabled := (e.EnableAll && oldVal != "false") || (!e.EnableAll && oldVal == EnableEvictionAutoscalerTrue)
+	isEnabled := (e.EnableAll && newVal != "false") || (!e.EnableAll && newVal == EnableEvictionAutoscalerTrue)
+	
 	if wasEnabled == isEnabled {
 		return // No change in enabled state
-	}
-
-	logger.Info("Namespace annotation changed, enqueuing all deployments",
+	}	logger.Info("Namespace annotation changed, enqueuing all deployments",
 		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
 
 	// List all deployments in the namespace
@@ -290,7 +292,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
-		Watches(&corev1.Namespace{}, &EnqueueDeploymentsInNamespace{Client: r.Client}).
+		Watches(&corev1.Namespace{}, &EnqueueDeploymentsInNamespace{Client: r.Client, EnableAll: r.EnableAll}).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))

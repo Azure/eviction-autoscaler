@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -26,13 +27,7 @@ import (
 func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string, enabledByDefault bool, actionedNamespaces []string) (bool, error) {
 	// In opt-in mode, check if namespace is in the actioned list
 	if !enabledByDefault {
-		for _, ns := range actionedNamespaces {
-			if namespaceName == ns {
-				return true, nil
-			}
-		}
-		// Not in actioned list in opt-in mode, return false
-		return false, nil
+		return slices.Contains(actionedNamespaces, namespaceName), nil
 	}
 
 	// Opt-out mode: fetch namespace to check annotation

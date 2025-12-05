@@ -537,7 +537,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Wait for PDB to be created
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNs, "nginx-annotation-test")
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-annotation-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB")
@@ -1002,7 +1002,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying PDB IS created in actioned namespace (opt-out mode, all enabled by default)")
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNsActioned, "nginx-actioned")
+				return verifyPdbCreated(ctx, clientset, testNsActioned, "nginx-actioned")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			// Test 4: Switch back to opt-in mode and verify behavior

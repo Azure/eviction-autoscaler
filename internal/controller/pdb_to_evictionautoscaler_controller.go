@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
@@ -65,7 +66,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 	// Check if eviction autoscaler should be enabled for this PDB
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace, r.EnabledByDefault, r.ActionedNamespaces)
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace, r.EnableAll, r.ActionedNamespaces)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", pdb.Namespace)
 		return reconcile.Result{}, err
@@ -241,11 +242,9 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
 			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
 
-			if !isEnabled && !contains(r.ActionedNamespaces, ns.Name) {
+			if !isEnabled && !slices.Contains(r.ActionedNamespaces, ns.Name) {
 				return nil
-			}
-
-			// List all PDBs in the namespace
+			} // List all PDBs in the namespace
 			var pdbList policyv1.PodDisruptionBudgetList
 			if err := r.Client.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
 				logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)
@@ -255,7 +254,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			var requests []reconcile.Request
 			for _, pdb := range pdbList.Items {
 				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
+					NamespacedName: k8s_types.NamespacedName{
 						Namespace: pdb.Namespace,
 						Name:      pdb.Name,
 					},

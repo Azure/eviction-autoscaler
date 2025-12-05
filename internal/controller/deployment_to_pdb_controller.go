@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"slices"
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
@@ -225,11 +226,9 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
 			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
 
-			if !isEnabled && !contains(r.ActionedNamespaces, ns.Name) {
+			if !isEnabled && !slices.Contains(r.ActionedNamespaces, ns.Name) {
 				return nil
-			}
-
-			// List all deployments in the namespace
+			} // List all deployments in the namespace
 			var deploymentList v1.DeploymentList
 			if err := r.Client.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
 				logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)

@@ -33,8 +33,10 @@ const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
+	EnableAll          bool     // If true, enable for all namespaces by default (opt-out mode)
+	ActionedNamespaces []string // List of namespaces to always enable (opt-in mode)
 }
 
 const cooldown = 1 * time.Minute
@@ -64,7 +66,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if eviction autoscaler should be enabled for this namespace
 	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, EvictionAutoScaler.Namespace)
+	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, EvictionAutoScaler.Namespace, r.EnableAll, r.ActionedNamespaces)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", EvictionAutoScaler.Namespace)
 		return ctrl.Result{}, err

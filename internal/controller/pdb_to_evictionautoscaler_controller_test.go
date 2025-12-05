@@ -487,7 +487,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 	Context("when PDB is in kube-system namespace", func() {
 		BeforeEach(func() {
-			namespace = KubeSystemNamespace
+			namespace = metav1.NamespaceSystem
 			deploymentName = "kube-system-deployment"
 
 			// Create deployment

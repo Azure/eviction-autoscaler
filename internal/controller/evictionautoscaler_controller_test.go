@@ -128,13 +128,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 		})
 
 		It("should successfully reconcile the resource", func() {
-			By("reconciling the created resource")
-			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+		By("reconciling the created resource")
+		controllerReconciler := &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &testFilter{},
+		}			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -263,6 +262,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			// run it once to populate target genration
@@ -299,13 +299,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 		//should this be merged with above?
 		It("should deal with an eviction when allowedDisruptions > 0 ", func() {
-			By("waiting on first on reconcile")
-			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			// simulate previously scaled up on an eviction
+		By("waiting on first on reconcile")
+		controllerReconciler := &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &testFilter{},
+		}			// simulate previously scaled up on an eviction
 			deployment := &appsv1.Deployment{}
 			err := k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
@@ -385,6 +384,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			// run it once to populate target genration
@@ -454,6 +454,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -486,6 +487,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -524,6 +526,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -563,6 +566,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{

@@ -29,9 +29,10 @@ var errOwnerNotFound error = fmt.Errorf("owner not found")
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme    *runtime.Scheme
-	Recorder  record.EventRecorder
-	EnableAll bool // If true, enable for all namespaces by default (opt-out mode)
+	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
+	EnableAll          bool     // If true, enable for all namespaces by default (opt-out mode)
+	ActionedNamespaces []string // List of namespaces to always enable (opt-in mode)
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -225,92 +226,44 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 	return nil
 }
 
-// EnqueuePDBsInNamespace enqueues all PDBs in a namespace when namespace annotation changes
-type EnqueuePDBsInNamespace struct {
-	Client    client.Client
-	EnableAll bool
-}
-
-// Create handles namespace create events (no-op)
-func (e *EnqueuePDBsInNamespace) Create(ctx context.Context, evt event.CreateEvent, q handler.Queue) {
-	// Don't enqueue on namespace creation
-}
-
-// Update handles namespace update events and enqueues all PDBs in that namespace
-func (e *EnqueuePDBsInNamespace) Update(ctx context.Context, evt event.UpdateEvent, q handler.Queue) {
-	logger := log.FromContext(ctx)
-
-	oldNs, okOld := evt.ObjectOld.(*corev1.Namespace)
-	newNs, okNew := evt.ObjectNew.(*corev1.Namespace)
-	if !okOld || !okNew {
-		return
-	}
-
-	// Skip kube-system namespace
-	if newNs.Name == metav1.NamespaceSystem {
-		return
-	}
-
-	// Check if enable annotation changed
-	oldVal := ""
-	newVal := ""
-	if oldNs.Annotations != nil {
-		oldVal = oldNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
-	}
-	if newNs.Annotations != nil {
-		newVal = newNs.Annotations[EnableEvictionAutoscalerAnnotationKey]
-	}
-
-	// Only trigger if annotation changed
-	// In opt-in mode: enabled if annotation is "true"
-	// In opt-out mode: enabled unless annotation is "false"
-	wasEnabled := (e.EnableAll && oldVal != "false") || (!e.EnableAll && oldVal == EnableEvictionAutoscalerTrue)
-	isEnabled := (e.EnableAll && newVal != "false") || (!e.EnableAll && newVal == EnableEvictionAutoscalerTrue)
-
-	if wasEnabled == isEnabled {
-		return // No change in enabled state
-	}
-
-	logger.Info("Namespace annotation changed, enqueuing all PDBs",
-		"namespace", newNs.Name, "wasEnabled", wasEnabled, "isEnabled", isEnabled)
-
-	// List all PDBs in the namespace
-	var pdbList policyv1.PodDisruptionBudgetList
-	if err := e.Client.List(ctx, &pdbList, client.InNamespace(newNs.Name)); err != nil {
-		logger.Error(err, "Failed to list PDBs in namespace", "namespace", newNs.Name)
-		return
-	}
-
-	// Enqueue each PDB for reconciliation
-	for _, pdb := range pdbList.Items {
-		q.Add(reconcile.Request{
-			NamespacedName: k8s_types.NamespacedName{
-				Name:      pdb.Name,
-				Namespace: pdb.Namespace,
-			},
-		})
-	}
-
-	logger.Info("Enqueued PDBs for reconciliation", "namespace", newNs.Name, "count", len(pdbList.Items))
-}
-
-// Delete handles namespace delete events (no-op, cascade deletion handles cleanup)
-func (e *EnqueuePDBsInNamespace) Delete(ctx context.Context, evt event.DeleteEvent, q handler.Queue) {
-	// Namespace deletion will cascade delete all resources
-}
-
-// Generic handles generic events (no-op)
-func (e *EnqueuePDBsInNamespace) Generic(ctx context.Context, evt event.GenericEvent, q handler.Queue) {
-	// Not used
-}
-
-// SetupWithManager sets up the controller with the Manager.
+func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
-		Watches(&corev1.Namespace{}, &EnqueuePDBsInNamespace{Client: r.Client, EnableAll: r.EnableAll}).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			ns, ok := obj.(*corev1.Namespace)
+			if !ok {
+				return nil
+			}
+
+			// Check if namespace is enabled for eviction autoscaler
+			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
+			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
+			
+			if !isEnabled && !contains(r.ActionedNamespaces, ns.Name) {
+				return nil
+			}
+
+			// List all PDBs in the namespace
+			var pdbList policyv1.PodDisruptionBudgetList
+			if err := r.Client.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
+				logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)
+				return nil
+			}
+
+			var requests []reconcile.Request
+			for _, pdb := range pdbList.Items {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: types.NamespacedName{
+						Namespace: pdb.Namespace,
+						Name:      pdb.Name,
+					},
+				})
+			}
+			return requests
+		})).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {

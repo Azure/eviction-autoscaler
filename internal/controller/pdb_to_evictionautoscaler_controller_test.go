@@ -4,7 +4,6 @@ import (
 	"context"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
-	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -17,13 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
-
-// testFilter is a simple filter that always returns true (all namespaces enabled)
-type testFilter struct{}
-
-func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
-	return true, nil
-}
 
 var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 	var (

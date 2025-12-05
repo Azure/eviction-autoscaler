@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 
-	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -17,13 +16,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
-
-// testFilter is a simple filter that always returns true (all namespaces enabled)
-type testFilter struct{}
-
-func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
-	return true, nil
-}
 
 // createDeployment is a helper function to create a deployment for testing
 func createDeployment(name, namespace, appLabel string, replicas int32, maxUnavailable *intstr.IntOrString) *appsv1.Deployment {

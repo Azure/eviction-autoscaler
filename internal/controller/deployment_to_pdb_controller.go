@@ -2,11 +2,11 @@ package controllers
 
 import (
 	"context"
-	"slices"
 	"strconv"
 
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	"github.com/go-logr/logr"
 	"github.com/samber/lo"
 	v1 "k8s.io/api/apps/v1"
@@ -34,13 +34,16 @@ const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
 const ResourceTypeDeployment = "Deployment"
 
+type filter interface {
+	Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error)
+}
+
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	Recorder           record.EventRecorder
-	EnableAll          bool     // If true, enable for all namespaces by default (opt-out mode)
-	ActionedNamespaces []string // List of namespaces to always enable (opt-in mode)
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+	Filter   filter
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
@@ -70,8 +73,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	metrics.DeploymentGauge.WithLabelValues(deployment.Namespace, metrics.CanCreatePDBStr).Inc()
 
 	// Check if eviction autoscaler should be enabled
-	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, deployment.Namespace, r.EnableAll, r.ActionedNamespaces)
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, deployment.Namespace)
 	if err != nil {
 		log.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", deployment.Namespace)
 		return reconcile.Result{}, err
@@ -223,12 +225,16 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 
 			// Check if namespace is enabled for eviction autoscaler
-			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
-			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
-
-			if !isEnabled && !slices.Contains(r.ActionedNamespaces, ns.Name) {
+			isEnabled, err := r.Filter.Filter(ctx, r.Client, ns.Name)
+			if err != nil {
+				logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", ns.Name)
 				return nil
-			} // List all deployments in the namespace
+			}
+			if !isEnabled {
+				return nil
+			}
+
+			// List all deployments in the namespace
 			var deploymentList v1.DeploymentList
 			if err := r.Client.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
 				logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)

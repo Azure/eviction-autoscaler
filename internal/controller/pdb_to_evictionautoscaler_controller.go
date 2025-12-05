@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
@@ -30,10 +29,9 @@ var errOwnerNotFound error = fmt.Errorf("owner not found")
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme             *runtime.Scheme
-	Recorder           record.EventRecorder
-	EnableAll          bool     // If true, enable for all namespaces by default (opt-out mode)
-	ActionedNamespaces []string // List of namespaces to always enable (opt-in mode)
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
+	Filter   filter
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -65,8 +63,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
 	// Check if eviction autoscaler should be enabled for this PDB
-	// Enable by default in kube-system namespace, otherwise check annotation on the namespace
-	isEnabled, err := IsEvictionAutoscalerEnabled(ctx, r.Client, pdb.Namespace, r.EnableAll, r.ActionedNamespaces)
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, pdb.Namespace)
 	if err != nil {
 		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", pdb.Namespace)
 		return reconcile.Result{}, err
@@ -239,12 +236,16 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			}
 
 			// Check if namespace is enabled for eviction autoscaler
-			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
-			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
-
-			if !isEnabled && !slices.Contains(r.ActionedNamespaces, ns.Name) {
+			isEnabled, err := r.Filter.Filter(ctx, r.Client, ns.Name)
+			if err != nil {
+				logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", ns.Name)
 				return nil
-			} // List all PDBs in the namespace
+			}
+			if !isEnabled {
+				return nil
+			}
+
+			// List all PDBs in the namespace
 			var pdbList policyv1.PodDisruptionBudgetList
 			if err := r.Client.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
 				logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)

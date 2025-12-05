@@ -17,11 +17,13 @@ limitations under the License.
 package controllers
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
 
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -35,6 +37,13 @@ import (
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	// +kubebuilder:scaffold:imports
 )
+
+// testFilter is a simple filter that always returns true (all namespaces enabled)
+type testFilter struct{}
+
+func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	return true, nil
+}
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.

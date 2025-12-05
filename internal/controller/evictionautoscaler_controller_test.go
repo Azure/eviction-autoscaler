@@ -790,7 +790,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 		It("should process EvictionAutoScaler in kube-system by default", func() {
 			// Use kube-system namespace (no annotation needed)
-			testNamespace := KubeSystemNamespace
+			testNamespace := metav1.NamespaceSystem
 
 			// Create deployment
 			deployment := &appsv1.Deployment{

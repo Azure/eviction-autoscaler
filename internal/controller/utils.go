@@ -19,7 +19,7 @@ import (
 // - namespaceName: the namespace to check
 // - enabledByDefault: controls default behavior (opt-in vs opt-out mode)
 // - actionedNamespaces: list of namespaces to action on (only used in opt-in mode)
-// 
+//
 // Behavior:
 // - Opt-in mode (enabledByDefault=false): Only namespaces in actionedNamespaces list are enabled
 // - Opt-out mode (enabledByDefault=true): All namespaces enabled by default, can opt-out via annotation

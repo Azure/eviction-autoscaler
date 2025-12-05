@@ -902,7 +902,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("uninstalling the existing eviction-autoscaler to reconfigure")
 			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
 			_, _ = utils.Run(cmd)
-			
+
 			// Wait for resources to be cleaned up
 			time.Sleep(10 * time.Second)
 
@@ -1098,7 +1098,7 @@ var _ = Describe("controller", Ordered, func() {
 			logsOutput, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			logs := string(logsOutput)
-			
+
 			By("verifying configuration is logged correctly")
 			Expect(logs).To(ContainSubstring("Eviction autoscaler configuration"))
 			Expect(logs).To(ContainSubstring("actionedNamespaces"))

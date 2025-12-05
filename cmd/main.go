@@ -160,7 +160,7 @@ func main() {
 		setupLog.Info("Failed to parse ENABLED_BY_DEFAULT env variable, defaulting to false (opt-in mode)", "error", err)
 		enabledByDefault = false
 	}
-	
+
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
 	// Only used in opt-in mode (enabledByDefault=false)
 	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
@@ -175,12 +175,12 @@ func main() {
 		// Default to kube-system if not specified
 		actionedNamespaces = []string{"kube-system"}
 	}
-	
+
 	if enabledByDefault {
-		setupLog.Info("Eviction autoscaler configuration", 
+		setupLog.Info("Eviction autoscaler configuration",
 			"mode", "opt-out (all namespaces enabled by default, can opt-out via annotation)")
 	} else {
-		setupLog.Info("Eviction autoscaler configuration", 
+		setupLog.Info("Eviction autoscaler configuration",
 			"mode", "opt-in (only actioned namespaces enabled)",
 			"actionedNamespaces", actionedNamespaces)
 	}

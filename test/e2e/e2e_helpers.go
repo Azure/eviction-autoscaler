@@ -20,8 +20,8 @@ import (
 	"context"
 	"fmt"
 
-	. "github.com/onsi/gomega"
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	. "github.com/onsi/gomega"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )

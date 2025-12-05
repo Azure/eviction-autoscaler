@@ -227,7 +227,6 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 }
 
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
-func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
@@ -241,7 +240,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			// Check if namespace is enabled for eviction autoscaler
 			val := ns.Annotations[EnableEvictionAutoscalerAnnotationKey]
 			isEnabled := (r.EnableAll && val != "false") || (!r.EnableAll && val == EnableEvictionAutoscalerTrue)
-			
+
 			if !isEnabled && !contains(r.ActionedNamespaces, ns.Name) {
 				return nil
 			}

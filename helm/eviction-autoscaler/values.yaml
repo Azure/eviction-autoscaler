@@ -27,18 +27,20 @@ controllerConfig:
   namespaces:
     
     # Default enable behavior for namespaces
-    # - false (opt-in): Eviction autoscaler is disabled by default. 
-    #                   Namespaces must explicitly set annotation "eviction-autoscaler.azure.com/enable=true"
-    # - true (opt-out): Eviction autoscaler is enabled by default.
-    #                   Namespaces can opt-out with annotation "eviction-autoscaler.azure.com/enable=false"
+    # - false (default, opt-out mode): All namespaces are enabled by default.
+    #                                   actionedNamespaces is ignored.
+    #                                   Namespaces can opt-out with annotation "eviction-autoscaler.azure.com/enable=false"
+    # - true (opt-in mode): All namespaces are disabled by default.
+    #                       Only namespaces in actionedNamespaces are enabled.
+    #                       Other namespaces can opt-in with annotation "eviction-autoscaler.azure.com/enable=true"
+    # Note: Annotations always take precedence over these settings
     enabledByDefault: false
     
-    # Namespaces to action on when in opt-in mode (enabledByDefault=false)
-    # When opt-in: Only these namespaces will have eviction autoscaler enabled (ignores annotations)
-    # When opt-out: This setting is ignored, all namespaces are enabled by default
-    # Default: ["kube-system"]
-    actionedNamespaces:
-      - kube-system
+    # Namespaces to action on (behavior depends on enabledByDefault)
+    # When enabledByDefault=true (opt-in): These namespaces are enabled, all others disabled
+    # When enabledByDefault=false (opt-out): This list is ignored, all namespaces enabled by default
+    # Default: [] (empty list)
+    actionedNamespaces: []
   
   # PDB creation configuration
   pdb:

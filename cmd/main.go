@@ -42,6 +42,7 @@ import (
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
 	_ "github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -140,28 +141,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		EnableAll:          enabledByDefault,
-		ActionedNamespaces: actionedNamespacesList,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
-		os.Exit(1)
-	}
-	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
-
 	// Parse ENABLED_BY_DEFAULT environment variable
+	// Controls default behavior for namespaces not in ACTIONED_NAMESPACES
 	enabledByDefaultStr := os.Getenv("ENABLED_BY_DEFAULT")
-	enabledByDefault, err := strconv.ParseBool(enabledByDefaultStr)
-	if err != nil {
-		setupLog.Error(err, "Failed to parse ENABLED_BY_DEFAULT env variable")
-		os.Exit(1)
-		enabledByDefault = false
+	optin := false // default behavior
+	if enabledByDefaultStr != "" {
+		var err error
+		optin, err = strconv.ParseBool(enabledByDefaultStr)
+		if err != nil {
+			setupLog.Info("Failed to parse ENABLED_BY_DEFAULT env variable, defaulting to false", "error", err)
+		}
 	}
 
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
-	// Only used in opt-in mode (enabledByDefault=false)
+	// These namespaces will be actioned on if opt-in is true and will be ignored if opt-in is false
 	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
 	var actionedNamespacesList []string
 	if actionedNamespacesStr != "" {
@@ -170,19 +163,14 @@ func main() {
 		for i := range actionedNamespacesList {
 			actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
 		}
-	} else {
-		// Default to kube-system if not specified
-		actionedNamespacesList = []string{"kube-system"}
 	}
 
-	if enabledByDefault {
-		setupLog.Info("Eviction autoscaler configuration",
-			"mode", "opt-out (all namespaces enabled by default, can opt-out via annotation)")
-	} else {
-		setupLog.Info("Eviction autoscaler configuration",
-			"mode", "opt-in (only actioned namespaces enabled)",
-			"actionedNamespaces", actionedNamespacesList)
-	}
+	// Create namespace filter
+	nsfilter := namespacefilter.New(actionedNamespacesList, optin)
+
+	setupLog.Info("Eviction autoscaler configuration",
+		"optin", optin,
+		"actionedNamespaces", actionedNamespacesList)
 
 	// Parse PDB_CREATE environment variable
 	pdbCreateStr := os.Getenv("PDB_CREATE")
@@ -192,12 +180,21 @@ func main() {
 		pdbCreate = false
 	}
 
+	if err = (&controllers.EvictionAutoScalerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
+		os.Exit(1)
+	}
+	setupLog.Info("EvictionAutoScalerReconciler setup completed")
+
 	if pdbCreate {
 		if err = (&controllers.DeploymentToPDBReconciler{
-			Client:             mgr.GetClient(),
-			Scheme:             mgr.GetScheme(),
-			EnableAll:          enabledByDefault,
-			ActionedNamespaces: actionedNamespacesList,
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Filter: nsfilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 			os.Exit(1)
@@ -206,10 +203,9 @@ func main() {
 	}
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-		Client:             mgr.GetClient(),
-		Scheme:             mgr.GetScheme(),
-		EnableAll:          enabledByDefault,
-		ActionedNamespaces: actionedNamespacesList,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

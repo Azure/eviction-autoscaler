@@ -3,44 +3,14 @@ package controllers
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	v1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
-
-// IsEvictionAutoscalerEnabled checks if eviction autoscaler is enabled for a given namespace.
-// Parameters:
-// - namespaceName: the namespace to check
-// - enabledByDefault: controls default behavior (opt-in vs opt-out mode)
-// - actionedNamespaces: list of namespaces to action on (only used in opt-in mode)
-//
-// Behavior:
-// - Opt-in mode (enabledByDefault=false): Only namespaces in actionedNamespaces list are enabled
-// - Opt-out mode (enabledByDefault=true): All namespaces enabled by default, can opt-out via annotation
-func IsEvictionAutoscalerEnabled(ctx context.Context, c client.Client, namespaceName string, enabledByDefault bool, actionedNamespaces []string) (bool, error) {
-	// In opt-in mode, check if namespace is in the actioned list
-	if !enabledByDefault {
-		return slices.Contains(actionedNamespaces, namespaceName), nil
-	}
-
-	// Opt-out mode: fetch namespace to check annotation
-	namespace := &corev1.Namespace{}
-	err := c.Get(ctx, types.NamespacedName{Name: namespaceName}, namespace)
-	if err != nil {
-		return false, fmt.Errorf("failed to get namespace %s: %w", namespaceName, err)
-	}
-
-	val, ok := namespace.Annotations[EnableEvictionAutoscalerAnnotationKey]
-	// Opt-out mode: enabled by default, disabled only if explicitly set to "false"
-	return !ok || val != "false", nil
-}
 
 // ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
 // Returns true if:

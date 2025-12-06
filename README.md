@@ -234,14 +234,71 @@ Eviction autoscaler provides flexible namespace-level control with two operation
 #### Environment Variables
 
 - **`ENABLED_BY_DEFAULT`**: Controls the operational mode (default: `false`)
-  - `false`: Opt-out mode - all namespaces enabled by default
-  - `true`: Opt-in mode - only specified namespaces enabled
+  - `false`: Opt-in mode - only specified namespaces enabled
+  - `true`: Opt-out mode - all namespaces enabled by default
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
 
-#### Opt-Out Mode (Default: `ENABLED_BY_DEFAULT=false`)
+#### Opt-In Mode (Default: `ENABLED_BY_DEFAULT=false`)
 
-In **opt-out mode** (the default), eviction autoscaler operates as follows:
+In **opt-in mode** (the default), eviction autoscaler operates as follows:
+
+- **All namespaces are disabled by default**
+- Namespaces listed in **`ACTIONED_NAMESPACES`** are **automatically enabled**
+- Other namespaces can be **enabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "true"`
+- Namespaces in `ACTIONED_NAMESPACES` can be **overridden** with annotation `eviction-autoscaler.azure.com/enable: "false"`
+
+**Configuration via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set controllerConfig.pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=false \
+  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production","staging"]'
+```
+
+Or via values.yaml:
+
+```yaml
+controllerConfig:
+  pdb:
+    create: true
+  namespaces:
+    enabledByDefault: false  # Opt-in mode (default)
+    actionedNamespaces:
+      - kube-system
+      - production
+      - staging
+```
+
+**Configuration via environment variables:**
+
+```bash
+export ENABLED_BY_DEFAULT=false
+export ACTIONED_NAMESPACES="kube-system,production,staging"
+```
+
+**Enabling a namespace in opt-in mode:**
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  annotations:
+    eviction-autoscaler.azure.com/enable: "true"  # Explicitly enable
+```
+
+Or using kubectl:
+
+```bash
+kubectl annotate namespace development eviction-autoscaler.azure.com/enable=true
+```
+
+#### Opt-Out Mode (`ENABLED_BY_DEFAULT=true`)
+
+When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates in **opt-out mode**:
 
 - **All namespaces are enabled by default**
 - **`ACTIONED_NAMESPACES` is ignored** - only annotations control which namespaces are disabled
@@ -254,7 +311,7 @@ In **opt-out mode** (the default), eviction autoscaler operates as follows:
 helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
   --namespace eviction-autoscaler --create-namespace \
   --set controllerConfig.pdb.create=true \
-  --set controllerConfig.namespaces.enabledByDefault=false
+  --set controllerConfig.namespaces.enabledByDefault=true
 ```
 
 Or via values.yaml:
@@ -264,13 +321,13 @@ controllerConfig:
   pdb:
     create: true
   namespaces:
-    enabledByDefault: false  # Opt-out mode (default)
+    enabledByDefault: true  # Opt-out mode
     actionedNamespaces: []   # Ignored in opt-out mode
 ```
 
 **Configuration via environment variables:**
 
-Set the environment variable `ENABLED_BY_DEFAULT=false` or leave it unset (false is the default).
+Set the environment variable `ENABLED_BY_DEFAULT=true`.
 
 **Disabling a namespace in opt-out mode:**
 
@@ -287,46 +344,6 @@ Or using kubectl:
 
 ```bash
 kubectl annotate namespace development eviction-autoscaler.azure.com/enable=false
-```
-
-#### Opt-In Mode (`ENABLED_BY_DEFAULT=true`)
-
-When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates in **opt-in mode**:
-
-- **All namespaces are disabled by default**
-- Namespaces listed in `ACTIONED_NAMESPACES` are **automatically enabled**
-- Other namespaces can be **enabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "true"`
-- Namespaces in `ACTIONED_NAMESPACES` can be **overridden** with annotation `eviction-autoscaler.azure.com/enable: "false"`
-
-**Configuration via Helm:**
-
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-  --namespace eviction-autoscaler --create-namespace \
-  --set controllerConfig.pdb.create=true \
-  --set controllerConfig.namespaces.enabledByDefault=true \
-  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production","staging"]'
-```
-
-Or via values.yaml:
-
-```yaml
-controllerConfig:
-  pdb:
-    create: true
-  namespaces:
-    enabledByDefault: true  # Opt-in mode
-    actionedNamespaces:
-      - kube-system
-      - production
-      - staging
-```
-
-**Configuration via environment variables:**
-
-```bash
-export ENABLED_BY_DEFAULT=true
-export ACTIONED_NAMESPACES="kube-system,production,staging"
 ```
 
 **Enabling a namespace not in the list:**

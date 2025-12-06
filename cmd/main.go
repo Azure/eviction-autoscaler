@@ -143,15 +143,21 @@ func main() {
 
 	// Parse ENABLED_BY_DEFAULT environment variable
 	// Controls default behavior for namespaces not in ACTIONED_NAMESPACES
+	// ENABLED_BY_DEFAULT=false (opt-in mode): namespaces disabled by default, need to opt-in
+	// ENABLED_BY_DEFAULT=true (opt-out mode): namespaces enabled by default, can opt-out
 	enabledByDefaultStr := os.Getenv("ENABLED_BY_DEFAULT")
-	optin := false // default behavior
+	enabledByDefault := false // default behavior: opt-in mode
 	if enabledByDefaultStr != "" {
 		var err error
-		optin, err = strconv.ParseBool(enabledByDefaultStr)
+		enabledByDefault, err = strconv.ParseBool(enabledByDefaultStr)
 		if err != nil {
 			setupLog.Info("Failed to parse ENABLED_BY_DEFAULT env variable, defaulting to false", "error", err)
 		}
 	}
+	// optin parameter: true = opt-in mode (disabled by default), false = opt-out mode (enabled by default)
+	// When ENABLED_BY_DEFAULT=false (opt-in), optin=true
+	// When ENABLED_BY_DEFAULT=true (opt-out), optin=false
+	optin := !enabledByDefault
 
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
 	// These namespaces will be actioned on if opt-in is true and will be ignored if opt-in is false

@@ -26,6 +26,7 @@ import (
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/zap/zapcore"
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -38,16 +39,19 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-// testFilter uses the real namespacefilter with opt-in mode (optin=true, empty list)
-// This means only namespaces with explicit annotation will be enabled
-// This matches the test expectations where namespaces need opt-in via annotations
+// testFilter uses the real namespacefilter with opt-out mode (optin=false)
+// with kube-system in the hardcoded list.
+// This means:
+// - kube-system: enabled by default (in hardcoded list, returns !optin = !false = true)
+// - Other namespaces: disabled by default (not in hardcoded, returns optin = false)
+// - Any namespace can override via annotation
 type testFilter struct {
 	filter filter
 }
 
 func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
 	if f.filter == nil {
-		f.filter = namespacefilter.New([]string{}, true) // opt-in mode, no hardcoded namespaces
+		f.filter = namespacefilter.New([]string{"kube-system"}, false) // opt-out mode with kube-system enabled
 	}
 	return f.filter.Filter(ctx, c, ns)
 }
@@ -66,7 +70,13 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	// Set up test logger with verbose output (use -v flag to see logs)
+	// Verbosity level 1 shows Info logs, higher levels show V(n) logs
+	opts := zap.Options{
+		Development: true,
+		Level:       zapcore.Level(-1), // Enable V(1) logs
+	}
+	logf.SetLogger(zap.New(zap.UseFlagOptions(&opts), zap.WriteTo(GinkgoWriter)))
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{

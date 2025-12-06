@@ -2,9 +2,9 @@ package controllers
 
 import (
 	"context"
-	"fmt"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -17,6 +17,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// pdbTestFilter for PDB to EvictionAutoScaler tests
+// Uses opt-in mode: namespaces with annotation=true are enabled
+type pdbTestFilter struct {
+	filter filter
+}
+
+func (f *pdbTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{}, true) // opt-in: requires explicit annotation
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
+
+// pdbKubeSystemTestFilter for kube-system tests
+// Uses opt-out mode with kube-system enabled by default
+type pdbKubeSystemTestFilter struct {
+	filter filter
+}
+
+func (f *pdbKubeSystemTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{"kube-system"}, false) // opt-out: kube-system enabled
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
 
 var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 	var (
@@ -51,7 +77,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
-			Filter: &testFilter{},
+			Filter: &pdbTestFilter{},
 		}
 
 		surge := intstr.FromInt(1)
@@ -290,7 +316,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
-			Filter: &testFilter{},
+			Filter: &pdbTestFilter{},
 		}
 
 		// Create deployment
@@ -485,7 +511,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
-			Filter: &testFilter{},
+			Filter: &pdbKubeSystemTestFilter{},
 		}
 	})
 
@@ -718,7 +744,6 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 			EvictionAutoScaler := &types.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
-			fmt.Println(EvictionAutoScaler)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -785,7 +810,6 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 			EvictionAutoScaler := &types.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
-			fmt.Println(EvictionAutoScaler)
 			Expect(err).To(HaveOccurred())
 		})
 	})

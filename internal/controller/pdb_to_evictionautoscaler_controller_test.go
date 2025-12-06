@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	. "github.com/onsi/ginkgo/v2"

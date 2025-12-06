@@ -717,6 +717,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 			EvictionAutoScaler := &types.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			fmt.Println(EvictionAutoScaler)
 			Expect(err).To(HaveOccurred())
 		})
 
@@ -783,6 +784,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 			EvictionAutoScaler := &types.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			fmt.Println(EvictionAutoScaler)
 			Expect(err).To(HaveOccurred())
 		})
 	})

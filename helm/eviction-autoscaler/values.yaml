@@ -39,8 +39,8 @@ controllerConfig:
     # Namespaces to action on (behavior depends on enabledByDefault)
     # When enabledByDefault=false (opt-in): These namespaces are enabled, all others disabled
     # When enabledByDefault=true (opt-out): This list is ignored, all namespaces enabled by default
-    # Default: [] (empty list)
-    actionedNamespaces: []
+    # Default: [kube-system] (kube-system enabled by default)
+    actionedNamespaces: [kube-system]
   
   # PDB creation configuration
   pdb:

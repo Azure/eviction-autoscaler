@@ -1019,7 +1019,8 @@ var _ = Describe("controller", Ordered, func() {
 				"--set", "image.pullPolicy=IfNotPresent",
 				"--set", "controllerConfig.pdb.create=true",
 				"--set", "controllerConfig.namespaces.enabledByDefault=false",
-				"--set", "controllerConfig.namespaces.actionedNamespaces={kube-system\\,actioned-test}",
+				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
+				"--set", "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
 			}
 			cmd = exec.Command("helm", helmArgsOptIn...)
 			_, err = utils.Run(cmd)

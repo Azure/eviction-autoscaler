@@ -177,6 +177,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
+				Filter: &testFilter{},
 			}
 
 			// run it once to populate target genration

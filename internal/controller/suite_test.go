@@ -38,11 +38,18 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
-// testFilter is a simple filter that always returns true (all namespaces enabled)
-type testFilter struct{}
+// testFilter uses the real namespacefilter with opt-in mode (optin=true, empty list)
+// This means only namespaces with explicit annotation will be enabled
+// This matches the test expectations where namespaces need opt-in via annotations
+type testFilter struct {
+	filter filter
+}
 
 func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
-	return true, nil
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{}, true) // opt-in mode, no hardcoded namespaces
+	}
+	return f.filter.Filter(ctx, c, ns)
 }
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to

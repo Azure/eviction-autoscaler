@@ -51,14 +51,17 @@ func (n *nsfilter) Filter(ctx context.Context, c Reader, ns string) (bool, error
 		return value, nil
 	}
 
-	// if hardcoded flip it.
-	if slices.Contains(n.hardcoded, ns) {
-		result := !n.optin
-		logger.Info("namespace filtering decision", "namespace", ns, "source", "hardcoded", "optin", n.optin, "filtering", result)
-		return result, nil
+	// if in opt-in mode (optin=true) and in hardcoded list, enable it
+	// if in opt-out mode (optin=false), hardcoded list is ignored
+	if n.optin && slices.Contains(n.hardcoded, ns) {
+		logger.Info("namespace filtering decision", "namespace", ns, "source", "hardcoded", "mode", "opt-in", "filtering", true)
+		return true, nil
 	}
 
-	// If the namespace is not in the hardcoded list, return the default value based on the optin flag
-	logger.Info("namespace filtering decision", "namespace", ns, "source", "default", "optin", n.optin, "filtering", n.optin)
-	return n.optin, nil
+	// If the namespace is not in the hardcoded list, return the default value
+	// optin=true (opt-in mode): return false (disabled by default)
+	// optin=false (opt-out mode): return true (enabled by default)
+	defaultValue := !n.optin
+	logger.Info("namespace filtering decision", "namespace", ns, "source", "default", "optin", n.optin, "filtering", defaultValue)
+	return defaultValue, nil
 }

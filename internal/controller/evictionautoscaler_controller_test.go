@@ -5,6 +5,7 @@ import (
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// evictionTestFilter for EvictionAutoScaler tests
+// Uses opt-out mode with kube-system enabled by default
+// - kube-system: enabled by default (in hardcoded list, returns !optin = !false = true)
+// - Other namespaces: disabled by default (not in hardcoded, returns optin = false)
+// - Any namespace can override via annotation
+type evictionTestFilter struct {
+	filter filter
+}
+
+func (f *evictionTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{"kube-system"}, false) // opt-out: kube-system enabled, others disabled
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
 
 var _ = Describe("EvictionAutoScaler Controller", func() {
 	const (
@@ -128,14 +145,14 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 		})
 
 		It("should successfully reconcile the resource", func() {
-		By("reconciling the created resource")
-		controllerReconciler := &EvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Filter: &testFilter{},
-		}
+			By("reconciling the created resource")
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
 
-		_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -177,7 +194,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			// run it once to populate target genration
@@ -265,7 +282,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			// run it once to populate target genration
@@ -302,12 +319,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 		//should this be merged with above?
 		It("should deal with an eviction when allowedDisruptions > 0 ", func() {
-		By("waiting on first on reconcile")
-		controllerReconciler := &EvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Filter: &testFilter{},
-		}			// simulate previously scaled up on an eviction
+			By("waiting on first on reconcile")
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			} // simulate previously scaled up on an eviction
 			deployment := &appsv1.Deployment{}
 			err := k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
@@ -387,7 +404,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			// run it once to populate target genration
@@ -457,7 +474,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -490,7 +507,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -529,7 +546,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -569,7 +586,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
@@ -614,7 +631,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			controllerReconciler = &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
-				Filter: &testFilter{},
+				Filter: &evictionTestFilter{},
 			}
 		})
 

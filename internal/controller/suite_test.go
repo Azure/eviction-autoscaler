@@ -17,13 +17,11 @@ limitations under the License.
 package controllers
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/zap/zapcore"
@@ -38,23 +36,6 @@ import (
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	// +kubebuilder:scaffold:imports
 )
-
-// testFilter uses the real namespacefilter with opt-out mode (optin=false)
-// with kube-system in the hardcoded list.
-// This means:
-// - kube-system: enabled by default (in hardcoded list, returns !optin = !false = true)
-// - Other namespaces: disabled by default (not in hardcoded, returns optin = false)
-// - Any namespace can override via annotation
-type testFilter struct {
-	filter filter
-}
-
-func (f *testFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
-	if f.filter == nil {
-		f.filter = namespacefilter.New([]string{"kube-system"}, false) // opt-out mode with kube-system enabled
-	}
-	return f.filter.Filter(ctx, c, ns)
-}
 
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.

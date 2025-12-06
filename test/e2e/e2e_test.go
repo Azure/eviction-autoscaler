@@ -1091,7 +1091,7 @@ var _ = Describe("controller", Ordered, func() {
 				client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"},
 				client.Limit(1))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(len(pods.Items)).To(Equal(1))
+			Expect(pods.Items).To(HaveLen(1))
 			podName := pods.Items[0].Name
 
 			cmd = exec.Command("kubectl", "logs", podName, "--namespace", namespace, "--tail=50")

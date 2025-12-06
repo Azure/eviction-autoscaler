@@ -631,7 +631,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 		BeforeEach(func() {
 			// Override reconciler to use opt-in mode for non-kube-system namespaces
 			reconciler.Filter = &pdbTestFilter{}
-			
+
 			namespaceObj := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-pdb-",

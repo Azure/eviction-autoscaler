@@ -17,14 +17,142 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"os/exec"
+	"strings"
+	"text/template"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// deploymentConfig holds deployment configuration
+type deploymentConfig struct {
+	Name           string
+	Namespace      string
+	Replicas       int32
+	MaxUnavailable int
+	Annotations    map[string]string
+}
+
+// createDeployment creates a deployment with the given configuration
+func createDeployment(cfg deploymentConfig) error {
+	var maxUnavailable string
+	if cfg.MaxUnavailable == 0 {
+		maxUnavailable = "0"
+	} else {
+		maxUnavailable = fmt.Sprintf("%d", cfg.MaxUnavailable)
+	}
+
+	tmpl := `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.Name}}
+  namespace: {{.Namespace}}
+{{- if .Annotations}}
+  annotations:
+{{- range $key, $value := .Annotations}}
+    {{$key}}: "{{$value}}"
+{{- end}}
+{{- end}}
+spec:
+  replicas: {{.Replicas}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: {{.MaxUnavailable}}
+  selector:
+    matchLabels:
+      app: {{.Name}}
+  template:
+    metadata:
+      labels:
+        app: {{.Name}}
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+`
+	t, err := template.New("deployment").Parse(tmpl)
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	data := struct {
+		Name           string
+		Namespace      string
+		Replicas       int32
+		MaxUnavailable string
+		Annotations    map[string]string
+	}{
+		Name:           cfg.Name,
+		Namespace:      cfg.Namespace,
+		Replicas:       cfg.Replicas,
+		MaxUnavailable: maxUnavailable,
+		Annotations:    cfg.Annotations,
+	}
+
+	if err := t.Execute(&buf, data); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(buf.String())
+	_, err = utils.Run(cmd)
+	return err
+}
+
+// createPDB creates a PodDisruptionBudget
+func createPDB(name, namespace string, minAvailable int32, matchLabels map[string]string) error {
+	var labelsYaml strings.Builder
+	for k, v := range matchLabels {
+		labelsYaml.WriteString(fmt.Sprintf("      %s: %s\n", k, v))
+	}
+
+	pdbYaml := fmt.Sprintf(`apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  minAvailable: %d
+  selector:
+    matchLabels:
+%s`, name, namespace, minAvailable, labelsYaml.String())
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(pdbYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// waitForDeployment waits for a deployment to be ready
+func waitForDeployment(name, namespace string) error {
+	cmd := exec.Command("kubectl", "wait", "--for=condition=available",
+		fmt.Sprintf("deployment/%s", name), "--namespace", namespace, "--timeout=60s")
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteDeployment deletes a deployment
+func deleteDeployment(name, namespace string) error {
+	cmd := exec.Command("kubectl", "delete", "deployment", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+	return nil
+}
+
+// deletePDB deletes a PodDisruptionBudget
+func deletePDB(name, namespace string) error {
+	cmd := exec.Command("kubectl", "delete", "pdb", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+	return nil
+}
 
 // verifyPdbCreated checks if a PDB exists in the specified namespace with the given name
 func verifyPdbCreated(ctx context.Context, clientset client.Client, ns, name string) error {

@@ -899,21 +899,22 @@ var _ = Describe("controller", Ordered, func() {
 		It("should respect enabledByDefault and actionedNamespaces configuration", func() {
 			ctx := context.Background()
 
-			By("uninstalling the existing eviction-autoscaler to reconfigure")
-			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
-			_, _ = utils.Run(cmd)
+		By("uninstalling the existing eviction-autoscaler to reconfigure")
+		cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+		_, _ = utils.Run(cmd)
 
-			// Wait for resources to be cleaned up
-			time.Sleep(10 * time.Second)
+		// Wait for resources to be cleaned up
+		time.Sleep(10 * time.Second)
 
-			By("reinstalling eviction-autoscaler with opt-out mode (enabledByDefault=true)")
-			projectimage := "paulgmiller/k8s-pdb-autoscaler:e2e"
-			imgParts := strings.Split(projectimage, ":")
-			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
-			repo := imgParts[0]
-			tag := imgParts[1]
-
-			helmArgs := []string{
+		By("reinstalling eviction-autoscaler with opt-out mode (enabledByDefault=true)")
+		// Use the same image that was built in the first test
+		projectimage := "evictionautoscaler:e2etest"
+		imgParts := strings.Split(projectimage, ":")
+		Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+		repo := imgParts[0]
+		tag := imgParts[1]
+					
+		helmArgs := []string{
 				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
 				"--namespace", namespace, "--create-namespace",
 				"--set", fmt.Sprintf("image.repository=%s", repo),

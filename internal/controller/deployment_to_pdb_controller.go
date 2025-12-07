@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -217,20 +218,15 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.Deployment{}).
+		For(&v1.Deployment{}, builder.WithPredicates(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
+			},
+			DeleteFunc: func(e event.DeleteEvent) bool { return false },
+		})).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			ns, ok := obj.(*corev1.Namespace)
 			if !ok {
-				return nil
-			}
-
-			// Check if namespace is enabled for eviction autoscaler
-			isEnabled, err := r.Filter.Filter(ctx, r.Client, ns.Name)
-			if err != nil {
-				logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", ns.Name)
-				return nil
-			}
-			if !isEnabled {
 				return nil
 			}
 
@@ -252,12 +248,6 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return requests
 		})).
-		WithEventFilter(predicate.Funcs{
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
-			},
-			DeleteFunc: func(e event.DeleteEvent) bool { return false },
-		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership
 		Complete(r)
 }

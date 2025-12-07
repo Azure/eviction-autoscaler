@@ -141,17 +141,15 @@ func waitForDeployment(name, namespace string) error {
 }
 
 // deleteDeployment deletes a deployment
-func deleteDeployment(name, namespace string) error {
+func deleteDeployment(name, namespace string) {
 	cmd := exec.Command("kubectl", "delete", "deployment", name, "--namespace", namespace)
 	_, _ = utils.Run(cmd)
-	return nil
 }
 
 // deletePDB deletes a PodDisruptionBudget
-func deletePDB(name, namespace string) error {
+func deletePDB(name, namespace string) {
 	cmd := exec.Command("kubectl", "delete", "pdb", name, "--namespace", namespace)
 	_, _ = utils.Run(cmd)
-	return nil
 }
 
 // verifyPdbCreated checks if a PDB exists in the specified namespace with the given name

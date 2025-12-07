@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -218,19 +217,14 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&v1.Deployment{}, builder.WithPredicates(predicate.Funcs{
-			UpdateFunc: func(e event.UpdateEvent) bool {
-				return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
-			},
-			DeleteFunc: func(e event.DeleteEvent) bool { return false },
-		})).
+		For(&v1.Deployment{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			ns, ok := obj.(*corev1.Namespace)
 			if !ok {
 				return nil
 			}
 
-			// List all deployments in the namespace
+			// List all deployments in the namespace and trigger reconciliation for each
 			var deploymentList v1.DeploymentList
 			if err := r.Client.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
 				logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)
@@ -248,6 +242,19 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			}
 			return requests
 		})).
+		WithEventFilter(predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				// Only filter Deployment updates, let Namespace updates through
+				if _, ok := e.ObjectNew.(*v1.Deployment); ok {
+					return (triggerOnReplicaChange(e, logger) || triggerOnAnnotationChange(e, logger))
+				}
+				// For non-Deployment objects (like Namespace), always trigger
+				return true
+			},
+			DeleteFunc: func(e event.DeleteEvent) bool {
+				return false
+			},
+		}).
 		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership
 		Complete(r)
 }

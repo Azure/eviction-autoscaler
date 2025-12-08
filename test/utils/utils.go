@@ -75,33 +75,6 @@ func UninstallPrometheusOperator() error {
 
 }
 
-// UninstallCertManager uninstalls the cert manager
-func UninstallCertManager() error {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
-	_, err := Run(cmd)
-	return err
-}
-
-// InstallCertManager installs the cert manager bundle.
-func InstallCertManager() error {
-	url := fmt.Sprintf(certmanagerURLTmpl, certmanagerVersion)
-	cmd := exec.Command("kubectl", "apply", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		return err
-	}
-	// Wait for cert-manager-webhook to be ready, which can take time if cert-manager
-	// was re-installed after uninstalling on a cluster.
-	cmd = exec.Command("kubectl", "wait", "deployment.apps/cert-manager-webhook",
-		"--for", "condition=Available",
-		"--namespace", "cert-manager",
-		"--timeout", "5m",
-	)
-
-	_, err := Run(cmd)
-	return err
-}
-
 // LoadImageToKindCluster loads a local docker image to the kind cluster
 func LoadImageToKindClusterWithName(name, cluster string) error {
 	kindOptions := []string{"load", "docker-image", name, "--name", cluster}

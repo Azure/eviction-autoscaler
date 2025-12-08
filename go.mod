@@ -80,8 +80,6 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.0 // indirect
 )
 
-replace github.com/azure/eviction-autoscaler/config/webhook => ./config/webhook
-
 require (
 	github.com/go-logr/logr v1.4.3
 	github.com/prometheus/client_golang v1.23.2

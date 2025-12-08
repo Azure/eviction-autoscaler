@@ -26,5 +26,3 @@ go.work
 *.swo
 *~
 
-#cert generation 
-.certs

@@ -19,11 +19,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
-	"log"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -36,14 +34,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
-	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
 	_ "github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
-	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -65,7 +60,6 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
-	var evictionWebhook bool
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
@@ -76,10 +70,7 @@ func main() {
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
-		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.BoolVar(&evictionWebhook, "eviction-webhook", false,
-		"create a webhook that intercepts evictions and updates the EvictionAutoScaler, "+
-			"if false will rely on node cordon for signal")
+		"If set, HTTP/2 will be enabled for the metrics servers")
 
 	opts := zap.Options{
 		Development: true,
@@ -105,13 +96,6 @@ func main() {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}
 
-	// Configure the webhook server
-	hookServer := webhook.NewServer(webhook.Options{
-		Port:    9443,
-		CertDir: "/etc/webhook/tls",
-		TLSOpts: tlsOpts,
-	})
-	shutdown := time.Duration(-1) //wait until pod termination grace period sends sig kill or webhook shuts down
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Metrics: metricsserver.Options{
@@ -119,11 +103,9 @@ func main() {
 			SecureServing: secureMetrics,
 			TLSOpts:       tlsOpts,
 		},
-		//WebhookServer:           hookServer,
-		GracefulShutdownTimeout: &shutdown,
-		HealthProbeBindAddress:  probeAddr,
-		LeaderElection:          enableLeaderElection,
-		LeaderElectionID:        "d482b936.azure.com",
+		HealthProbeBindAddress: probeAddr,
+		LeaderElection:         enableLeaderElection,
+		LeaderElectionID:       "d482b936.azure.com",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -229,20 +211,6 @@ func main() {
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
-
-	// Register the webhook handler
-	if evictionWebhook {
-		hookServer.Register("/validate-eviction", &admission.Webhook{
-			Handler: &evictinwebhook.EvictionHandler{
-				Client: mgr.GetClient(),
-			},
-		})
-		// Add the webhook server to the manager
-		if err := mgr.Add(hookServer); err != nil {
-			log.Printf("Unable to add webhook server to manager: %v", err)
-			os.Exit(1)
-		}
-	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

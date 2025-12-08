@@ -231,7 +231,7 @@ func requeueDeploymentsOnNamespaceChange(c client.Client) handler.MapFunc {
 		// List all deployments in the namespace and trigger reconciliation for each
 		var deploymentList v1.DeploymentList
 		if err := c.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
-			//kind of a bad error as we ae going to miss cleanup theoretically
+			//kind of a bad error as we are going to miss cleanup theoretically
 			logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)
 			return nil
 		}

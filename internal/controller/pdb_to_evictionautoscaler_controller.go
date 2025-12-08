@@ -62,7 +62,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return ctrl.Result{}, err
 		}
 
-		//if we generate pdb should just annotw with owner?
+		//if we generate pdb should just annotate with owner?
 		deploymentName, e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
 			if e == errOwnerIsStatefulSet {
@@ -193,7 +193,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 		}
 	}
 
-	//so it may be the case that existing pod were ownerless or dameonset in which case we probably want to error until a real one shows up
+	// so it may be the case that existing pods were ownerless or daemonset, in which case we probably want to error until a real one shows up
 	//but stateful sets we know we don't support and will have pdbs
 	if ownerkinds["StatefulSet"] {
 		return "", errOwnerIsStatefulSet

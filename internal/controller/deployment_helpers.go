@@ -7,7 +7,7 @@ import (
 
 // HasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
 // Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
-func HasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
+func hasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
 	if deployment.Spec.Strategy.RollingUpdate == nil {
 		return false
 	}

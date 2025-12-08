@@ -53,7 +53,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test",
 					Annotations: map[string]string{
-						EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 					},
 				},
 			}
@@ -458,7 +458,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test",
 					Annotations: map[string]string{
-						EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 					},
 				},
 			}
@@ -723,7 +723,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-with-anno-",
 					Annotations: map[string]string{
-						EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 					},
 				},
 			}

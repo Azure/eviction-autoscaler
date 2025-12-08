@@ -61,7 +61,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test",
 				Annotations: map[string]string{
-					EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 				},
 			},
 		}
@@ -754,7 +754,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 			// Update namespace with annotation
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "true"}
+			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true"}
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			setupDeployment()
@@ -787,7 +787,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 			// Update namespace with annotation
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "false"}
+			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: "false"}
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			setupDeployment()

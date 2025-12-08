@@ -5,7 +5,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// HasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
+// hasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
 // Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
 func hasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
 	if deployment.Spec.Strategy.RollingUpdate == nil {

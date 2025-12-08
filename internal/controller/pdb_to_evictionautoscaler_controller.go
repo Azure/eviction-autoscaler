@@ -24,7 +24,7 @@ import (
 )
 
 var errOwnerNotFound error = fmt.Errorf("owner not found")
-var errOwnerIsStatefulSet error = fmt.Errorf("owner is Statefulset")
+var errOwnerIsStatefulSet error = fmt.Errorf("owner is StatefulSet")
 
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {

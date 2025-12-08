@@ -211,6 +211,44 @@ func triggerOnAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 	return false
 }
 
+// Watch Namespace calls this to handle dynamic enable/disable via annotations.
+// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
+// we need to reconcile all deployments in that namespace to create or delete PDBs accordingly.
+//
+// Performance Note: The List call below reads from the controller-runtime client cache,
+// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
+// automatically kept up-to-date via watches. Therefore, listing deployments is a fast
+// in-memory operation with no API server round-trip overhead. This makes it acceptable
+// to list all deployments in a namespace when its configuration changes.
+func requeueDeploymentsOnNamespaceChange(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		logger := log.FromContext(ctx)
+		ns, ok := obj.(*corev1.Namespace)
+		if !ok {
+			return nil
+		}
+
+		// List all deployments in the namespace and trigger reconciliation for each
+		var deploymentList v1.DeploymentList
+		if err := c.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
+			//kind of a bad error as we ae going to miss cleanup theoretically
+			logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)
+			return nil
+		}
+
+		var requests []reconcile.Request
+		for _, deployment := range deploymentList.Items {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Namespace: deployment.Namespace,
+					Name:      deployment.Name,
+				},
+			})
+		}
+		return requests
+	}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
@@ -218,39 +256,7 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
-		// Watch Namespace changes to handle dynamic enable/disable via annotations.
-		// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
-		// we need to reconcile all deployments in that namespace to create or delete PDBs accordingly.
-		//
-		// Performance Note: The List call below reads from the controller-runtime client cache,
-		// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
-		// automatically kept up-to-date via watches. Therefore, listing deployments is a fast
-		// in-memory operation with no API server round-trip overhead. This makes it acceptable
-		// to list all deployments in a namespace when its configuration changes.
-		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			ns, ok := obj.(*corev1.Namespace)
-			if !ok {
-				return nil
-			}
-
-			// List all deployments in the namespace and trigger reconciliation for each
-			var deploymentList v1.DeploymentList
-			if err := r.Client.List(ctx, &deploymentList, client.InNamespace(ns.Name)); err != nil {
-				logger.Error(err, "Failed to list deployments in namespace", "namespace", ns.Name)
-				return nil
-			}
-
-			var requests []reconcile.Request
-			for _, deployment := range deploymentList.Items {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: types.NamespacedName{
-						Namespace: deployment.Namespace,
-						Name:      deployment.Name,
-					},
-				})
-			}
-			return requests
-		})).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(requeueDeploymentsOnNamespaceChange(r.Client))).
 		WithEventFilter(predicate.Funcs{
 			UpdateFunc: func(e event.UpdateEvent) bool {
 				// Only filter Deployment updates, let Namespace updates through

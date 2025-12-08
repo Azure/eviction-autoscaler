@@ -17,12 +17,12 @@ import (
 // Returns true if:
 // - Deployment has pdb-create annotation set to false
 // - Deployment has non-zero maxUnavailable
-func shouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) { //error?
+func shouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 	// Check for pdb-create annotation on deployment
 	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
 		pdbcreate, err := strconv.ParseBool(val)
 		if err != nil {
-			return true, "unkownen annotation value for pdb-create annotation " + val
+			return true, "unknown annotation value for pdb-create annotation " + val
 		}
 
 		if !pdbcreate {

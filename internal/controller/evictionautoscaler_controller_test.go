@@ -203,7 +203,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Log an eviction (webhook would do this in e2e)
+			// Log an eviction
 			EvictionAutoScaler := &v1.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
@@ -291,7 +291,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Log an eviction (webhook would do this in e2e)
+			// Log an eviction
 			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
 			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
@@ -331,7 +331,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			deployment.Spec.Replicas = int32Ptr(2)
 			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
 
-			// Log an eviction (webhook would do this in e2e)
+			// Log an eviction
 			EvictionAutoScaler := &v1.EvictionAutoScaler{}
 			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())

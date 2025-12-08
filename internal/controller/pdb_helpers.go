@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/apps/v1"
@@ -19,27 +20,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
+// shouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
 // Returns true if:
 // - Deployment has pdb-create annotation set to false
 // - Deployment has non-zero maxUnavailable
-func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
+func shouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 	// Check for pdb-create annotation on deployment
 	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
-		if val == PDBCreateAnnotationFalse {
+		pdbcreate, err := strconv.ParseBool(val)
+		if err != nil {
+			return true, "unknown annotation value for pdb-create annotation " + val
+		}
+
+		if !pdbcreate {
 			return true, "pdb-create annotation set to false"
 		}
 	}
 
 	// Check if deployment has non-zero maxUnavailable
-	if HasNonZeroMaxUnavailable(deployment) {
+	if hasNonZeroMaxUnavailable(deployment) {
 		return true, "maxUnavailable != 0"
 	}
 
 	return false, ""
 }
 
-// FindPDBForDeployment finds and returns the PDB that matches the deployment's pod selector
+// findPDBForDeployment finds and returns the PDB that matches the deployment's pod selector
 // If onlyOwnedByController is true:
 //   - Returns (pdb, true, nil) if a matching PDB exists AND is owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if a matching PDB exists BUT is not owned by EvictionAutoScaler
@@ -48,7 +54,7 @@ func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 // If onlyOwnedByController is false:
 //   - Returns (pdb, true, nil) if any matching PDB exists (regardless of ownership)
 //   - Returns (nil, false, nil) if no matching PDB exists
-func FindPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment, onlyOwnedByController bool) (*policyv1.PodDisruptionBudget, bool, error) {
+func findPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment, onlyOwnedByController bool) (*policyv1.PodDisruptionBudget, bool, error) {
 	var pdbList policyv1.PodDisruptionBudgetList
 	if err := c.List(ctx, &pdbList, client.InNamespace(deployment.Namespace)); err != nil {
 		return nil, false, fmt.Errorf("failed to list PDBs: %w", err)

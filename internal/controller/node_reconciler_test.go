@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 )
 
 var _ = Describe("Node Controller", func() {
@@ -34,7 +35,7 @@ var _ = Describe("Node Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test",
 					Annotations: map[string]string{
-						EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 					},
 				},
 			}

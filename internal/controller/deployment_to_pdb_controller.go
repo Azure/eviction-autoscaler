@@ -24,10 +24,6 @@ import (
 )
 
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
-const PDBCreateAnnotationFalse = "false"
-const PDBCreateAnnotationTrue = "true"
-const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
-const EnableEvictionAutoscalerTrue = "true"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
 const ResourceTypeDeployment = "Deployment"
@@ -80,7 +76,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
 		// Clean up PDB if it exists and was created by this controller
 		// EvictionAutoScaler will be cascade deleted automatically via ownerReference
-		pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment, true)
+		pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, true)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -94,14 +90,14 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Check if PDB creation should be skipped for this deployment
-	if shouldSkip, reason := ShouldSkipPDBCreation(&deployment); shouldSkip {
+	if shouldSkip, reason := shouldSkipPDBCreation(&deployment); shouldSkip {
 		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
 			"namespace", deployment.Namespace, "reason", reason)
 		return reconcile.Result{}, nil
 	}
 
 	// Check if PDB already exists for this Deployment (any PDB, not just controller-owned)
-	pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment, false)
+	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, false)
 	if err != nil {
 		return ctrl.Result{}, err
 	}

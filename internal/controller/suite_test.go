@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/zap/zapcore"
 
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -50,7 +51,13 @@ func TestControllers(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
+	// Set up test logger with verbose output (use -v flag to see logs)
+	// Verbosity level 1 shows Info logs, higher levels show V(n) logs
+	opts := zap.Options{
+		Development: true,
+		Level:       zapcore.Level(-1), // Enable V(1) logs
+	}
+	logf.SetLogger(zap.New(zap.UseFlagOptions(&opts), zap.WriteTo(GinkgoWriter)))
 
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{

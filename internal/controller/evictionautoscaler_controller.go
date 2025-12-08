@@ -35,6 +35,7 @@ type EvictionAutoScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Filter   filter
 }
 
 const cooldown = 1 * time.Minute
@@ -45,6 +46,7 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -60,6 +62,18 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
+
+	// Check if eviction autoscaler should be enabled for this namespace
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, EvictionAutoScaler.Namespace)
+	if err != nil {
+		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", EvictionAutoScaler.Namespace)
+		return ctrl.Result{}, err
+	}
+	if !isEnabled {
+		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
+		// Don't process evictions for namespaces without the annotation
+		return ctrl.Result{}, nil
+	}
 
 	// Fetch the PDB using a 1:1 name mapping
 	pdb := &policyv1.PodDisruptionBudget{}

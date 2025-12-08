@@ -38,7 +38,7 @@ func shouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 	return false, ""
 }
 
-// FindPDBForDeployment finds and returns the PDB that matches the deployment's pod selector
+// findPDBForDeployment finds and returns the PDB that matches the deployment's pod selector
 // If onlyOwnedByController is true:
 //   - Returns (pdb, true, nil) if a matching PDB exists AND is owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if a matching PDB exists BUT is not owned by EvictionAutoScaler

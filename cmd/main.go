@@ -143,47 +143,50 @@ func main() {
 
 	// Parse ENABLED_BY_DEFAULT environment variable
 	// Controls default behavior for namespaces not in ACTIONED_NAMESPACES
-	// ENABLED_BY_DEFAULT=false (opt-in mode): namespaces disabled by default, need to opt-in
-	// ENABLED_BY_DEFAULT=true (opt-out mode): namespaces enabled by default, can opt-out
+	// ENABLED_BY_DEFAULT=false (default): namespaces disabled by default, need explicit enable
+	// ENABLED_BY_DEFAULT=true: namespaces enabled by default, can explicitly disable
 	enabledByDefaultStr := os.Getenv("ENABLED_BY_DEFAULT")
-	enabledByDefault := false // default behavior: opt-in mode
+	enabledByDefault := false // default behavior: namespaces disabled by default
 	if enabledByDefaultStr != "" {
 		var err error
 		enabledByDefault, err = strconv.ParseBool(enabledByDefaultStr)
 		if err != nil {
-			setupLog.Info("Failed to parse ENABLED_BY_DEFAULT env variable, defaulting to false", "error", err)
+			setupLog.Error(err, "Failed to parse ENABLED_BY_DEFAULT env variable")
+			os.Exit(1)
 		}
 	}
-	// optin parameter: true = opt-in mode (disabled by default), false = opt-out mode (enabled by default)
-	// When ENABLED_BY_DEFAULT=false (opt-in), optin=true
-	// When ENABLED_BY_DEFAULT=true (opt-out), optin=false
-	optin := !enabledByDefault
+	// disabledByDefault parameter: true = disabled by default (ENABLED_BY_DEFAULT=false), false = enabled by default (ENABLED_BY_DEFAULT=true)
+	// When ENABLED_BY_DEFAULT=false, disabledByDefault=true
+	// When ENABLED_BY_DEFAULT=true, disabledByDefault=false
+	disabledByDefault := !enabledByDefault
 
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
-	// These namespaces will be actioned on if opt-in is true and will be ignored if opt-in is false
+	// These namespaces will be enabled when disabledByDefault=true and will be ignored when disabledByDefault=false
 	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
-	var actionedNamespacesList []string
-	if actionedNamespacesStr != "" {
-		actionedNamespacesList = strings.Split(actionedNamespacesStr, ",")
-		// Trim whitespace from each namespace
-		for i := range actionedNamespacesList {
-			actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
-		}
+	actionedNamespacesList := strings.Split(actionedNamespacesStr, ",")
+	// Trim whitespace from each namespace
+	for i := range actionedNamespacesList {
+		actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
 	}
 
 	// Create namespace filter
-	nsfilter := namespacefilter.New(actionedNamespacesList, optin)
+    nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
 
 	setupLog.Info("Eviction autoscaler configuration",
-		"optin", optin,
+		"disabledByDefault", disabledByDefault,
+		"enabledByDefault", enabledByDefault,
 		"actionedNamespaces", actionedNamespacesList)
 
-	// Parse PDB_CREATE environment variable
+	// Parse PDB_CREATE environment variable (defaults to false if not set)
 	pdbCreateStr := os.Getenv("PDB_CREATE")
-	pdbCreate, err := strconv.ParseBool(pdbCreateStr)
-	if err != nil {
-		setupLog.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
-		pdbCreate = false
+	pdbCreate := false
+	if pdbCreateStr != "" {
+		var err error
+		pdbCreate, err = strconv.ParseBool(pdbCreateStr)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse PDB_CREATE env variable")
+			os.Exit(1)
+		}
 	}
 
 	if err = (&controllers.EvictionAutoScalerReconciler{

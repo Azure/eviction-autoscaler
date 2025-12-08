@@ -664,7 +664,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		})
 
-		// Test 2: Namespace filtering modes - opt-in vs opt-out
+		// Test 2: Namespace filtering modes - enabled_by_default configuration
 		It("should respect enabledByDefault and actionedNamespaces configuration", func() {
 			ctx := context.Background()
 
@@ -675,7 +675,7 @@ var _ = Describe("controller", Ordered, func() {
 			// Wait for resources to be cleaned up
 			time.Sleep(10 * time.Second)
 
-			By("reinstalling eviction-autoscaler with opt-out mode (enabledByDefault=true)")
+			By("reinstalling eviction-autoscaler with enabled_by_default=true (enabledByDefault=true)")
 			// Use the same image that was built in the first test
 			projectimage := "evictionautoscaler:e2etest"
 			imgParts := strings.Split(projectimage, ":")
@@ -711,14 +711,14 @@ var _ = Describe("controller", Ordered, func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Test 1: Opt-out mode - namespace without annotation should be enabled
+			// Test 1: enabled_by_default=true - namespace without annotation should be enabled
 			testNsOptOut := "test-opt-out-mode"
-			By("creating a namespace without annotation (should be enabled in opt-out mode)")
+			By("creating a namespace without annotation (should be enabled when enabled_by_default=true)")
 			cmd = exec.Command("kubectl", "create", "namespace", testNsOptOut)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a deployment in opt-out namespace")
+			By("creating a deployment in namespace with enabled_by_default=true")
 			err = createDeployment(deploymentConfig{
 				Name:           "nginx-opt-out",
 				Namespace:      testNsOptOut,
@@ -731,12 +731,12 @@ var _ = Describe("controller", Ordered, func() {
 			err = waitForDeployment("nginx-opt-out", testNsOptOut)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying PDB IS created in opt-out mode without annotation")
+			By("verifying PDB IS created when enabled_by_default=true without annotation")
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbCreated(ctx, clientset, testNsOptOut, "nginx-opt-out")
 			}, time.Minute, time.Second).Should(Succeed())
 
-			// Test 2: Opt-out mode - namespace with enable=false should be disabled
+			// Test 2: enabled_by_default=true - namespace with enable=false should be disabled
 			By("disabling the namespace with annotation enable=false")
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptOut,
 				"eviction-autoscaler.azure.com/enable=false")
@@ -748,7 +748,7 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyNoPdb(ctx, clientset, testNsOptOut, "nginx-opt-out")
 			}, time.Minute, time.Second).Should(Succeed())
 
-			// Test 3: Actioned namespace in opt-in mode - should be enabled regardless of annotation
+			// Test 3: Actioned namespace when enabled_by_default=true - should be enabled regardless of annotation
 			testNsActioned := "actioned-test"
 			By("creating the actioned-test namespace")
 			cmd = exec.Command("kubectl", "create", "namespace", testNsActioned)
@@ -768,13 +768,13 @@ var _ = Describe("controller", Ordered, func() {
 			err = waitForDeployment("nginx-actioned", testNsActioned)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying PDB IS created in actioned namespace (opt-out mode, all enabled by default)")
+			By("verifying PDB IS created in actioned namespace (enabled_by_default=true, all enabled by default)")
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbCreated(ctx, clientset, testNsActioned, "nginx-actioned")
 			}, time.Minute, time.Second).Should(Succeed())
 
-			// Test 4: Switch back to opt-in mode and verify behavior
-			By("reinstalling eviction-autoscaler with opt-in mode (enabledByDefault=false)")
+			// Test 4: Switch to enabled_by_default=false and verify behavior
+			By("reinstalling eviction-autoscaler with enabled_by_default=false (enabledByDefault=false)")
 			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
 			_, _ = utils.Run(cmd)
 			time.Sleep(10 * time.Second)
@@ -801,7 +801,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			// Test 5: Opt-in mode - namespace without annotation should be disabled
+			// Test 5: enabled_by_default=false - namespace without annotation should be disabled
 			testNsOptIn := "test-opt-in-mode"
 			By("creating a namespace without annotation (should be disabled in opt-in mode)")
 			cmd = exec.Command("kubectl", "create", "namespace", testNsOptIn)

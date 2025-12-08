@@ -19,27 +19,27 @@ import (
 )
 
 // pdbTestFilter for PDB to EvictionAutoScaler tests
-// Uses opt-in mode: namespaces with annotation=true are enabled
+// Uses disabledByDefault=true (ENABLED_BY_DEFAULT=false): namespaces with annotation=true are enabled
 type pdbTestFilter struct {
 	filter filter
 }
 
 func (f *pdbTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
 	if f.filter == nil {
-		f.filter = namespacefilter.New([]string{}, true) // opt-in: requires explicit annotation
+		f.filter = namespacefilter.New([]string{}, true) // disabledByDefault=true: requires explicit annotation
 	}
 	return f.filter.Filter(ctx, c, ns)
 }
 
 // pdbKubeSystemTestFilter for kube-system tests
-// Uses opt-out mode with kube-system enabled by default
+// Uses disabledByDefault=false (ENABLED_BY_DEFAULT=true) with kube-system in actioned list (though list is ignored when disabledByDefault=false)
 type pdbKubeSystemTestFilter struct {
 	filter filter
 }
 
 func (f *pdbKubeSystemTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
 	if f.filter == nil {
-		f.filter = namespacefilter.New([]string{"kube-system"}, false) // opt-out: kube-system enabled
+		f.filter = namespacefilter.New([]string{"kube-system"}, false) // disabledByDefault=false: kube-system (and all namespaces) enabled by default
 	}
 	return f.filter.Filter(ctx, c, ns)
 }
@@ -629,7 +629,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 
 	Context("when PDB is in non-kube-system namespace", func() {
 		BeforeEach(func() {
-			// Override reconciler to use opt-in mode for non-kube-system namespaces
+			// Override reconciler to use disabledByDefault=true for non-kube-system namespaces
 			reconciler.Filter = &pdbTestFilter{}
 
 			namespaceObj := &corev1.Namespace{

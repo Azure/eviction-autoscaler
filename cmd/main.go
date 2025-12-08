@@ -155,9 +155,9 @@ func main() {
 			os.Exit(1)
 		}
 	}
-	// disabledByDefault parameter: true = disabled by default (ENABLED_BY_DEFAULT=false), false = enabled by default (ENABLED_BY_DEFAULT=true)
-	// When ENABLED_BY_DEFAULT=false, disabledByDefault=true
-	// When ENABLED_BY_DEFAULT=true, disabledByDefault=false
+	// disabledByDefault parameter: inverse of ENABLED_BY_DEFAULT
+	// When ENABLED_BY_DEFAULT=false, disabledByDefault=true (disabled by default)
+	// When ENABLED_BY_DEFAULT=true, disabledByDefault=false (enabled by default)
 	disabledByDefault := !enabledByDefault
 
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
@@ -170,7 +170,7 @@ func main() {
 	}
 
 	// Create namespace filter
-    nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
+	nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
 
 	setupLog.Info("Eviction autoscaler configuration",
 		"disabledByDefault", disabledByDefault,

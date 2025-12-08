@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -16,6 +17,19 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// deploymentTestFilter for Deployment to PDB tests
+// Uses disabledByDefault=true (ENABLED_BY_DEFAULT=false): namespaces with annotation=true are enabled
+type deploymentTestFilter struct {
+	filter filter
+}
+
+func (f *deploymentTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{}, true) // disabledByDefault=true: requires explicit annotation
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
 
 // createDeployment is a helper function to create a deployment for testing
 func createDeployment(name, namespace, appLabel string, replicas int32, maxUnavailable *intstr.IntOrString) *appsv1.Deployment {
@@ -79,6 +93,9 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test",
+				Annotations: map[string]string{
+					EnableEvictionAutoscalerAnnotationKey: "true",
+				},
 			},
 		}
 
@@ -96,6 +113,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		r = &DeploymentToPDBReconciler{
 			Client: k8sClient, // Use the fake client
 			Scheme: s,
+			Filter: &deploymentTestFilter{},
 		}
 
 		// Define a Deployment to test using helper
@@ -360,6 +378,9 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-skip-",
+				Annotations: map[string]string{
+					EnableEvictionAutoscalerAnnotationKey: "true",
+				},
 			},
 		}
 		Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
@@ -372,6 +393,7 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		r = &DeploymentToPDBReconciler{
 			Client: k8sClient,
 			Scheme: s,
+			Filter: &deploymentTestFilter{},
 		}
 
 		// Use helper to create deployment

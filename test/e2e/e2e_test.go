@@ -17,14 +17,12 @@ limitations under the License.
 package e2e
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"text/template"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -63,51 +61,6 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
-
-// deploymentTemplate creates a deployment YAML with maxUnavailable=0
-func deploymentTemplate(name, namespace string, replicas int32) (string, error) {
-	const tmpl = `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: {{.Name}}
-  namespace: {{.Namespace}}
-spec:
-  replicas: {{.Replicas}}
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxUnavailable: 0
-  selector:
-    matchLabels:
-      app: {{.Name}}
-  template:
-    metadata:
-      labels:
-        app: {{.Name}}
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:latest
-`
-	t, err := template.New("deployment").Parse(tmpl)
-	if err != nil {
-		return "", err
-	}
-	var buf bytes.Buffer
-	data := struct {
-		Name      string
-		Namespace string
-		Replicas  int32
-	}{
-		Name:      name,
-		Namespace: namespace,
-		Replicas:  replicas,
-	}
-	if err := t.Execute(&buf, data); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
-}
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
@@ -159,7 +112,9 @@ var _ = Describe("controller", Ordered, func() {
 
 	Context("Operator", func() {
 		ctx := context.Background()
-		It("should run successfully", func() {
+
+		// Test 1: Core functionality - PDB creation, eviction handling, ownership
+		It("should manage PDB lifecycle and handle evictions correctly", func() {
 			var err error
 
 			// projectimage stores the name of the image used in the example
@@ -174,13 +129,25 @@ var _ = Describe("controller", Ordered, func() {
 			err = utils.LoadImageToKindClusterWithName(projectimage, kindClusterName)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			By("deploy nginx onto the cluster")
-			cmd = exec.Command("kubectl", "apply", "-f",
-				"test/e2e/deploy-ingress-nginx.yaml")
+			By("creating ingress-nginx namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", "ingress-nginx")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
-			// Deploy the controller using the Helm chart
+			By("annotating ingress-nginx namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "ingress-nginx",
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("deploying nginx onto the cluster using template")
+			err = createDeployment(deploymentConfig{
+				Name:           "ingress-nginx",
+				Namespace:      "ingress-nginx",
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			ExpectWithOffset(1, err).NotTo(HaveOccurred()) // Deploy the controller using the Helm chart
 			By("deploying the controller-manager with Helm")
 
 			// Split the image into repository and tag so we can
@@ -206,6 +173,12 @@ var _ = Describe("controller", Ordered, func() {
 			}
 
 			cmd = exec.Command("helm", helmArgs...)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("annotating the eviction-autoscaler namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", namespace,
+				"eviction-autoscaler.azure.com/enable=true", "--overwrite")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -476,40 +449,23 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a test deployment in the test namespace with annotation")
-			nginxTestYaml, err := deploymentTemplate("nginx-test", testNs, 1)
-			Expect(err).NotTo(HaveOccurred())
-			// Add annotation to disable PDB creation
-			nginxTestYamlStr := strings.Replace(nginxTestYaml, "name: nginx-test\n  namespace:",
-				"name: nginx-test\n  annotations:\n    eviction-autoscaler.azure.com/pdb-create: \"false\"\n  namespace:", 1)
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(nginxTestYamlStr)
+			By("annotating the test namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			verifyNoPdb := func(ns, name string) error {
-				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
-				Expect(err).NotTo(HaveOccurred())
-				for _, pdb := range pdbList.Items {
-					if pdb.Name == name {
-						return fmt.Errorf("expected no PDB for %s, but found one", name)
-					}
-				}
-				return nil
-			}
-
-			verifyPdbCreated := func(ns, name string) error {
-				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace(ns))
-				Expect(err).NotTo(HaveOccurred())
-				for _, pdb := range pdbList.Items {
-					if pdb.Name == name {
-						return nil
-					}
-				}
-				return fmt.Errorf("expected PDB for %s, but found none", name)
-			}
+			By("creating a test deployment in the test namespace with annotation")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-test",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+				Annotations: map[string]string{
+					"eviction-autoscaler.azure.com/pdb-create": "false",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
 
 			By("removing pdb-create annotation from the deployment and verifying PDB is created")
 			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", "--namespace", testNs,
@@ -517,7 +473,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNs, "nginx-test")
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the test deployment and verifying PDB is deleted")
@@ -525,20 +481,21 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, func() error {
-				return verifyNoPdb(testNs, "nginx-test")
+				return verifyNoPdb(ctx, clientset, testNs, "nginx-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("creating a new deployment with PDB to test annotation removal behavior")
-			nginxAnnotationTestYaml, err := deploymentTemplate("nginx-annotation-test", testNs, 3)
-			Expect(err).NotTo(HaveOccurred())
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(nginxAnnotationTestYaml)
-			_, err = utils.Run(cmd)
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-annotation-test",
+				Namespace:      testNs,
+				Replicas:       3,
+				MaxUnavailable: 0,
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for PDB to be created
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNs, "nginx-annotation-test")
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-annotation-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB")
@@ -556,41 +513,13 @@ var _ = Describe("controller", Ordered, func() {
 			time.Sleep(10 * time.Second)
 
 			// Verify PDB minAvailable is still 3 (not updated to 5)
-			verifyPdbMinAvailable := func(ns, name string, expectedMin int32) error {
-				var pdb policy.PodDisruptionBudget
-				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
-				if err != nil {
-					return err
-				}
-				if pdb.Spec.MinAvailable == nil {
-					return fmt.Errorf("PDB minAvailable is nil")
-				}
-				actualMin := pdb.Spec.MinAvailable.IntVal
-				if actualMin != expectedMin {
-					return fmt.Errorf("expected PDB minAvailable to be %d, got %d", expectedMin, actualMin)
-				}
-				return nil
-			}
-
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbMinAvailable(testNs, "nginx-annotation-test", 3)
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-annotation-test", 3)
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("verifying owner reference was removed from PDB after annotation removal")
-			verifyNoOwnerReference := func(ns, name string) error {
-				var pdb policy.PodDisruptionBudget
-				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
-				if err != nil {
-					return err
-				}
-				if len(pdb.OwnerReferences) > 0 {
-					return fmt.Errorf("PDB still has owner references: %v", pdb.OwnerReferences)
-				}
-				return nil
-			}
-
 			EventuallyWithOffset(1, func() error {
-				return verifyNoOwnerReference(testNs, "nginx-annotation-test")
+				return verifyNoOwnerReference(ctx, clientset, testNs, "nginx-annotation-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is NOT deleted (user has taken ownership)")
@@ -603,7 +532,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			// PDB should still exist since owner reference was removed
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNs, "nginx-annotation-test")
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-annotation-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("cleaning up the orphaned PDB")
@@ -613,33 +542,22 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("testing bidirectional ownership transfer")
 			By("creating a new deployment with PDB")
-			nginxOwnershipTestYaml, err := deploymentTemplate("nginx-ownership-test", testNs, 3)
-			Expect(err).NotTo(HaveOccurred())
-			cmd = exec.Command("kubectl", "apply", "-f", "-")
-			cmd.Stdin = strings.NewReader(nginxOwnershipTestYaml)
-			_, err = utils.Run(cmd)
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-ownership-test",
+				Namespace:      testNs,
+				Replicas:       3,
+				MaxUnavailable: 0,
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Wait for PDB to be created
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(testNs, "nginx-ownership-test")
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("verifying PDB has owner reference initially")
-			verifyHasOwnerReference := func(ns, name string) error {
-				var pdb policy.PodDisruptionBudget
-				err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb)
-				if err != nil {
-					return err
-				}
-				if len(pdb.OwnerReferences) == 0 {
-					return fmt.Errorf("PDB has no owner references")
-				}
-				return nil
-			}
-
 			EventuallyWithOffset(1, func() error {
-				return verifyHasOwnerReference(testNs, "nginx-ownership-test")
+				return verifyHasOwnerReference(ctx, clientset, testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB (user takes ownership)")
@@ -650,7 +568,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying owner reference was removed after annotation removal")
 			EventuallyWithOffset(1, func() error {
-				return verifyNoOwnerReference(testNs, "nginx-ownership-test")
+				return verifyNoOwnerReference(ctx, clientset, testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("adding ownedBy annotation back to PDB (user returns control)")
@@ -661,7 +579,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying owner reference was added back after annotation re-added")
 			EventuallyWithOffset(1, func() error {
-				return verifyHasOwnerReference(testNs, "nginx-ownership-test")
+				return verifyHasOwnerReference(ctx, clientset, testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is now deleted (controller has control again)")
@@ -671,8 +589,392 @@ var _ = Describe("controller", Ordered, func() {
 
 			// PDB should be deleted since owner reference is back
 			EventuallyWithOffset(1, func() error {
-				return verifyNoPdb(testNs, "nginx-ownership-test")
+				return verifyNoPdb(ctx, clientset, testNs, "nginx-ownership-test")
 			}, time.Minute, time.Second).Should(Succeed())
+
+			By("testing maxUnavailable behavior - deployments with maxUnavailable != 0 should not get PDBs")
+			By("creating a deployment with maxUnavailable=1")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-maxunavailable",
+				Namespace:      testNs,
+				Replicas:       3,
+				MaxUnavailable: 1,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment with maxUnavailable to be ready")
+			err = waitForDeployment("nginx-maxunavailable", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying NO PDB is created for deployment with maxUnavailable != 0")
+			time.Sleep(10 * time.Second) // Give controller time to potentially create PDB
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(ctx, clientset, testNs, "nginx-maxunavailable")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("cleaning up maxUnavailable test deployment")
+			deleteDeployment("nginx-maxunavailable", testNs)
+
+			By("testing existing PDB detection - should not create duplicate PDBs")
+			By("manually creating a PDB for a deployment")
+			err = createPDB("nginx-existing-pdb", testNs, 2, map[string]string{"app": "nginx-existing-pdb"})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment that matches the existing PDB")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-existing-pdb",
+				Namespace:      testNs,
+				Replicas:       3,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-existing-pdb", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying only ONE PDB exists (the manually created one)")
+			time.Sleep(10 * time.Second) // Give controller time to potentially create duplicate
+			var pdbList = &policy.PodDisruptionBudgetList{}
+			err = clientset.List(ctx, pdbList, client.InNamespace(testNs))
+			Expect(err).NotTo(HaveOccurred())
+
+			matchingPdbs := 0
+			for _, pdb := range pdbList.Items {
+				if pdb.Name == "nginx-existing-pdb" {
+					matchingPdbs++
+				}
+			}
+			Expect(matchingPdbs).To(Equal(1), "Expected exactly one PDB, found %d", matchingPdbs)
+
+			By("verifying the PDB was not modified by eviction-autoscaler (no ownedBy annotation)")
+			var existingPdb policy.PodDisruptionBudget
+			err = clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-existing-pdb"}, &existingPdb)
+			Expect(err).NotTo(HaveOccurred())
+			_, hasOwnedBy := existingPdb.Annotations["ownedBy"]
+			Expect(hasOwnedBy).To(BeFalse(), "Existing PDB should not have ownedBy annotation")
+
+			By("cleaning up existing PDB test resources")
+			deleteDeployment("nginx-existing-pdb", testNs)
+			deletePDB("nginx-existing-pdb", testNs)
+
+			// Cleanup test resources from first test suite
+			By("cleaning up eviction-autoscaler-test namespace")
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
+
+		// Test 2: Namespace filtering modes - enabled_by_default configuration
+		It("should respect enabledByDefault and actionedNamespaces configuration", func() {
+			ctx := context.Background()
+
+			By("uninstalling the existing eviction-autoscaler to reconfigure")
+			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+
+			// Wait for resources to be cleaned up
+			time.Sleep(10 * time.Second)
+
+			By("reinstalling eviction-autoscaler with enabled_by_default=true (enabledByDefault=true)")
+			// Use the same image that was built in the first test
+			projectimage := "evictionautoscaler:e2etest"
+			imgParts := strings.Split(projectimage, ":")
+			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+			repo := imgParts[0]
+			tag := imgParts[1]
+
+			helmArgs := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				"--set", "controllerConfig.namespaces.enabledByDefault=true",
+			}
+			cmd = exec.Command("helm", helmArgs...)
+			_, err := utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler",
+				"--namespace", namespace, "--timeout=300s")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+
+			clientset, err := client.New(config, client.Options{
+				Scheme: scheme,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Test 1: enabled_by_default=true - namespace without annotation should be enabled
+			testNsOptOut := "test-opt-out-mode"
+			By("creating a namespace without annotation (should be enabled when enabled_by_default=true)")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsOptOut)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in namespace with enabled_by_default=true")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-opt-out",
+				Namespace:      testNsOptOut,
+				Replicas:       2,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-opt-out", testNsOptOut)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created when enabled_by_default=true without annotation")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsOptOut, "nginx-opt-out")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 2: enabled_by_default=true - namespace with enable=false should be disabled
+			By("disabling the namespace with annotation enable=false")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptOut,
+				"eviction-autoscaler.azure.com/enable=false")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is deleted after setting enable=false")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(ctx, clientset, testNsOptOut, "nginx-opt-out")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 3: Actioned namespace when enabled_by_default=true - should be enabled regardless of annotation
+			testNsActioned := "actioned-test"
+			By("creating the actioned-test namespace")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsActioned)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in actioned namespace")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-actioned",
+				Namespace:      testNsActioned,
+				Replicas:       2,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-actioned", testNsActioned)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created in actioned namespace (enabled_by_default=true, all enabled by default)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsActioned, "nginx-actioned")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 4: Switch to enabled_by_default=false and verify behavior
+			By("reinstalling eviction-autoscaler with enabled_by_default=false (enabledByDefault=false)")
+			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+			time.Sleep(10 * time.Second)
+
+			helmArgsOptIn := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				"--set", "controllerConfig.namespaces.enabledByDefault=false",
+				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
+				"--set", "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
+			}
+			cmd = exec.Command("helm", helmArgsOptIn...)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler",
+				"--namespace", namespace, "--timeout=300s")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			// Test 5: enabled_by_default=false - namespace without annotation should be disabled
+			testNsOptIn := "test-opt-in-mode"
+			By("creating a namespace without annotation (should be disabled in opt-in mode)")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsOptIn)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in opt-in namespace")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-opt-in",
+				Namespace:      testNsOptIn,
+				Replicas:       2,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-opt-in", testNsOptIn)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying NO PDB is created in opt-in mode without annotation")
+			time.Sleep(10 * time.Second)
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(ctx, clientset, testNsOptIn, "nginx-opt-in")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			// Test 6: Actioned namespace in opt-in mode - should be enabled
+			By("verifying actioned-test namespace has PDB in opt-in mode")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsActioned, "nginx-actioned")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 7: kube-system should always be enabled
+			By("verifying kube-system deployment has PDB (always enabled)")
+			err = createDeployment(deploymentConfig{
+				Name:           "test-kube-opt",
+				Namespace:      "kube-system",
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready in kube-system")
+			err = waitForDeployment("test-kube-opt", "kube-system")
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created in kube-system (always enabled)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, "kube-system", "test-kube-opt")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 8: Create new deployment with annotation in opt-in mode namespace
+			testNsOptInWithAnnotation := "test-opt-in-with-anno"
+			By("creating a namespace with enable=true annotation in opt-in mode")
+			cmd = exec.Command("kubectl", "create", "namespace", testNsOptInWithAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("annotating the namespace to enable eviction autoscaler")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptInWithAnnotation,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment in opt-in namespace with annotation")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-opt-in-anno",
+				Namespace:      testNsOptInWithAnnotation,
+				Replicas:       2,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-opt-in-anno", testNsOptInWithAnnotation)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS created in opt-in mode with annotation")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 9: Dynamic annotation changes in opt-in mode
+			By("testing dynamic annotation addition to existing namespace")
+			By("annotating the opt-in namespace (that had no annotation) to enable")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptIn,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling deployment to trigger reconciliation")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in", "--replicas=3",
+				"--namespace", testNsOptIn)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB IS now created after annotation is added")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsOptIn, "nginx-opt-in")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler IS now created after annotation is added")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNsOptIn, "nginx-opt-in")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Test 10: Disabling and re-enabling via annotation
+			By("testing disable/enable annotation lifecycle")
+			By("disabling eviction autoscaler by setting annotation to false")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptInWithAnnotation,
+				"eviction-autoscaler.azure.com/enable=false", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is deleted after setting enable=false")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is deleted after setting enable=false")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoEvictionAutoScaler(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("re-enabling eviction autoscaler by setting annotation back to true")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptInWithAnnotation,
+				"eviction-autoscaler.azure.com/enable=true", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("scaling deployment to trigger reconciliation")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in-anno", "--replicas=3",
+				"--namespace", testNsOptInWithAnnotation)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is recreated after annotation is enabled again")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is recreated after annotation is enabled again")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("removing the annotation entirely")
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNsOptInWithAnnotation,
+				"eviction-autoscaler.azure.com/enable-")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is deleted after annotation is removed")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoPdb(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying EvictionAutoScaler is deleted after annotation is removed")
+			EventuallyWithOffset(1, func() error {
+				return verifyNoEvictionAutoScaler(ctx, clientset, testNsOptInWithAnnotation, "nginx-opt-in-anno")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Cleanup
+			By("cleaning up test namespaces")
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsOptOut)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsOptIn)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsActioned)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNsOptInWithAnnotation)
+			_, _ = utils.Run(cmd)
+			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-opt", "--namespace", "kube-system")
+			_, _ = utils.Run(cmd)
 
 			By("Scraping controller metrics at the end of the e2e test")
 
@@ -716,7 +1018,6 @@ var _ = Describe("controller", Ordered, func() {
 			}
 
 			Expect(scrapeMetrics()).To(Succeed())
-
 		})
 	})
 })

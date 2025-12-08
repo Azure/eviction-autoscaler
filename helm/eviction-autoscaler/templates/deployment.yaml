@@ -34,7 +34,11 @@ spec:
         imagePullPolicy: {{ .Values.image.pullPolicy }}
         env:
           - name: PDB_CREATE
-            value: {{ .Values.pdb.create | quote }}
+            value: {{ .Values.controllerConfig.pdb.create | quote }}
+          - name: ENABLED_BY_DEFAULT
+            value: {{ .Values.controllerConfig.namespaces.enabledByDefault | quote }}
+          - name: ACTIONED_NAMESPACES
+            value: {{ join "," .Values.controllerConfig.namespaces.actionedNamespaces | quote }}
         command:
         - /manager
         args:

@@ -227,6 +227,255 @@ If you want a PDB for such a deployment, you can either:
 
 This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
 
+### Namespace Control: enabled_by_default Configuration
+
+Eviction autoscaler provides flexible namespace-level control with two operational modes controlled by environment variables:
+
+#### Environment Variables
+
+- **`ENABLED_BY_DEFAULT`**: Controls the operational mode (default: `false`)
+  - `false`: Namespaces disabled by default - only specified namespaces enabled
+  - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
+- **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
+- **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
+
+#### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
+
+When `ENABLED_BY_DEFAULT=false` (the default), eviction autoscaler operates as follows:
+
+- **All namespaces are disabled by default**
+- Namespaces listed in **`ACTIONED_NAMESPACES`** are **automatically enabled**
+- Other namespaces can be **enabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "true"`
+- Namespaces in `ACTIONED_NAMESPACES` can be **overridden** with annotation `eviction-autoscaler.azure.com/enable: "false"`
+
+**Configuration via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set controllerConfig.pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=false \
+  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production","staging"]'
+```
+
+Or via values.yaml:
+
+```yaml
+controllerConfig:
+  pdb:
+    create: true
+  namespaces:
+    enabledByDefault: false  # Namespaces disabled by default (default)
+    actionedNamespaces:
+      - kube-system
+      - production
+      - staging
+```
+
+**Configuration via environment variables:**
+
+```bash
+export ENABLED_BY_DEFAULT=false
+export ACTIONED_NAMESPACES="kube-system,production,staging"
+```
+
+**Enabling a namespace when enabled_by_default=false:**
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  annotations:
+    eviction-autoscaler.azure.com/enable: "true"  # Explicitly enable
+```
+
+Or using kubectl:
+
+```bash
+kubectl annotate namespace development eviction-autoscaler.azure.com/enable=true
+```
+
+#### Mode 2: `ENABLED_BY_DEFAULT=true`
+
+When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates as follows:
+
+- **All namespaces are enabled by default**
+- **`ACTIONED_NAMESPACES` is ignored** - only annotations control which namespaces are disabled
+- Namespaces can be **disabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "false"`
+- Namespaces can be **explicitly enabled** with annotation `eviction-autoscaler.azure.com/enable: "true"` (though they're already enabled by default)
+
+**Configuration via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set controllerConfig.pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=true
+```
+
+Or via values.yaml:
+
+```yaml
+controllerConfig:
+  pdb:
+    create: true
+  namespaces:
+    enabledByDefault: true  # Namespaces enabled by default
+    actionedNamespaces: []   # Ignored when enabled_by_default=true
+```
+
+**Configuration via environment variables:**
+
+Set the environment variable `ENABLED_BY_DEFAULT=true`.
+
+**Disabling a namespace when enabled_by_default=true:**
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  annotations:
+    eviction-autoscaler.azure.com/enable: "false"  # Explicitly disable
+```
+
+Or using kubectl:
+
+```bash
+kubectl annotate namespace development eviction-autoscaler.azure.com/enable=false
+```
+
+**Enabling a namespace not in the list:**
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  annotations:
+    eviction-autoscaler.azure.com/enable: "true"  # Explicitly enable
+```
+
+#### Configuration Comparison
+
+| Mode | `ENABLED_BY_DEFAULT` | Default Behavior | `ACTIONED_NAMESPACES` | Annotation Behavior |
+|------|---------------------|------------------|----------------------|---------------------|
+| **enabled_by_default=false** (default) | `false` or unset | All disabled | These namespaces are enabled | Can enable others with `enable: "true"` or override with `enable: "false"` |
+| **enabled_by_default=true** | `true` | All enabled | Ignored | Can disable with `enable: "false"` |
+
+**Important:** Annotations always take precedence over the default behavior and the `ACTIONED_NAMESPACES` list.
+
+### Resource Cleanup and Deletion Behavior
+
+When eviction-autoscaler is disabled for a namespace (either by annotation or configuration change), resources are automatically cleaned up based on their ownership:
+
+#### Controller-Owned Resources (created by eviction-autoscaler)
+
+Resources created by eviction-autoscaler with the `ownedBy: EvictionAutoScaler` annotation are fully managed by the controller:
+
+1. **When a namespace is disabled:**
+   - The `DeploymentToPDBReconciler` detects the namespace is disabled
+   - It deletes all controller-owned PDBs in that namespace
+   - The `EvictionAutoScaler` CRs are automatically deleted by Kubernetes garbage collection (via OwnerReference)
+
+2. **When a deployment is deleted:**
+   - The PDB is automatically deleted (via OwnerReference: PDB → Deployment)
+   - The `EvictionAutoScaler` CR is automatically deleted (via OwnerReference: EvictionAutoScaler → PDB)
+
+**Example of controller-owned resources:**
+
+```bash
+# PDB created by eviction-autoscaler
+kubectl get pdb my-app -o yaml
+# metadata:
+#   annotations:
+#     ownedBy: EvictionAutoScaler
+#   ownerReferences:
+#   - apiVersion: apps/v1
+#     kind: Deployment
+#     name: my-app
+```
+
+#### User-Owned Resources (manually created)
+
+Resources created manually without the `ownedBy: EvictionAutoScaler` annotation are preserved:
+
+1. **When a namespace is disabled:**
+   - The `PDBToEvictionAutoScalerReconciler` deletes only the `EvictionAutoScaler` CR
+   - **Your manually created PDB is left intact** - eviction-autoscaler never deletes resources it doesn't own
+
+2. **When a deployment is deleted:**
+   - If the PDB has no OwnerReference (user-owned), it remains untouched
+   - Only the `EvictionAutoScaler` CR is deleted
+
+**Example of user-owned PDB:**
+
+```bash
+# User creates their own PDB
+kubectl apply -f - <<EOF
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app
+EOF
+
+# Eviction-autoscaler creates an EvictionAutoScaler CR but does NOT take ownership of the PDB
+# If namespace is disabled, only the EvictionAutoScaler CR is deleted - the PDB remains
+```
+
+#### Performance Note
+
+Namespace watches trigger reconciliation by listing all deployments/PDBs in that namespace. This is efficient because:
+- The controller-runtime client uses an **in-memory cache**
+- List operations read from cache, not the Kubernetes API server
+- No API server round-trip overhead
+- Fast local memory operations
+
+#### Example: enabled_by_default=false Configuration
+
+**Via Helm:**
+
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+  --namespace eviction-autoscaler --create-namespace \
+  --set controllerConfig.pdb.create=true \
+  --set controllerConfig.namespaces.enabledByDefault=true \
+  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production"]'
+```
+
+**Via environment variables:**
+
+Deploy with environment variables:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eviction-autoscaler
+  namespace: eviction-autoscaler
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        env:
+        - name: ENABLED_BY_DEFAULT
+          value: "true"
+        - name: ACTIONED_NAMESPACES
+          value: "kube-system,production,staging"
+        - name: PDB_CREATE
+          value: "true"
+```
+
+Deployments in `production` and `staging` namespaces will be managed by eviction autoscaler. Deployments in other namespaces (e.g., `development`, `testing`) will be ignored.
+
 ### PDB Ownership and Lifecycle Management
 
 When eviction-autoscaler creates a PodDisruptionBudget (PDB) for a deployment, it manages the PDB's lifecycle using both Kubernetes owner references and annotations:

@@ -22,6 +22,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -41,6 +42,7 @@ import (
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
 	_ "github.com/azure/eviction-autoscaler/internal/metrics"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	evictinwebhook "github.com/azure/eviction-autoscaler/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -64,6 +66,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var evictionWebhook bool
+
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -138,36 +141,80 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Parse ENABLED_BY_DEFAULT environment variable
+	// Controls default behavior for namespaces not in ACTIONED_NAMESPACES
+	// ENABLED_BY_DEFAULT=false (default): namespaces disabled by default, need explicit enable
+	// ENABLED_BY_DEFAULT=true: namespaces enabled by default, can explicitly disable
+	enabledByDefaultStr := os.Getenv("ENABLED_BY_DEFAULT")
+	enabledByDefault := false // default behavior: namespaces disabled by default
+	if enabledByDefaultStr != "" {
+		var err error
+		enabledByDefault, err = strconv.ParseBool(enabledByDefaultStr)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse ENABLED_BY_DEFAULT env variable")
+			os.Exit(1)
+		}
+	}
+	// disabledByDefault parameter: inverse of ENABLED_BY_DEFAULT
+	// When ENABLED_BY_DEFAULT=false, disabledByDefault=true (disabled by default)
+	// When ENABLED_BY_DEFAULT=true, disabledByDefault=false (enabled by default)
+	disabledByDefault := !enabledByDefault
+
+	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
+	// These namespaces will be enabled when disabledByDefault=true and will be ignored when disabledByDefault=false
+	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
+	actionedNamespacesList := strings.Split(actionedNamespacesStr, ",")
+	// Trim whitespace from each namespace
+	for i := range actionedNamespacesList {
+		actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
+	}
+
+	// Create namespace filter
+	nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
+
+	setupLog.Info("Eviction autoscaler configuration",
+		"disabledByDefault", disabledByDefault,
+		"enabledByDefault", enabledByDefault,
+		"actionedNamespaces", actionedNamespacesList)
+
+	// Parse PDB_CREATE environment variable (defaults to false if not set)
+	pdbCreateStr := os.Getenv("PDB_CREATE")
+	pdbCreate := false
+	if pdbCreateStr != "" {
+		var err error
+		pdbCreate, err = strconv.ParseBool(pdbCreateStr)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse PDB_CREATE env variable")
+			os.Exit(1)
+		}
+	}
+
 	if err = (&controllers.EvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}
-	setupLog.Info("EvictionAutoScalerReconciler  setup completed")
+	setupLog.Info("EvictionAutoScalerReconciler setup completed")
 
-	pdbcreate := os.Getenv("PDB_CREATE")
-	b, err := strconv.ParseBool(pdbcreate)
-	if err != nil {
-		setupLog.Info("Failed to parse PDB_CREATE env variable, defaulting to false", "error", err)
-		b = false
-	}
-	if b {
+	if pdbCreate {
 		if err = (&controllers.DeploymentToPDBReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
+			Filter: nsfilter,
 		}).SetupWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
 			os.Exit(1)
 		}
-		setupLog.Info("DeploymentToPDBReconciler  setup completed")
+		setupLog.Info("DeploymentToPDBReconciler setup completed")
 	}
-	
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
+		Filter: nsfilter,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

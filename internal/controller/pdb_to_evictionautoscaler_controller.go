@@ -18,6 +18,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -30,11 +31,13 @@ type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	Filter   filter
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;update;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
+// +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes EvictionAutoScalers accordingly.
 func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
@@ -58,6 +61,30 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	createdByUsStr := metrics.GetPDBCreatedByUsLabel(pdb.Annotations)
 	// Track PDB existence
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
+
+	// Check if eviction autoscaler should be enabled for this PDB
+	isEnabled, err := r.Filter.Filter(ctx, r.Client, pdb.Namespace)
+	if err != nil {
+		logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", pdb.Namespace)
+		return reconcile.Result{}, err
+	}
+	if !isEnabled {
+		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
+		// Only delete EvictionAutoScaler for user-owned PDbs
+		// Controller-owned PDbs will be deleted by DeploymentToPDBReconciler, which cascade-deletes the EvictionAutoScaler
+		isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+		if !isControllerOwned {
+			var eas types.EvictionAutoScaler
+			err = r.Get(ctx, req.NamespacedName, &eas)
+			if err == nil {
+				logger.Info("Deleting EvictionAutoScaler for user-owned PDB in disabled namespace", "eas", eas.Name)
+				if err := r.Delete(ctx, &eas); err != nil {
+					return reconcile.Result{}, client.IgnoreNotFound(err)
+				}
+			}
+		}
+		return reconcile.Result{}, nil
+	}
 
 	// If the PDB exists, create a corresponding EvictionAutoScaler if it does not exist
 	var EvictionAutoScaler types.EvictionAutoScaler
@@ -87,8 +114,8 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"createdBy": "PDBToEvictionAutoScalerController",
-					"target":    deploymentName,
+					"ownedBy": "EvictionAutoScaler",
+					"target":  deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
@@ -197,12 +224,53 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
 func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	logger := mgr.GetLogger()
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
+		// Watch Namespace changes to handle dynamic enable/disable via annotations.
+		// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
+		// we need to reconcile all PDBs in that namespace to create or delete EvictionAutoScalers accordingly.
+		//
+		// Performance Note: The List call below reads from the controller-runtime client cache,
+		// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
+		// automatically kept up-to-date via watches. Therefore, listing PDBs is a fast
+		// in-memory operation with no API server round-trip overhead.
+		//
+		// Important: We only reconcile user-owned PDBs (those without the ownedBy annotation).
+		// Controller-owned PDBs are managed by DeploymentToPDBReconciler. When a controller-owned
+		// PDB is deleted (due to namespace being disabled or deployment being deleted), its
+		// EvictionAutoScaler is automatically garbage collected by Kubernetes due to the
+		// OwnerReference from EvictionAutoScaler -> PDB.
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+			ns, ok := obj.(*corev1.Namespace)
+			if !ok {
+				return nil
+			}
+
+			// List all PDBs in the namespace
+			var pdbList policyv1.PodDisruptionBudgetList
+			if err := r.Client.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
+				logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)
+				return nil
+			}
+
+			var requests []reconcile.Request
+			for _, pdb := range pdbList.Items {
+				// Only enqueue user-owned PDBs (without ownedBy annotation)
+				isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+				if !isControllerOwned {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: k8s_types.NamespacedName{
+							Namespace: pdb.Namespace,
+							Name:      pdb.Name,
+						},
+					})
+				}
+			}
+			return requests
+		})).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
@@ -211,7 +279,10 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
-		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership
+		// Owns establishes ownership relationship between this controller and EvictionAutoScalers.
+		// This ensures that:
+		// 1. Only ONE controller (PDBToEvictionAutoScalerReconciler) manages the EvictionAutoScaler lifecycle
+		Owns(&types.EvictionAutoScaler{}).
 		Complete(r)
 }
 

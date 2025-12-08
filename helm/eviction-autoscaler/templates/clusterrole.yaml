@@ -30,6 +30,14 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - namespaces
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
   - nodes
   - pods
   verbs:
@@ -74,6 +82,7 @@ rules:
   - poddisruptionbudgets
   verbs:
   - create
+  - delete
   - get
   - list
   - update

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
@@ -16,6 +17,32 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
+
+// pdbTestFilter for PDB to EvictionAutoScaler tests
+// Uses disabledByDefault=true (ENABLED_BY_DEFAULT=false): namespaces with annotation=true are enabled
+type pdbTestFilter struct {
+	filter filter
+}
+
+func (f *pdbTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{}, true) // disabledByDefault=true: requires explicit annotation
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
+
+// pdbKubeSystemTestFilter for kube-system tests
+// Uses disabledByDefault=false (ENABLED_BY_DEFAULT=true) with kube-system in actioned list (though list is ignored when disabledByDefault=false)
+type pdbKubeSystemTestFilter struct {
+	filter filter
+}
+
+func (f *pdbKubeSystemTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
+	if f.filter == nil {
+		f.filter = namespacefilter.New([]string{"kube-system"}, false) // disabledByDefault=false: kube-system (and all namespaces) enabled by default
+	}
+	return f.filter.Filter(ctx, c, ns)
+}
 
 var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 	var (
@@ -33,6 +60,9 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test",
+				Annotations: map[string]string{
+					EnableEvictionAutoscalerAnnotationKey: "true",
+				},
 			},
 		}
 
@@ -47,6 +77,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
+			Filter: &pdbTestFilter{},
 		}
 
 		surge := intstr.FromInt(1)
@@ -285,6 +316,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 		reconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: s,
+			Filter: &pdbTestFilter{},
 		}
 
 		// Create deployment
@@ -457,5 +489,331 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			}
 		}
 		Expect(hasDeploymentOwner).To(BeTrue())
+	})
+})
+
+var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", func() {
+	var (
+		reconciler     *PDBToEvictionAutoScalerReconciler
+		namespace      string
+		deploymentName = "test-deployment"
+		ctx            context.Context
+	)
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		s := scheme.Scheme
+		Expect(appsv1.AddToScheme(s)).To(Succeed())
+		Expect(policyv1.AddToScheme(s)).To(Succeed())
+		Expect(types.AddToScheme(s)).To(Succeed())
+
+		reconciler = &PDBToEvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: s,
+			Filter: &pdbKubeSystemTestFilter{},
+		}
+	})
+
+	Context("when PDB is in kube-system namespace", func() {
+		BeforeEach(func() {
+			namespace = metav1.NamespaceSystem
+			deploymentName = "kube-system-deployment"
+
+			// Create deployment
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(2),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": deploymentName},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			// Create ReplicaSet
+			rs := &appsv1.ReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName + "-rs",
+					Namespace: namespace,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "Deployment",
+							Name:       deploymentName,
+							UID:        deployment.UID,
+						},
+					},
+				},
+				Spec: appsv1.ReplicaSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": deploymentName},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+
+			// Create Pod
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName + "-pod",
+					Namespace: namespace,
+					Labels:    map[string]string{"app": deploymentName},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       rs.Name,
+							UID:        rs.UID,
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "nginx", Image: "nginx:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		})
+
+		It("should create EvictionAutoScaler by default without annotation", func() {
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+			}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			EvictionAutoScaler := &types.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).ToNot(HaveOccurred())
+		})
+	})
+
+	Context("when PDB is in non-kube-system namespace", func() {
+		BeforeEach(func() {
+			// Override reconciler to use disabledByDefault=true for non-kube-system namespaces
+			reconciler.Filter = &pdbTestFilter{}
+
+			namespaceObj := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					GenerateName: "test-pdb-",
+				},
+			}
+			Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+			namespace = namespaceObj.Name
+		})
+
+		setupDeployment := func() {
+			// Create deployment
+			deployment := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: int32Ptr(2),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": deploymentName},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+			// Create ReplicaSet
+			rs := &appsv1.ReplicaSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName + "-rs",
+					Namespace: namespace,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "Deployment",
+							Name:       deploymentName,
+							UID:        deployment.UID,
+						},
+					},
+				},
+				Spec: appsv1.ReplicaSetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{"app": deploymentName},
+						},
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{Name: "nginx", Image: "nginx:latest"},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+
+			// Create Pod
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName + "-pod",
+					Namespace: namespace,
+					Labels:    map[string]string{"app": deploymentName},
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: "apps/v1",
+							Kind:       "ReplicaSet",
+							Name:       rs.Name,
+							UID:        rs.UID,
+						},
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{Name: "nginx", Image: "nginx:latest"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		}
+
+		It("should NOT create EvictionAutoScaler without annotation on namespace", func() {
+			setupDeployment()
+
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+			}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			EvictionAutoScaler := &types.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).To(HaveOccurred())
+		})
+
+		It("should create EvictionAutoScaler when annotation is set to true on namespace", func() {
+			// Update namespace with annotation
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "true"}
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			setupDeployment()
+
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+			}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			EvictionAutoScaler := &types.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("should NOT create EvictionAutoScaler when annotation is set to false on namespace", func() {
+			// Update namespace with annotation
+			ns := &corev1.Namespace{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
+			ns.Annotations = map[string]string{EnableEvictionAutoscalerAnnotationKey: "false"}
+			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
+
+			setupDeployment()
+
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"app": deploymentName},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			req := reconcile.Request{
+				NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+			}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).ToNot(HaveOccurred())
+
+			EvictionAutoScaler := &types.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
+			Expect(err).To(HaveOccurred())
+		})
 	})
 })

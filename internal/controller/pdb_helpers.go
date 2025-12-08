@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	v1 "k8s.io/api/apps/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -16,16 +17,21 @@ import (
 // Returns true if:
 // - Deployment has pdb-create annotation set to false
 // - Deployment has non-zero maxUnavailable
-func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
+func shouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) { //error?
 	// Check for pdb-create annotation on deployment
 	if val, ok := deployment.Annotations[PDBCreateAnnotationKey]; ok {
-		if val == PDBCreateAnnotationFalse {
+		pdbcreate, err := strconv.ParseBool(val)
+		if err != nil {
+			return true, "unkownen annotation value for pdb-create annotation " + val
+		}
+
+		if !pdbcreate {
 			return true, "pdb-create annotation set to false"
 		}
 	}
 
 	// Check if deployment has non-zero maxUnavailable
-	if HasNonZeroMaxUnavailable(deployment) {
+	if hasNonZeroMaxUnavailable(deployment) {
 		return true, "maxUnavailable != 0"
 	}
 
@@ -37,10 +43,11 @@ func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 //   - Returns (pdb, true, nil) if a matching PDB exists AND is owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if a matching PDB exists BUT is not owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if no matching PDB exists
+//
 // If onlyOwnedByController is false:
 //   - Returns (pdb, true, nil) if any matching PDB exists (regardless of ownership)
 //   - Returns (nil, false, nil) if no matching PDB exists
-func FindPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment, onlyOwnedByController bool) (*policyv1.PodDisruptionBudget, bool, error) {
+func findPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment, onlyOwnedByController bool) (*policyv1.PodDisruptionBudget, bool, error) {
 	var pdbList policyv1.PodDisruptionBudgetList
 	if err := c.List(ctx, &pdbList, client.InNamespace(deployment.Namespace)); err != nil {
 		return nil, false, fmt.Errorf("failed to list PDBs: %w", err)

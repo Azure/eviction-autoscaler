@@ -6,7 +6,6 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
-	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -229,48 +228,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
-		// Watch Namespace changes to handle dynamic enable/disable via annotations.
-		// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
-		// we need to reconcile all PDBs in that namespace to create or delete EvictionAutoScalers accordingly.
-		//
-		// Performance Note: The List call below reads from the controller-runtime client cache,
-		// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
-		// automatically kept up-to-date via watches. Therefore, listing PDBs is a fast
-		// in-memory operation with no API server round-trip overhead.
-		//
-		// Important: We only reconcile user-owned PDBs (those without the ownedBy annotation).
-		// Controller-owned PDBs are managed by DeploymentToPDBReconciler. When a controller-owned
-		// PDB is deleted (due to namespace being disabled or deployment being deleted), its
-		// EvictionAutoScaler is automatically garbage collected by Kubernetes due to the
-		// OwnerReference from EvictionAutoScaler -> PDB.
-		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
-			ns, ok := obj.(*corev1.Namespace)
-			if !ok {
-				return nil
-			}
-
-			// List all PDBs in the namespace
-			var pdbList policyv1.PodDisruptionBudgetList
-			if err := r.Client.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
-				logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)
-				return nil
-			}
-
-			var requests []reconcile.Request
-			for _, pdb := range pdbList.Items {
-				// Only enqueue user-owned PDBs (without ownedBy annotation)
-				isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
-				if !isControllerOwned {
-					requests = append(requests, reconcile.Request{
-						NamespacedName: k8s_types.NamespacedName{
-							Namespace: pdb.Namespace,
-							Name:      pdb.Name,
-						},
-					})
-				}
-			}
-			return requests
-		})).
+		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(requeuePDBsOnNamespaceChange(r.Client))).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
@@ -346,30 +304,4 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	}
 	logger.Info("No Deployment owner found")
 	return "", "", errOwnerNotFound
-}
-
-// triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
-// by comparing the ownedBy annotation between old and new PDB
-func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
-	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
-	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
-	if okOld && okNew {
-		oldVal := tryGet(oldPDB.Annotations, PDBOwnedByAnnotationKey)
-		newVal := tryGet(newPDB.Annotations, PDBOwnedByAnnotationKey)
-		if oldVal != newVal {
-			logger.Info("PDB update event detected, ownedBy annotation changed",
-				"namespace", newPDB.Namespace, "name", newPDB.Name,
-				"oldValue", oldVal, "newValue", newVal)
-			return true
-		}
-	}
-	return false
-}
-
-// tryGet safely retrieves a value from a map, returning empty string if map is nil
-func tryGet(m map[string]string, key string) string {
-	if m == nil {
-		return ""
-	}
-	return m[key]
 }

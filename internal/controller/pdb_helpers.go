@@ -4,12 +4,19 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-logr/logr"
 	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	k8s_types "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
@@ -37,6 +44,7 @@ func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 //   - Returns (pdb, true, nil) if a matching PDB exists AND is owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if a matching PDB exists BUT is not owned by EvictionAutoScaler
 //   - Returns (nil, false, nil) if no matching PDB exists
+//
 // If onlyOwnedByController is false:
 //   - Returns (pdb, true, nil) if any matching PDB exists (regardless of ownership)
 //   - Returns (nil, false, nil) if no matching PDB exists
@@ -101,4 +109,76 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 	}
 
 	return c.Create(ctx, pdb)
+}
+
+// Watch Namespace calls this to handle dynamic enable/disable via annotations.
+// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
+// we need to reconcile all PDBs in that namespace to create or delete EvictionAutoScalers accordingly.
+//
+// Performance Note: The List call below reads from the controller-runtime client cache,
+// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
+// automatically kept up-to-date via watches. Therefore, listing PDBs is a fast
+// in-memory operation with no API server round-trip overhead.
+//
+// Important: We only reconcile user-owned PDBs (those without the ownedBy annotation).
+// Controller-owned PDBs are managed by DeploymentToPDBReconciler. When a controller-owned
+// PDB is deleted (due to namespace being disabled or deployment being deleted), its
+// EvictionAutoScaler is automatically garbage collected by Kubernetes due to the
+// OwnerReference from EvictionAutoScaler -> PDB.
+func requeuePDBsOnNamespaceChange(c client.Client) handler.MapFunc {
+	return func(ctx context.Context, obj client.Object) []reconcile.Request {
+		logger := log.FromContext(ctx)
+		ns, ok := obj.(*corev1.Namespace)
+		if !ok {
+			return nil
+		}
+
+		// List all PDBs in the namespace
+		var pdbList policyv1.PodDisruptionBudgetList
+		if err := c.List(ctx, &pdbList, client.InNamespace(ns.Name)); err != nil {
+			logger.Error(err, "Failed to list PDBs in namespace", "namespace", ns.Name)
+			return nil
+		}
+
+		var requests []reconcile.Request
+		for _, pdb := range pdbList.Items {
+			// Only enqueue user-owned PDBs (without ownedBy annotation)
+			isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+			if !isControllerOwned {
+				requests = append(requests, reconcile.Request{
+					NamespacedName: k8s_types.NamespacedName{
+						Namespace: pdb.Namespace,
+						Name:      pdb.Name,
+					},
+				})
+			}
+		}
+		return requests
+	}
+}
+
+// tryGet safely retrieves a value from a map, returning empty string if map is nil
+func tryGet(m map[string]string, key string) string {
+	if m == nil {
+		return ""
+	}
+	return m[key]
+}
+
+// triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
+// by comparing the ownedBy annotation between old and new PDB
+func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
+	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
+	if okOld && okNew {
+		oldVal := tryGet(oldPDB.Annotations, PDBOwnedByAnnotationKey)
+		newVal := tryGet(newPDB.Annotations, PDBOwnedByAnnotationKey)
+		if oldVal != newVal {
+			logger.Info("PDB update event detected, ownedBy annotation changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", oldVal, "newValue", newVal)
+			return true
+		}
+	}
+	return false
 }

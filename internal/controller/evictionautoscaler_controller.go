@@ -141,7 +141,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
 	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
-	//if we're not scaled up and theres new evictions we haven't proceesed
+	//if we're not scaled up and theres new evictions we haven't processed
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		// What if the evict went through because the pod being evicted wasn't ready anyways?
 		// TODO later. Surge more slowly based on number of evictions (need to move back to capturing them all)

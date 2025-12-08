@@ -229,19 +229,23 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	// Set up the controller to watch Deployments and trigger the reconcile function
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
+		// Watch Namespace changes to handle dynamic enable/disable via annotations.
+		// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
+		// we need to reconcile all PDBs in that namespace to create or delete EvictionAutoScalers accordingly.
+		//
+		// Performance Note: The List call below reads from the controller-runtime client cache,
+		// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
+		// automatically kept up-to-date via watches. Therefore, listing PDBs is a fast
+		// in-memory operation with no API server round-trip overhead.
+		//
+		// Important: We only reconcile user-owned PDBs (those without the ownedBy annotation).
+		// Controller-owned PDBs are managed by DeploymentToPDBReconciler. When a controller-owned
+		// PDB is deleted (due to namespace being disabled or deployment being deleted), its
+		// EvictionAutoScaler is automatically garbage collected by Kubernetes due to the
+		// OwnerReference from EvictionAutoScaler -> PDB.
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			ns, ok := obj.(*corev1.Namespace)
 			if !ok {
-				return nil
-			}
-
-			// Check if namespace is enabled for eviction autoscaler
-			isEnabled, err := r.Filter.Filter(ctx, r.Client, ns.Name)
-			if err != nil {
-				logger.Error(err, "Failed to check if eviction autoscaler is enabled", "namespace", ns.Name)
-				return nil
-			}
-			if !isEnabled {
 				return nil
 			}
 
@@ -254,12 +258,16 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 
 			var requests []reconcile.Request
 			for _, pdb := range pdbList.Items {
-				requests = append(requests, reconcile.Request{
-					NamespacedName: k8s_types.NamespacedName{
-						Namespace: pdb.Namespace,
-						Name:      pdb.Name,
-					},
-				})
+				// Only enqueue user-owned PDBs (without ownedBy annotation)
+				isControllerOwned := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+				if !isControllerOwned {
+					requests = append(requests, reconcile.Request{
+						NamespacedName: k8s_types.NamespacedName{
+							Namespace: pdb.Namespace,
+							Name:      pdb.Name,
+						},
+					})
+				}
 			}
 			return requests
 		})).
@@ -271,7 +279,10 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).
-		Owns(&types.EvictionAutoScaler{}). // Watch EvictionAutoScalers for ownership
+		// Owns establishes ownership relationship between this controller and EvictionAutoScalers.
+		// This ensures that:
+		// 1. Only ONE controller (PDBToEvictionAutoScalerReconciler) manages the EvictionAutoScaler lifecycle
+		Owns(&types.EvictionAutoScaler{}).
 		Complete(r)
 }
 

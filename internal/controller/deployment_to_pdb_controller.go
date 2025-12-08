@@ -82,11 +82,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		log.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", deployment.Namespace)
 		// Clean up PDB if it exists and was created by this controller
 		// EvictionAutoScaler will be cascade deleted automatically via ownerReference
-		pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment)
+		pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment, true)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
-		if found && pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName {
+		if found {
 			log.Info("Deleting PDB for deployment in disabled namespace (EvictionAutoScaler will be cascade deleted)", "pdb", pdb.Name)
 			if err := r.Delete(ctx, pdb); err != nil {
 				return reconcile.Result{}, err
@@ -102,8 +102,8 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, nil
 	}
 
-	// Check if PDB already exists for this Deployment
-	pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment)
+	// Check if PDB already exists for this Deployment (any PDB, not just controller-owned)
+	pdb, found, err := FindPDBForDeployment(ctx, r.Client, &deployment, false)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -218,6 +218,15 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// when controller restarts everything is seen as a create event
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1.Deployment{}).
+		// Watch Namespace changes to handle dynamic enable/disable via annotations.
+		// When a namespace's eviction-autoscaler.azure.com/enable annotation changes,
+		// we need to reconcile all deployments in that namespace to create or delete PDBs accordingly.
+		//
+		// Performance Note: The List call below reads from the controller-runtime client cache,
+		// NOT directly from the Kubernetes API server. This cache is maintained in-memory and
+		// automatically kept up-to-date via watches. Therefore, listing deployments is a fast
+		// in-memory operation with no API server round-trip overhead. This makes it acceptable
+		// to list all deployments in a namespace when its configuration changes.
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
 			ns, ok := obj.(*corev1.Namespace)
 			if !ok {
@@ -255,6 +264,9 @@ func (r *DeploymentToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return false
 			},
 		}).
-		Owns(&policyv1.PodDisruptionBudget{}). // Watch PDBs for ownership
+		// Owns establishes ownership relationship between this controller and PDBs.
+		// This ensures that:
+		// 1. Only ONE controller (DeploymentToPDBReconciler) manages the PDB lifecycle
+		Owns(&policyv1.PodDisruptionBudget{}).
 		Complete(r)
 }

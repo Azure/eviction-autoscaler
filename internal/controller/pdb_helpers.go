@@ -32,26 +32,15 @@ func ShouldSkipPDBCreation(deployment *v1.Deployment) (bool, string) {
 	return false, ""
 }
 
-// HasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
-// Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
-func HasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {
-	if deployment.Spec.Strategy.RollingUpdate == nil {
-		return false
-	}
-	maxUnavailable := deployment.Spec.Strategy.RollingUpdate.MaxUnavailable
-	if maxUnavailable == nil {
-		return false
-	}
-	if maxUnavailable.Type == intstr.Int {
-		return maxUnavailable.IntVal != 0
-	}
-	// String type - check for "0" or "0%"
-	return maxUnavailable.StrVal != "0" && maxUnavailable.StrVal != "0%"
-}
-
 // FindPDBForDeployment finds and returns the PDB that matches the deployment's pod selector
-// Returns the matching PDB and true if found, or nil and false if not found
-func FindPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment) (*policyv1.PodDisruptionBudget, bool, error) {
+// If onlyOwnedByController is true:
+//   - Returns (pdb, true, nil) if a matching PDB exists AND is owned by EvictionAutoScaler
+//   - Returns (nil, false, nil) if a matching PDB exists BUT is not owned by EvictionAutoScaler
+//   - Returns (nil, false, nil) if no matching PDB exists
+// If onlyOwnedByController is false:
+//   - Returns (pdb, true, nil) if any matching PDB exists (regardless of ownership)
+//   - Returns (nil, false, nil) if no matching PDB exists
+func FindPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.Deployment, onlyOwnedByController bool) (*policyv1.PodDisruptionBudget, bool, error) {
 	var pdbList policyv1.PodDisruptionBudgetList
 	if err := c.List(ctx, &pdbList, client.InNamespace(deployment.Namespace)); err != nil {
 		return nil, false, fmt.Errorf("failed to list PDBs: %w", err)
@@ -63,9 +52,21 @@ func FindPDBForDeployment(ctx context.Context, c client.Client, deployment *v1.D
 			continue
 		}
 		if selector.Matches(labels.Set(deployment.Spec.Template.Labels)) {
-			return &pdb, true, nil
+			// Found a matching PDB
+			if onlyOwnedByController {
+				// Only return true if it's owned by EvictionAutoScaler
+				if pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName {
+					return &pdb, true, nil
+				}
+				// Matching PDB exists but is not owned by us - return false
+				return nil, false, nil
+			} else {
+				// Return any matching PDB regardless of ownership
+				return &pdb, true, nil
+			}
 		}
 	}
+	// No matching PDB found
 	return nil, false, nil
 }
 

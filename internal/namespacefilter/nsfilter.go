@@ -15,14 +15,14 @@ import (
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
 
 type nsfilter struct {
-	optin     bool
-	hardcoded []string
+	disabledByDefault bool
+	hardcoded         []string
 }
 
-func New(hardcoded []string, optin bool) *nsfilter {
+func New(hardcoded []string, disabledByDefault bool) *nsfilter {
 	return &nsfilter{
-		hardcoded: hardcoded,
-		optin:     optin,
+		hardcoded:         hardcoded,
+		disabledByDefault: disabledByDefault,
 	}
 }
 
@@ -51,17 +51,17 @@ func (n *nsfilter) Filter(ctx context.Context, c Reader, ns string) (bool, error
 		return value, nil
 	}
 
-	// if in opt-in mode (optin=true) and in hardcoded list, enable it
-	// if in opt-out mode (optin=false), hardcoded list is ignored
-	if n.optin && slices.Contains(n.hardcoded, ns) {
-		logger.Info("namespace filtering decision", "namespace", ns, "source", "hardcoded", "mode", "opt-in", "filtering", true)
+	// if namespaces are disabled by default (disabledByDefault=true) and namespace is in hardcoded list, enable it
+	// if namespaces are enabled by default (disabledByDefault=false), hardcoded list is ignored
+	if n.disabledByDefault && slices.Contains(n.hardcoded, ns) {
+		logger.Info("namespace filtering decision", "namespace", ns, "source", "hardcoded", "disabledByDefault", true, "filtering", true)
 		return true, nil
 	}
 
 	// If the namespace is not in the hardcoded list, return the default value
-	// optin=true (opt-in mode): return false (disabled by default)
-	// optin=false (opt-out mode): return true (enabled by default)
-	defaultValue := !n.optin
-	logger.Info("namespace filtering decision", "namespace", ns, "source", "default", "optin", n.optin, "filtering", defaultValue)
+	// disabledByDefault=true (ENABLED_BY_DEFAULT=false): return false (disabled by default)
+	// disabledByDefault=false (ENABLED_BY_DEFAULT=true): return true (enabled by default)
+	defaultValue := !n.disabledByDefault
+	logger.Info("namespace filtering decision", "namespace", ns, "source", "default", "disabledByDefault", n.disabledByDefault, "filtering", defaultValue)
 	return defaultValue, nil
 }

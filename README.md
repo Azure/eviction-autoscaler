@@ -227,21 +227,21 @@ If you want a PDB for such a deployment, you can either:
 
 This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
 
-### Namespace Control: Opt-In vs Opt-Out Mode
+### Namespace Control: enabled_by_default Configuration
 
 Eviction autoscaler provides flexible namespace-level control with two operational modes controlled by environment variables:
 
 #### Environment Variables
 
 - **`ENABLED_BY_DEFAULT`**: Controls the operational mode (default: `false`)
-  - `false`: Opt-in mode - only specified namespaces enabled
-  - `true`: Opt-out mode - all namespaces enabled by default
+  - `false`: Namespaces disabled by default - only specified namespaces enabled
+  - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
 
-#### Opt-In Mode (Default: `ENABLED_BY_DEFAULT=false`)
+#### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
 
-In **opt-in mode** (the default), eviction autoscaler operates as follows:
+When `ENABLED_BY_DEFAULT=false` (the default), eviction autoscaler operates as follows:
 
 - **All namespaces are disabled by default**
 - Namespaces listed in **`ACTIONED_NAMESPACES`** are **automatically enabled**
@@ -265,7 +265,7 @@ controllerConfig:
   pdb:
     create: true
   namespaces:
-    enabledByDefault: false  # Opt-in mode (default)
+    enabledByDefault: false  # Namespaces disabled by default (default)
     actionedNamespaces:
       - kube-system
       - production
@@ -279,7 +279,7 @@ export ENABLED_BY_DEFAULT=false
 export ACTIONED_NAMESPACES="kube-system,production,staging"
 ```
 
-**Enabling a namespace in opt-in mode:**
+**Enabling a namespace when enabled_by_default=false:**
 
 ```yaml
 apiVersion: v1
@@ -296,9 +296,9 @@ Or using kubectl:
 kubectl annotate namespace development eviction-autoscaler.azure.com/enable=true
 ```
 
-#### Opt-Out Mode (`ENABLED_BY_DEFAULT=true`)
+#### Mode 2: `ENABLED_BY_DEFAULT=true`
 
-When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates in **opt-out mode**:
+When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates as follows:
 
 - **All namespaces are enabled by default**
 - **`ACTIONED_NAMESPACES` is ignored** - only annotations control which namespaces are disabled
@@ -321,15 +321,15 @@ controllerConfig:
   pdb:
     create: true
   namespaces:
-    enabledByDefault: true  # Opt-out mode
-    actionedNamespaces: []   # Ignored in opt-out mode
+    enabledByDefault: true  # Namespaces enabled by default
+    actionedNamespaces: []   # Ignored when enabled_by_default=true
 ```
 
 **Configuration via environment variables:**
 
 Set the environment variable `ENABLED_BY_DEFAULT=true`.
 
-**Disabling a namespace in opt-out mode:**
+**Disabling a namespace when enabled_by_default=true:**
 
 ```yaml
 apiVersion: v1
@@ -361,12 +361,84 @@ metadata:
 
 | Mode | `ENABLED_BY_DEFAULT` | Default Behavior | `ACTIONED_NAMESPACES` | Annotation Behavior |
 |------|---------------------|------------------|----------------------|---------------------|
-| **Opt-Out** (default) | `false` or unset | All enabled | Ignored | Can disable with `enable: "false"` |
-| **Opt-In** | `true` | All disabled | These namespaces are enabled | Can enable others with `enable: "true"` or override with `enable: "false"` |
+| **enabled_by_default=false** (default) | `false` or unset | All disabled | These namespaces are enabled | Can enable others with `enable: "true"` or override with `enable: "false"` |
+| **enabled_by_default=true** | `true` | All enabled | Ignored | Can disable with `enable: "false"` |
 
 **Important:** Annotations always take precedence over the default behavior and the `ACTIONED_NAMESPACES` list.
 
-#### Example: Opt-In Mode Configuration
+### Resource Cleanup and Deletion Behavior
+
+When eviction-autoscaler is disabled for a namespace (either by annotation or configuration change), resources are automatically cleaned up based on their ownership:
+
+#### Controller-Owned Resources (created by eviction-autoscaler)
+
+Resources created by eviction-autoscaler with the `ownedBy: EvictionAutoScaler` annotation are fully managed by the controller:
+
+1. **When a namespace is disabled:**
+   - The `DeploymentToPDBReconciler` detects the namespace is disabled
+   - It deletes all controller-owned PDBs in that namespace
+   - The `EvictionAutoScaler` CRs are automatically deleted by Kubernetes garbage collection (via OwnerReference)
+
+2. **When a deployment is deleted:**
+   - The PDB is automatically deleted (via OwnerReference: PDB → Deployment)
+   - The `EvictionAutoScaler` CR is automatically deleted (via OwnerReference: EvictionAutoScaler → PDB)
+
+**Example of controller-owned resources:**
+
+```bash
+# PDB created by eviction-autoscaler
+kubectl get pdb my-app -o yaml
+# metadata:
+#   annotations:
+#     ownedBy: EvictionAutoScaler
+#   ownerReferences:
+#   - apiVersion: apps/v1
+#     kind: Deployment
+#     name: my-app
+```
+
+#### User-Owned Resources (manually created)
+
+Resources created manually without the `ownedBy: EvictionAutoScaler` annotation are preserved:
+
+1. **When a namespace is disabled:**
+   - The `PDBToEvictionAutoScalerReconciler` deletes only the `EvictionAutoScaler` CR
+   - **Your manually created PDB is left intact** - eviction-autoscaler never deletes resources it doesn't own
+
+2. **When a deployment is deleted:**
+   - If the PDB has no OwnerReference (user-owned), it remains untouched
+   - Only the `EvictionAutoScaler` CR is deleted
+
+**Example of user-owned PDB:**
+
+```bash
+# User creates their own PDB
+kubectl apply -f - <<EOF
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: my-app
+EOF
+
+# Eviction-autoscaler creates an EvictionAutoScaler CR but does NOT take ownership of the PDB
+# If namespace is disabled, only the EvictionAutoScaler CR is deleted - the PDB remains
+```
+
+#### Performance Note
+
+Namespace watches trigger reconciliation by listing all deployments/PDBs in that namespace. This is efficient because:
+- The controller-runtime client uses an **in-memory cache**
+- List operations read from cache, not the Kubernetes API server
+- No API server round-trip overhead
+- Fast local memory operations
+
+#### Example: enabled_by_default=false Configuration
 
 **Via Helm:**
 

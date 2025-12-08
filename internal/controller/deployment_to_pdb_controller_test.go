@@ -19,14 +19,14 @@ import (
 )
 
 // deploymentTestFilter for Deployment to PDB tests
-// Uses opt-in mode: namespaces with annotation=true are enabled
+// Uses disabledByDefault=true (ENABLED_BY_DEFAULT=false): namespaces with annotation=true are enabled
 type deploymentTestFilter struct {
 	filter filter
 }
 
 func (f *deploymentTestFilter) Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error) {
 	if f.filter == nil {
-		f.filter = namespacefilter.New([]string{}, true) // opt-in: requires explicit annotation
+		f.filter = namespacefilter.New([]string{}, true) // disabledByDefault=true: requires explicit annotation
 	}
 	return f.filter.Filter(ctx, c, ns)
 }

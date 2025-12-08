@@ -17,7 +17,7 @@ func init() {
 	logf.SetLogger(zap.New(zap.UseDevMode(true)))
 }
 
-// Opt-In Mode Tests (optin=true, ENABLED_BY_DEFAULT=false)
+// Mode 1: Namespaces disabled by default (disabledByDefault=true, ENABLED_BY_DEFAULT=false)
 // Default: disabled, hardcoded list enables specific namespaces
 
 func TestFilter_OptIn_NoAnnotation_NotHardcoded(t *testing.T) {
@@ -160,7 +160,7 @@ func TestFilter_OptIn_HardcodedWithAnnotationFalse(t *testing.T) {
 	}
 }
 
-// Opt-Out Mode Tests (optin=false, ENABLED_BY_DEFAULT=true)
+// Mode 2: Namespaces enabled by default (disabledByDefault=false, ENABLED_BY_DEFAULT=true)
 // Default: enabled, hardcoded list is ignored, only annotations can disable
 
 func TestFilter_OptOut_NoAnnotation(t *testing.T) {

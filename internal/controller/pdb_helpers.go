@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// ShouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
+// shouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
 // Returns true if:
 // - Deployment has pdb-create annotation set to false
 // - Deployment has non-zero maxUnavailable

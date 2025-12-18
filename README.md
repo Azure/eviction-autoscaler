@@ -77,7 +77,7 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
     ```bash
     helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
           --namespace eviction-autoscaler --create-namespace \
-          --set pdb.create=true
+          --set controllerConfig.pdb.create=true
     ```
 
 **Configuration Examples:**

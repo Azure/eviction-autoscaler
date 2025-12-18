@@ -254,6 +254,22 @@ Refer to the [extension documentation](https://github.com/azure/eviction-autosca
 
 Configuration options will be documented here in future updates. If you have suggestions, please open an issue or PR.
 
+#### Updating Controller Configuration
+
+> **Important:** When modifying controller configuration values (such as `controllerConfig.pdb.create` or `controllerConfig.namespaces.*`), you must delete and re-install the extension for the changes to take effect.
+>
+> To update configuration:
+>
+> 1. Delete the existing extension:
+>    ```bash
+>    az k8s-extension delete --resource-group <your-resource-group> \
+>      --cluster-name <your-cluster-name> \
+>      --cluster-type managedClusters \
+>      --name evictionautoscaler --yes
+>    ```
+>
+> 2. Re-install the extension with your updated configuration settings using the `az k8s-extension create` command shown above.
+
 ### Excluding Deployments from Automatic PDB Creation
 
 If you want to exclude a specific deployment from automatic PodDisruptionBudget (PDB) creation, add the following annotation to its manifest:

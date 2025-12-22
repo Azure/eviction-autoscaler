@@ -77,8 +77,26 @@ You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resourc
     ```bash
     helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
           --namespace eviction-autoscaler --create-namespace \
-          --set pdb.create=true
+          --set controllerConfig.pdb.create=true
     ```
+
+**Configuration Examples:**
+
+Enable PDB creation and specify target namespaces:
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+      --namespace eviction-autoscaler --create-namespace \
+      --set controllerConfig.pdb.create=true \
+      --set controllerConfig.namespaces.actionedNamespaces="{kube-system,default}"
+```
+
+Enable eviction-autoscaler for all namespaces by default:
+```bash
+helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
+      --namespace eviction-autoscaler --create-namespace \
+      --set controllerConfig.pdb.create=false \
+      --set controllerConfig.namespaces.enabledByDefault=true
+```
 
 > **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.
 >
@@ -169,14 +187,64 @@ az k8s-extension create \
     --extension-type microsoft.evictionautoscaler \
     --name <your-extension-name> \
     --resource-group <your-resource-group-name> \
+    --release-train stable \
+    --auto-upgrade-minor-version true
+```
+
+**With namespace configuration:**
+```bash
+az k8s-extension create \
+    --cluster-name <your-cluster-name> \
+    --cluster-type managedClusters \
+    --extension-type microsoft.evictionautoscaler \
+    --name eviction-autoscaler \
+    --resource-group <your-resource-group-name> \
+    --release-train stable \
+    --configuration-settings controllerConfig.namespaces.actionedNamespaces="{kube-system,default}" \
+    --auto-upgrade-minor-version true
+```
+
+**Cluster-wide auto-protection (enable all namespaces and auto-create PDBs):**
+```bash
+az k8s-extension create \
+    --cluster-name <your-cluster-name> \
+    --cluster-type managedClusters \
+    --extension-type microsoft.evictionautoscaler \
+    --name eviction-autoscaler \
+    --resource-group <your-resource-group-name> \
     --release-train dev \
+    --configuration-settings controllerConfig.namespaces.enabledByDefault=true controllerConfig.pdb.create=true\
     --config AgentTimeoutInMinutes=30 \
     --subscription <your-subscription-id> \
-    --version 0.1.2 \
+    --version 0.1.16 \
     --auto-upgrade-minor-version false
 ```
 
-> **Note:** The `--configuration-settings pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. Eviction-autoscaler determines whether a deployment already has a corresponding PDB by comparing the PDB’s label selector with the deployment’s pod template labels. This ensures that each deployment is protected from disruptions and avoids duplicate PDBs. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
+**Configuration Options:**
+
+- `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
+- `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
+- `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
+
+**Common Configuration Combinations:**
+
+1. **Conservative (Manual Control)** - `pdb.create=false`, `enabledByDefault=false`, `actionedNamespaces=[kube-system]`
+   - Only watches specific namespaces, requires manual PDB creation
+
+2. **Targeted Auto-Protection** - `pdb.create=true`, `enabledByDefault=false`, `actionedNamespaces=[production,staging]`
+   - Auto-creates PDBs only in specified namespaces
+   - Most common production setup - balances automation with control
+
+3. **Cluster-Wide Auto-Protection** - `pdb.create=true`, `enabledByDefault=true`
+   - Auto-creates PDBs for all deployments across all namespaces
+   - Maximum automation and protection, namespaces can opt-out with annotation `eviction-autoscaler.azure.com/enable: "false"`
+
+4. **Monitoring Only** - `pdb.create=false`, `enabledByDefault=true`
+   - Monitors all namespaces but doesn't create PDBs
+   - The `eviction-autoscaler.azure.com/pdb-create: "true"` annotation is ignored when controller-level `pdb.create=false`
+   - Good for migrating from manual PDB management
+
+> **Note:** The `--configuration-settings controllerConfig.pdb.create=true` option enables automatic creation of PodDisruptionBudgets (PDBs) for deployments that do not already have one. ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively. Eviction-autoscaler determines whether a deployment already has a corresponding PDB by comparing the PDB's label selector with the deployment's pod template labels. This ensures that each deployment is protected from disruptions and avoids duplicate PDBs. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
 > **Note:** The `--auto-upgrade-minor-version false` option is only required if you want to disable automatic minor version upgrades.
 > **Note:** The `--release-train dev` option specifies that the extension will use the "dev" release train, which typically includes the latest development builds and experimental features.  
 > Other available release train options include `stable` (recommended for production workloads) and `preview` (for pre-release features).  
@@ -185,6 +253,22 @@ az k8s-extension create \
 Refer to the [extension documentation](https://github.com/azure/eviction-autoscaler/tree/main/charts/eviction-autoscaler) for configuration options.
 
 Configuration options will be documented here in future updates. If you have suggestions, please open an issue or PR.
+
+#### Updating Controller Configuration
+
+> **Important:** When modifying controller configuration values (such as `controllerConfig.pdb.create` or `controllerConfig.namespaces.*`), you must delete and re-install the extension for the changes to take effect.
+>
+> To update configuration:
+>
+> 1. Delete the existing extension:
+>    ```bash
+>    az k8s-extension delete --resource-group <your-resource-group> \
+>      --cluster-name <your-cluster-name> \
+>      --cluster-type managedClusters \
+>      --name evictionautoscaler --yes
+>    ```
+>
+> 2. Re-install the extension with your updated configuration settings using the `az k8s-extension create` command shown above.
 
 ### Excluding Deployments from Automatic PDB Creation
 

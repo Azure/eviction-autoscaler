@@ -170,6 +170,7 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
 	if err = (&controllers.EvictionAutoScalerReconciler{
 		Client: mgr.GetClient(),

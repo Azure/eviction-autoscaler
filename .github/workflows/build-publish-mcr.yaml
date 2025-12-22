@@ -1,5 +1,10 @@
 name: Build and publish to ACR
 
+# This workflow is triggered when a version tag is pushed to the repository.
+# NOTE: For this workflow to be triggered automatically by other workflows (like manual-release-tag),
+# those workflows must use a Personal Access Token (PAT_TOKEN) instead of the default GITHUB_TOKEN.
+# See .github/WORKFLOWS.md for more details on required secrets and troubleshooting.
+
 on:
   push:
     tags:

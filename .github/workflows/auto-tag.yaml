@@ -49,8 +49,6 @@ jobs:
 
       - name: Create development tag
         if: env.do_tag == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           # Create tag with format: 0.1.0-abc1234 (based on production tag but with commit SHA)
           DEV_TAG="${{ env.latest_tag }}-${{ env.commit_sha }}"
@@ -58,5 +56,5 @@ jobs:
           git config user.name "GitHub Actions"
           git config user.email "actions@users.noreply.github.com"
           git tag $DEV_TAG
-          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} $DEV_TAG
+          git push origin $DEV_TAG
           echo "Created development tag: $DEV_TAG"

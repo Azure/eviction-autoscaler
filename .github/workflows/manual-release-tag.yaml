@@ -19,6 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Get latest production tag
         id: latesttag
@@ -69,10 +70,12 @@ jobs:
           fi
 
       - name: Create and push production tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@users.noreply.github.com"
           git tag -a "${{ env.new_tag }}" -m "Release ${{ env.new_tag }}"
-          git push origin "${{ env.new_tag }}"
+          git push https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }} "${{ env.new_tag }}"
           echo "Created production release tag: ${{ env.new_tag }}"
           echo "This will trigger the ACR build and publish workflow."

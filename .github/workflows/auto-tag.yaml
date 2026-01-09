@@ -16,6 +16,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0 # Fetch all tags
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       - name: Get latest production tag
         id: latesttag

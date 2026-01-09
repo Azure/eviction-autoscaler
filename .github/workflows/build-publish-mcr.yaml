@@ -3,13 +3,13 @@ name: Build and publish to ACR
 on:
   push:
     tags:
-      - '[0-9]+.[0-9]+.[0-9]+'  # Only trigger on clean version tags like 1.0.0, not 1.0.0-abc1234
+      - '[0-9]*.[0-9]*.[0-9]*'
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to run the workflow'
+      tag:
+        description: 'Production tag to build (e.g., 0.0.17, 1.0.0). Must match X.Y.Z format, no dev tags allowed.'
         required: true
-        default: 'main'    
+        type: string    
 
 permissions:
   contents: write
@@ -21,10 +21,23 @@ jobs:
       labels: [self-hosted, "1ES.Pool=1es-aks-eviction-autoscaler-pool-ubuntu"]
 
     steps:
+    - name: Validate tag format (manual dispatch only)
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        TAG="${{ inputs.tag }}"
+        if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "Error: Invalid tag format '$TAG'. Must be X.Y.Z (e.g., 0.0.17, 1.0.0)"
+          echo "Dev tags like 1.0.0-abc1234 are not allowed."
+          exit 1
+        fi
+        echo "Tag format validated: $TAG"
+
     - name: Checkout code
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+        token: ${{ secrets.RELEASE_TOKEN }}
 
     - name: Set up Go
       uses: actions/setup-go@v4
@@ -87,7 +100,12 @@ jobs:
     - name: 'Login to the ACR'
       env:
         RELEASE_ACR: aksmcrimagescommon #owned by aks dev infra
+        TAG_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
       run: |
         az login --identity
         az acr login -n $RELEASE_ACR
-        ./hack/release.sh
+        if [ -n "$TAG_VERSION" ]; then
+          ./hack/release.sh "$TAG_VERSION"
+        else
+          ./hack/release.sh
+        fi

@@ -13,26 +13,28 @@ repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path cha
 
 # Accept tag as optional parameter, otherwise get from git
 if [[ -n "${1:-}" ]]; then
-  latest_git_tag="$1"
-  # Validate that the provided tag matches X.Y.Z format (numeric components)
-  if [[ ! "$latest_git_tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Error: Invalid tag format '$latest_git_tag'. Expected format: X.Y.Z (e.g., 1.2.3)"
-    exit 1
-  fi
-  echo "Using provided tag: $latest_git_tag"
+  tag_to_push="$1"
+  echo "Using provided tag: $tag_to_push"
 else
   # Get the latest tag from the Git repository
-  latest_git_tag=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
+  tag_to_push=$(git tag -l '[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -n 1 || true)
 fi
 
-if [[ -z "$latest_git_tag" ]]; then
+if [[ -z "$tag_to_push" ]]; then
   echo "No new tags found - skipping release"
   exit 0
 fi
 
+# Validate tag format matches X.Y.Z (same validation as workflow)
+if ! [[ "$tag_to_push" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Error: Invalid tag format '$tag_to_push'. Must be X.Y.Z (e.g., 0.0.17, 1.0.0)"
+  echo "Dev tags like 1.0.0-abc1234 are not allowed."
+  exit 1
+fi
+
 # Use the tag as version (no 'v' prefix to remove)
-version="${latest_git_tag}"
-echo "Latest Git tag: $latest_git_tag"
+version="${tag_to_push}"
+echo "Latest Git tag: $tag_to_push"
 echo "Version: $version"
 
 # Check if this version already exists in ACR

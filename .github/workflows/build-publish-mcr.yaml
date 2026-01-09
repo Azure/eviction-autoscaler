@@ -3,13 +3,16 @@ name: Build and publish to ACR
 on:
   push:
     tags:
-      - '[0-9]*.[0-9]*.[0-9]*'
+      # Glob pattern with + quantifier - matches one or more digits per segment
+      # Strict X.Y.Z validation happens in first workflow step
+      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       tag:
         description: 'Production tag to build (e.g., 0.0.17, 1.0.0). Must match X.Y.Z format, no dev tags allowed.'
         required: true
-        type: string    
+        type: string
+        pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'    
 
 permissions:
   contents: write
@@ -21,10 +24,15 @@ jobs:
       labels: [self-hosted, "1ES.Pool=1es-aks-eviction-autoscaler-pool-ubuntu"]
 
     steps:
-    - name: Validate tag format (manual dispatch only)
-      if: github.event_name == 'workflow_dispatch'
+    - name: Validate tag format
       run: |
-        TAG="${{ inputs.tag }}"
+        if [[ "${{ github.event_name }}" == 'workflow_dispatch' ]]; then
+          TAG="${{ inputs.tag }}"
+        else
+          # Extract tag from ref (refs/tags/1.2.3 -> 1.2.3)
+          TAG="${GITHUB_REF#refs/tags/}"
+        fi
+        
         if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
           echo "Error: Invalid tag format '$TAG'. Must be X.Y.Z (e.g., 0.0.17, 1.0.0)"
           echo "Dev tags like 1.0.0-abc1234 are not allowed."
@@ -36,6 +44,8 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        # When manually dispatched: checkout the specific tag provided by user
+        # When triggered by tag push: github.ref already contains the pushed tag
         ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
         token: ${{ secrets.RELEASE_TOKEN }}
 
@@ -100,6 +110,8 @@ jobs:
     - name: 'Login to the ACR'
       env:
         RELEASE_ACR: aksmcrimagescommon #owned by aks dev infra
+        # When manually dispatched: pass the user-provided tag to release.sh
+        # When triggered by tag push: leave empty so release.sh auto-detects from git
         TAG_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
       run: |
         az login --identity

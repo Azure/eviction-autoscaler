@@ -100,7 +100,7 @@ jobs:
     - name: 'Login to the ACR'
       env:
         RELEASE_ACR: aksmcrimagescommon #owned by aks dev infra
-        TAG_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+        TAG_VERSION: ${{ inputs.tag || github.ref_name }}
       run: |
         az login --identity
         az acr login -n $RELEASE_ACR

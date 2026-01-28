@@ -52,6 +52,12 @@ controllerConfig:
 serviceAccount:
   annotations: {}
 
+# Node selector for scheduling
+nodeSelector: {}
+
+# Tolerations for scheduling
+tolerations: []
+
 # =============================================================================
 # INTERNAL CONFIGURATION - Fixed settings with sensible defaults
 # These are not intended for user customization

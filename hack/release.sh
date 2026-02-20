@@ -9,6 +9,8 @@ commit_sha="$(git rev-parse HEAD)"
 RELEASE_ACR="${RELEASE_ACR:-aksmcrimagescommon}"
 RELEASE_ACR_FQDN="${RELEASE_ACR}.azurecr.io"
 IMAGE_REPO="${RELEASE_ACR_FQDN}/public/aks/eviction-autoscaler"
+RELEASE_PLATFORMS="${RELEASE_PLATFORMS:-linux/amd64,linux/arm64}"
+BUILDX_BUILDER="${BUILDX_BUILDER:-eviction-autoscaler-release-builder}"
 repo_path="public/aks/eviction-autoscaler"  # adjust if your ko publish path changes
 
 # Accept tag as optional parameter, otherwise get from git
@@ -56,13 +58,25 @@ echo "ACR: $RELEASE_ACR"
 epoch_ts="$(git_epoch)"
 build_dt="$(build_date "$epoch_ts")"
 
-echo "Building and publishing controller image with Docker..."
-docker build -t "${IMAGE_REPO}:${version}" .
-docker push "${IMAGE_REPO}:${version}"
+echo "Building and publishing multi-arch controller image with Docker buildx..."
+echo "Platforms: ${RELEASE_PLATFORMS}"
+BUILDX_BUILDER_CREATED=false
+if ! docker buildx inspect "${BUILDX_BUILDER}" >/dev/null 2>&1; then
+  docker buildx create --name "${BUILDX_BUILDER}" --use
+  BUILDX_BUILDER_CREATED=true
+fi
+docker buildx use "${BUILDX_BUILDER}"
+docker buildx build --platform "${RELEASE_PLATFORMS}" -t "${IMAGE_REPO}:${version}" --push .
 IMG="${IMAGE_REPO}:${version}"
-echo "Image pushed: $IMG"
+img_digest="$(crane digest "$IMG")"
+IMG_REF="${IMAGE_REPO}@${img_digest}"
+echo "Image pushed: ${IMG_REF}"
 
-trivy_scan "$IMG"
+echo "Verifying manifest contains amd64 and arm64..."
+docker buildx imagetools inspect "$IMG" | grep -E "linux/(amd64|arm64)"
+
+trivy_scan "$IMG_REF"
+cosign_sign "$IMG_REF" "$version" "$commit_sha" "$build_dt"
 
 img_repo="$(echo "$IMG" | cut -d '@' -f 1)"
 img_path="$(echo "$img_repo" | cut -d "/" -f 2-)"
@@ -91,4 +105,10 @@ cosign sign "${IMAGE_REPO}/helm/eviction-autoscaler@${chart_digest}" --yes
 rm -f "$chart_pkg"
 
 lock_image "$RELEASE_ACR" "$img_path"
+
+if [[ "$BUILDX_BUILDER_CREATED" == "true" ]]; then
+  echo "Cleaning up buildx builder: ${BUILDX_BUILDER}"
+  docker buildx rm "${BUILDX_BUILDER}" >/dev/null 2>&1 || echo "Warning: failed to remove builder ${BUILDX_BUILDER}"
+fi
+
 echo "Release complete: $version"

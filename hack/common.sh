@@ -46,7 +46,9 @@ trivy_scan() {
   # Use GitHub Container Registry for Trivy DB to avoid mirror.gcr.io errors
   export TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db"
 
-  trivy image --ignore-unfixed --exit-code 1 --no-progress "$image"
+  # Multi-arch: scan both variants explicitly
+  trivy image --platform linux/amd64 --ignore-unfixed --exit-code 1 --no-progress "$image"
+  trivy image --platform linux/arm64 --ignore-unfixed --exit-code 1 --no-progress "$image"
 }
 
 inject_mcr_image() {

@@ -36,6 +36,7 @@ lock_image() {
 
 trivy_scan() {
   local image="$1"
+  local platforms="${2:-linux/amd64,linux/arm64}"
 
   echo "Scanning image with Trivy: $image"
   if ! command -v trivy &>/dev/null; then

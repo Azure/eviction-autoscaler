@@ -625,7 +625,8 @@ make docker-buildx \
 
 Notes:
 - `docker-buildx` pushes directly to the registry (`--push`), so `IMG` must be a pushable image reference.
-- If `PLATFORMS` is omitted, it defaults to `linux/arm64,linux/amd64,linux/s390x,linux/ppc64le`.
+- For the `docker-buildx` Makefile target, if `PLATFORMS` is omitted, it defaults to `linux/arm64,linux/amd64,linux/s390x,linux/ppc64le`.
+- In `hack/release.sh`, if `RELEASE_PLATFORMS` is omitted, it defaults to `linux/amd64,linux/arm64`.
 
 ```bash
 kubectl create ns laboratory

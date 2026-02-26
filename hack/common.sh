@@ -36,6 +36,7 @@ lock_image() {
 
 trivy_scan() {
   local image="$1"
+  local platforms="${2:-linux/amd64,linux/arm64}"
 
   echo "Scanning image with Trivy: $image"
   if ! command -v trivy &>/dev/null; then
@@ -46,7 +47,9 @@ trivy_scan() {
   # Use GitHub Container Registry for Trivy DB to avoid mirror.gcr.io errors
   export TRIVY_DB_REPOSITORY="ghcr.io/aquasecurity/trivy-db"
 
-  trivy image --ignore-unfixed --exit-code 1 --no-progress "$image"
+  # Multi-arch: scan both variants explicitly
+  trivy image --platform linux/amd64 --ignore-unfixed --exit-code 1 --no-progress "$image"
+  trivy image --platform linux/arm64 --ignore-unfixed --exit-code 1 --no-progress "$image"
 }
 
 inject_mcr_image() {

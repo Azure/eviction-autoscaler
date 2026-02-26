@@ -613,6 +613,21 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 
 ## Usage
 
+### Build and Push Multi-Arch Image
+
+Use `docker buildx` through the Make target to build and push a manifest image for multiple architectures.
+
+```bash
+make docker-buildx \
+  IMG=<registry>/<repo>/eviction-autoscaler:<tag> \
+  PLATFORMS=linux/amd64,linux/arm64
+```
+
+Notes:
+- `docker-buildx` pushes directly to the registry (`--push`), so `IMG` must be a pushable image reference.
+- For the `docker-buildx` Makefile target, if `PLATFORMS` is omitted, it defaults to `linux/arm64,linux/amd64,linux/s390x,linux/ppc64le`.
+- In `hack/release.sh`, if `RELEASE_PLATFORMS` is omitted, it defaults to `linux/amd64,linux/arm64`.
+
 ```bash
 kubectl create ns laboratory
 kubectl create deployment -n laboratory piggie --image nginx

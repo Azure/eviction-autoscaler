@@ -129,7 +129,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// If we were surged and the target changed externally
 		// Note: does not handle the case where an external scale happens while a surge is still active
 		// (e.g., user changes replicas mid-surge). We simply revert and reset to the new baseline.
-		if EvictionAutoScaler.Status.TargetGeneration != 0 && surgeApplier.IsSurged() {
+		if EvictionAutoScaler.Status.TargetGeneration != 0 && target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
 			if revertErr := surgeApplier.RevertSurge(ctx, r.Client, target.GetReplicas()); revertErr != nil {
 				logger.Error(revertErr, "failed to revert surge on target generation change")
 				return ctrl.Result{}, revertErr
@@ -160,7 +160,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
 	//if we're not scaled up and theres new evictions we haven't processed
-	if pdb.Status.DisruptionsAllowed == 0 && !surgeApplier.IsSurged() {
+	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		// What if the evict went through because the pod being evicted wasn't ready anyways?
 		// TODO later. Surge more slowly based on number of evictions (need to move back to capturing them all)
 		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name())
@@ -204,7 +204,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	//still at a scaled out state check if we can scale back down
-	if surgeApplier.IsSurged() {
+	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
 
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()

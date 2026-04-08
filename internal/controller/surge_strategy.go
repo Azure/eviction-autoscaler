@@ -25,9 +25,6 @@ const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original
 // This ensures that on retry after a crash between the two writes, the controller can detect
 // the incomplete state and re-drive the operation to completion.
 type SurgeApplier interface {
-	// IsSurged returns true if the controller has already applied a surge.
-	// Checks the evictionSurgeReplicas annotation on the target (deployment/statefulset).
-	IsSurged() bool
 	// ApplySurge sets the minimum replica count to surgeReplicas
 	ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error
 	// RevertSurge restores the original minimum replica count.
@@ -49,24 +46,41 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 	if err != nil {
 		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 	}
+
+	// 2. Check for standalone HPA targeting this workload
+	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+	if err != nil {
+		return nil, fmt.Errorf("checking for HPA: %w", err)
+	}
+
+	// 3. If both KEDA and standalone HPA exist, surge both to avoid the HPA blocking scale-up
+	if scaledObj != nil && hpa != nil {
+		logger.Info("Found both KEDA ScaledObject and standalone HPA for target, using composite surge strategy",
+			"scaledObject", scaledObj.GetName(), "hpa", hpa.Name, "target", targetName)
+		return &CompositeSurgeApplier{
+			appliers: []SurgeApplier{
+				&KEDASurgeApplier{scaledObject: scaledObj, target: target},
+				&HPASurgeApplier{hpa: hpa, target: target},
+			},
+			target: target,
+		}, nil
+	}
+
+	// 4. KEDA only
 	if scaledObj != nil {
 		logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
 			"scaledObject", scaledObj.GetName(), "target", targetName)
 		return &KEDASurgeApplier{scaledObject: scaledObj, target: target}, nil
 	}
 
-	// 2. Check for HPA targeting this workload
-	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil {
-		return nil, fmt.Errorf("checking for HPA: %w", err)
-	}
+	// 5. HPA only
 	if hpa != nil {
 		logger.Info("Found HPA for target, using HPA surge strategy",
 			"hpa", hpa.Name, "target", targetName)
 		return &HPASurgeApplier{hpa: hpa, target: target}, nil
 	}
 
-	// 3. Fall back to direct deployment/statefulset replica management
+	// 6. Fall back to direct deployment/statefulset replica management
 	logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
 	return &DeploymentSurgeApplier{target: target}, nil
 }
@@ -149,6 +163,27 @@ func isKEDAManagedHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) bool {
 	return false
 }
 
+// hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation
+// with the expected value. Used internally by appliers to avoid redundant writes in composite mode.
+func hasTargetAnnotationWithValue(target Surger, value string) bool {
+	annotations := target.Obj().GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	v, exists := annotations[EvictionSurgeReplicasAnnotationKey]
+	return exists && v == value
+}
+
+// hasTargetAnnotation checks if the target has the evictionSurgeReplicas annotation (any value).
+func hasTargetAnnotation(target Surger) bool {
+	annotations := target.Obj().GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
+	return exists
+}
+
 // --- DeploymentSurgeApplier ---
 // Surges by modifying the deployment/statefulset spec.replicas directly.
 // This is the default strategy when no KEDA or HPA is present.
@@ -158,15 +193,6 @@ type DeploymentSurgeApplier struct {
 }
 
 var _ SurgeApplier = &DeploymentSurgeApplier{}
-
-func (d *DeploymentSurgeApplier) IsSurged() bool {
-	annotations := d.target.Obj().GetAnnotations()
-	if annotations == nil {
-		return false
-	}
-	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
-	return exists
-}
 
 func (d *DeploymentSurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
 	d.target.SetReplicas(surgeReplicas)
@@ -194,26 +220,21 @@ type HPASurgeApplier struct {
 
 var _ SurgeApplier = &HPASurgeApplier{}
 
-func (h *HPASurgeApplier) IsSurged() bool {
-	annotations := h.target.Obj().GetAnnotations()
-	if annotations == nil {
-		return false
-	}
-	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
-	return exists
-}
-
 func (h *HPASurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
 	logger := log.FromContext(ctx)
 
 	// Step 1: Annotate the target first as intent marker.
 	// If we crash after this but before updating the HPA, the next reconcile
 	// will see the annotation and re-drive the HPA update.
-	h.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(surgeReplicas), 10))
-	if err := c.Update(ctx, h.target.Obj()); err != nil {
-		return fmt.Errorf("annotating target with surge intent: %w", err)
+	// Skip if already annotated (e.g., by another applier in a composite).
+	surgeVal := strconv.FormatInt(int64(surgeReplicas), 10)
+	if !hasTargetAnnotationWithValue(h.target, surgeVal) {
+		h.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, surgeVal)
+		if err := c.Update(ctx, h.target.Obj()); err != nil {
+			return fmt.Errorf("annotating target with surge intent: %w", err)
+		}
+		logger.V(1).Info("Annotated target with surge intent", "replicas", surgeReplicas)
 	}
-	logger.V(1).Info("Annotated target with surge intent", "replicas", surgeReplicas)
 
 	// Step 2: Update HPA minReplicas
 	hpa := h.hpa.DeepCopy()
@@ -250,9 +271,14 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ in
 	}
 	logger.V(1).Info("Reverted HPA minReplicas")
 
-	// Step 2: Remove surge annotation from target
-	h.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
-	return c.Update(ctx, h.target.Obj())
+	// Step 2: Remove surge annotation from target (skip if already removed by another applier)
+	if hasTargetAnnotation(h.target) {
+		h.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
+		if err := c.Update(ctx, h.target.Obj()); err != nil {
+			return fmt.Errorf("removing surge annotation from target: %w", err)
+		}
+	}
+	return nil
 }
 
 func (h *HPASurgeApplier) Name() string {
@@ -269,24 +295,19 @@ type KEDASurgeApplier struct {
 
 var _ SurgeApplier = &KEDASurgeApplier{}
 
-func (k *KEDASurgeApplier) IsSurged() bool {
-	annotations := k.target.Obj().GetAnnotations()
-	if annotations == nil {
-		return false
-	}
-	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
-	return exists
-}
-
 func (k *KEDASurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
 	logger := log.FromContext(ctx)
 
 	// Step 1: Annotate the target first as intent marker.
-	k.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(surgeReplicas), 10))
-	if err := c.Update(ctx, k.target.Obj()); err != nil {
-		return fmt.Errorf("annotating target with surge intent: %w", err)
+	// Skip if already annotated (e.g., by another applier in a composite).
+	surgeVal := strconv.FormatInt(int64(surgeReplicas), 10)
+	if !hasTargetAnnotationWithValue(k.target, surgeVal) {
+		k.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, surgeVal)
+		if err := c.Update(ctx, k.target.Obj()); err != nil {
+			return fmt.Errorf("annotating target with surge intent: %w", err)
+		}
+		logger.V(1).Info("Annotated target with surge intent", "replicas", surgeReplicas)
 	}
-	logger.V(1).Info("Annotated target with surge intent", "replicas", surgeReplicas)
 
 	// Step 2: Update ScaledObject minReplicaCount
 	obj := k.scaledObject.DeepCopy()
@@ -336,11 +357,56 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ i
 	}
 	logger.V(1).Info("Reverted ScaledObject minReplicaCount")
 
-	// Step 2: Remove surge annotation from target
-	k.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
-	return c.Update(ctx, k.target.Obj())
+	// Step 2: Remove surge annotation from target (skip if already removed by another applier)
+	if hasTargetAnnotation(k.target) {
+		k.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
+		if err := c.Update(ctx, k.target.Obj()); err != nil {
+			return fmt.Errorf("removing surge annotation from target: %w", err)
+		}
+	}
+	return nil
 }
 
 func (k *KEDASurgeApplier) Name() string {
 	return "keda"
+}
+
+// --- CompositeSurgeApplier ---
+// Surges multiple resources (e.g., both KEDA ScaledObject and standalone HPA) when both
+// target the same workload. This prevents the standalone HPA from blocking scale-up when
+// only the ScaledObject is surged, or vice versa.
+// The target annotation (evictionSurgeReplicas) is written once by the first applier;
+// subsequent appliers skip re-annotating the target to avoid duplicate writes.
+
+type CompositeSurgeApplier struct {
+	appliers []SurgeApplier
+	target   Surger
+}
+
+var _ SurgeApplier = &CompositeSurgeApplier{}
+
+func (comp *CompositeSurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
+	for _, applier := range comp.appliers {
+		if err := applier.ApplySurge(ctx, c, surgeReplicas); err != nil {
+			return fmt.Errorf("composite surge (%s): %w", applier.Name(), err)
+		}
+	}
+	return nil
+}
+
+func (comp *CompositeSurgeApplier) RevertSurge(ctx context.Context, c client.Client, originalMinReplicas int32) error {
+	for _, applier := range comp.appliers {
+		if err := applier.RevertSurge(ctx, c, originalMinReplicas); err != nil {
+			return fmt.Errorf("composite revert (%s): %w", applier.Name(), err)
+		}
+	}
+	return nil
+}
+
+func (comp *CompositeSurgeApplier) Name() string {
+	names := make([]string, len(comp.appliers))
+	for i, a := range comp.appliers {
+		names[i] = a.Name()
+	}
+	return "composite(" + strings.Join(names, "+") + ")"
 }

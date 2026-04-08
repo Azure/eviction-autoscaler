@@ -148,6 +148,9 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              surgeStartTime:
+                format: date-time
+                type: string
             required:
             - deploymentGeneration
             - minReplicas

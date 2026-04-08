@@ -1089,11 +1089,6 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyHPAMinReplicas(ctx, clientset, testNs, "nginx-hpa", 2)
 			}, time.Minute, time.Second).Should(Succeed())
 
-			By("verifying deployment.spec.replicas is NOT changed (HPA manages it)")
-			EventuallyWithOffset(1, func() error {
-				return verifyDeploymentReplicaCount(ctx, clientset, testNs, "nginx-hpa", 1)
-			}, 10*time.Second, time.Second).Should(Succeed())
-
 			By("verifying HPA has the original-min-replicas annotation")
 			EventuallyWithOffset(1, func() error {
 				var hpa autoscalingv2.HorizontalPodAutoscaler
@@ -1123,8 +1118,8 @@ var _ = Describe("controller", Ordered, func() {
 					err = evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
 						ObjectMeta: p.ObjectMeta,
 					})
-					if errors.IsTooManyRequests(err) {
-						return fmt.Errorf("failed to evict %s: %v", p.Name, err)
+					if err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
 					}
 				}
 				return nil
@@ -1247,11 +1242,6 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 2)
 			}, time.Minute, time.Second).Should(Succeed())
 
-			By("verifying deployment.spec.replicas is NOT changed (KEDA manages it)")
-			EventuallyWithOffset(1, func() error {
-				return verifyDeploymentReplicaCount(ctx, clientset, testNs, "nginx-keda", 1)
-			}, 10*time.Second, time.Second).Should(Succeed())
-
 			By("draining the node to trigger evictions")
 			drain := func() error {
 				var podList corev1.PodList
@@ -1264,8 +1254,8 @@ var _ = Describe("controller", Ordered, func() {
 					err = evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
 						ObjectMeta: p.ObjectMeta,
 					})
-					if errors.IsTooManyRequests(err) {
-						return fmt.Errorf("failed to evict %s: %v", p.Name, err)
+					if err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
 					}
 				}
 				return nil

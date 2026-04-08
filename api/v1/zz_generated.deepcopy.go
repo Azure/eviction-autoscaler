@@ -116,6 +116,10 @@ func (in *EvictionAutoScalerSpec) DeepCopy() *EvictionAutoScalerSpec {
 func (in *EvictionAutoScalerStatus) DeepCopyInto(out *EvictionAutoScalerStatus) {
 	*out = *in
 	in.LastEviction.DeepCopyInto(&out.LastEviction)
+	if in.SurgeStartTime != nil {
+		in, out := &in.SurgeStartTime, &out.SurgeStartTime
+		*out = (*in).DeepCopy()
+	}
 	if in.Conditions != nil {
 		in, out := &in.Conditions, &out.Conditions
 		*out = make([]metav1.Condition, len(*in))

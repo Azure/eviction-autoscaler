@@ -176,6 +176,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+		// Record surge start time for surge-to-ready metric
+		now := metav1.Now()
+		EvictionAutoScaler.Status.SurgeStartTime = &now
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -186,6 +189,26 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	//Cool down time makes sure we're not still getting more evictions
 	//we could substantially reduce this if we looked at pods and knew that none remaining (not already evicted) had been an eviction target but that means tracking more data in EvictionAutoScaler
 	// or using pod conditons which we're not doing.....yet
+
+	// Observe surge-to-drain-unblocked time: surge is complete when all desired replicas
+	// are ready AND the PDB allows disruptions again (drain is truly unblocked).
+	if EvictionAutoScaler.Status.SurgeStartTime != nil && target.GetReadyReplicas() >= target.GetReplicas() && pdb.Status.DisruptionsAllowed > 0 {
+		surgeToReadySecs := time.Since(EvictionAutoScaler.Status.SurgeStartTime.Time).Seconds()
+		metrics.SurgeToReadyDuration.WithLabelValues(
+			EvictionAutoScaler.Namespace,
+			EvictionAutoScaler.Spec.TargetName,
+			EvictionAutoScaler.Spec.TargetKind,
+			metrics.SurgeResultSuccess,
+		).Observe(surgeToReadySecs)
+		logger.Info("Surge completed: drain unblocked",
+			"targetName", EvictionAutoScaler.Spec.TargetName,
+			"durationSeconds", surgeToReadySecs)
+		EvictionAutoScaler.Status.SurgeStartTime = nil
+		// Best-effort persist; if it fails, the success block may re-fire on next requeue
+		// but the metric double-count is acceptable vs. blocking the reconcile.
+		_ = r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
 	if time.Since(EvictionAutoScaler.Spec.LastEviction.EvictionTime.Time) < cooldown {
 		logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, EvictionAutoScaler.Spec.LastEviction.EvictionTime))
 		return ctrl.Result{RequeueAfter: cooldown}, nil
@@ -196,6 +219,10 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
+
+		// Capture surged replica count before SetReplicas overwrites it,
+		// so the timeout check below compares against the actual surged target.
+		surgedReplicas := target.GetReplicas()
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		target.SetReplicas(EvictionAutoScaler.Status.MinReplicas)
@@ -214,6 +241,31 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
+		// If surge never completed (success path at line ~195 did not fire), record as timeout.
+		// This covers both pods not becoming Ready and PDB never allowing disruptions.
+		// We guard on readyReplicas < surgedReplicas to avoid double-counting: if the
+		// success path already observed the metric but the best-effort status update
+		// failed to clear SurgeStartTime, SurgeStartTime is still set here. The
+		// readyReplicas check ensures we only emit timeout when pods genuinely
+		// never became ready, not when success already fired.
+		if EvictionAutoScaler.Status.SurgeStartTime != nil && (pdb.Status.DisruptionsAllowed == 0 || target.GetReadyReplicas() < surgedReplicas) {
+			surgeToTimeoutSecs := time.Since(EvictionAutoScaler.Status.SurgeStartTime.Time).Seconds()
+			metrics.SurgeToReadyDuration.WithLabelValues(
+				EvictionAutoScaler.Namespace,
+				EvictionAutoScaler.Spec.TargetName,
+				EvictionAutoScaler.Spec.TargetKind,
+				metrics.SurgeResultTimeout,
+			).Observe(surgeToTimeoutSecs)
+			metrics.SurgeTimeoutCounter.WithLabelValues(
+				EvictionAutoScaler.Namespace,
+				EvictionAutoScaler.Spec.TargetName,
+				EvictionAutoScaler.Spec.TargetKind,
+			).Inc()
+			logger.Info("Surge timed out: drain still blocked at scale-down",
+				"targetName", EvictionAutoScaler.Spec.TargetName,
+				"durationSeconds", surgeToTimeoutSecs)
+		}
+		EvictionAutoScaler.Status.SurgeStartTime = nil
 		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")

@@ -132,6 +132,28 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// SurgeToReadyDuration tracks the time from replica scale-up to drain being unblocked
+	// (all surge pods Ready AND PDB allows disruptions again).
+	// Labels: namespace, target_name, target_kind, result (success/timeout)
+	SurgeToReadyDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "eviction_autoscaler_surge_to_ready_seconds",
+			Help:    "Time in seconds from replica scale-up to drain unblocked (all pods Ready and PDB allows disruptions)",
+			Buckets: []float64{1, 2, 5, 10, 15, 30, 45, 60, 90, 120, 180, 300},
+		},
+		[]string{"namespace", "target_name", "target_kind", "result"},
+	)
+
+	// SurgeTimeoutCounter tracks surges that timed out without drain being unblocked
+	// Labels: namespace, target_name, target_kind
+	SurgeTimeoutCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eviction_autoscaler_surge_timeouts_total",
+			Help: "Total number of surges scaled down before drain was unblocked (pods not Ready or PDB still blocking)",
+		},
+		[]string{"namespace", "target_name", "target_kind"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -158,6 +180,12 @@ const (
 const (
 	ScaleUpAction   = "scale_up"
 	ScaleDownAction = "scale_down"
+)
+
+// Constants for surge result labels
+const (
+	SurgeResultSuccess = "success"
+	SurgeResultTimeout = "timeout"
 )
 
 // Constants for scaling opportunity signals
@@ -201,5 +229,7 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		SurgeToReadyDuration,
+		SurgeTimeoutCounter,
 	)
 }

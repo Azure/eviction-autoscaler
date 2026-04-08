@@ -20,9 +20,10 @@ type EvictionAutoScalerSpec struct {
 
 // EvictionAutoScalerStatus defines the observed state of EvictionAutoScaler
 type EvictionAutoScalerStatus struct {
-	LastEviction     Eviction           `json:"lastEviction,omitempty"` //this is the last one the controller has processed.
-	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
-	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
+	LastEviction     Eviction           `json:"lastEviction,omitempty"`   //this is the last one the controller has processed.
+	MinReplicas      int32              `json:"minReplicas"`              // Minimum number of replicas to maintain
+	TargetGeneration int64              `json:"deploymentGeneration"`     // generation (spec hash) of deployment or statefulse
+	SurgeStartTime   *metav1.Time       `json:"surgeStartTime,omitempty"` // Time when surge scale-up was initiated
 	Conditions       []metav1.Condition `json:"conditions,omitempty"`
 }
 

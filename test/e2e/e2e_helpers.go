@@ -301,7 +301,9 @@ func verifyHPAMinReplicas(ctx context.Context, clientset client.Client, ns, name
 }
 
 // verifyDeploymentAnnotation checks if a deployment has the expected annotation value
-func verifyDeploymentAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string) error {
+func verifyDeploymentAnnotation(
+	ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string,
+) error {
 	var dep appsv1.Deployment
 	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
 	if err != nil {
@@ -326,22 +328,6 @@ func verifyDeploymentNoAnnotation(ctx context.Context, clientset client.Client, 
 	}
 	if _, ok := dep.Annotations[annotationKey]; ok {
 		return fmt.Errorf("annotation %q should not be present on deployment %s", annotationKey, name)
-	}
-	return nil
-}
-
-// verifyDeploymentReplicas checks that a deployment has the expected number of replicas
-func verifyDeploymentReplicaCount(ctx context.Context, clientset client.Client, ns, name string, expected int32) error {
-	var dep appsv1.Deployment
-	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
-	if err != nil {
-		return err
-	}
-	if dep.Spec.Replicas == nil {
-		return fmt.Errorf("deployment replicas is nil")
-	}
-	if *dep.Spec.Replicas != expected {
-		return fmt.Errorf("expected %d replicas, got %d", expected, *dep.Spec.Replicas)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -13,6 +14,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+var errNotFound = errors.New("not found")
 
 const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
@@ -49,13 +52,13 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 
 	// 1. Check for KEDA ScaledObject targeting this workload
 	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNotFound) {
 		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 	}
 
 	// 2. Check for standalone HPA targeting this workload
 	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil {
+	if err != nil && !errors.Is(err, errNotFound) {
 		return nil, fmt.Errorf("checking for HPA: %w", err)
 	}
 
@@ -92,7 +95,7 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 }
 
 // findScaledObjectForTarget looks for a KEDA ScaledObject targeting the given workload.
-// Returns nil, nil if KEDA is not installed or no matching ScaledObject is found.
+// Returns nil, errNotFound if KEDA is not installed or no matching ScaledObject is found.
 func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*unstructured.Unstructured, error) {
 	list := &unstructured.UnstructuredList{}
 	list.SetGroupVersionKind(schema.GroupVersionKind{
@@ -103,7 +106,7 @@ func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, 
 
 	if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
 		if meta.IsNoMatchError(err) {
-			return nil, nil // KEDA CRD not installed
+			return nil, errNotFound
 		}
 		return nil, err
 	}
@@ -124,14 +127,14 @@ func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, 
 		}
 	}
 
-	return nil, nil
+	return nil, errNotFound
 }
 
 // findHPAForTarget looks for a standalone (non-KEDA-managed) HPA targeting the given workload.
 // KEDA-managed HPAs are filtered out because they are owned by the ScaledObject and should
 // be controlled via the KEDA strategy instead. This avoids accidentally modifying a KEDA-managed
 // HPA when the customer also has their own standalone HPA on a different deployment.
-// Returns nil, nil if no matching standalone HPA is found.
+// Returns nil, errNotFound if no matching standalone HPA is found.
 func findHPAForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*autoscalingv2.HorizontalPodAutoscaler, error) {
 	var hpaList autoscalingv2.HorizontalPodAutoscalerList
 	if err := c.List(ctx, &hpaList, client.InNamespace(namespace)); err != nil {
@@ -149,7 +152,7 @@ func findHPAForTarget(ctx context.Context, c client.Client, namespace, targetNam
 		}
 	}
 
-	return nil, nil
+	return nil, errNotFound
 }
 
 // isKEDAManagedHPA returns true if the HPA is owned/managed by KEDA.

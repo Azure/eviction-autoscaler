@@ -8,6 +8,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -417,5 +418,98 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
 		Expect(err).To(HaveOccurred())
 		Expect(errors.IsNotFound(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
+	var (
+		namespace string
+		r         *DeploymentToPDBReconciler
+		ctx       context.Context
+	)
+
+	const deploymentName = "hpa-deployment"
+
+	BeforeEach(func() {
+		ctx = context.Background()
+
+		namespaceObj := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-hpa-",
+				Annotations: map[string]string{
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, namespaceObj)).To(Succeed())
+		namespace = namespaceObj.Name
+
+		s := scheme.Scheme
+		Expect(appsv1.AddToScheme(s)).To(Succeed())
+		Expect(policyv1.AddToScheme(s)).To(Succeed())
+		Expect(autoscalingv2.AddToScheme(s)).To(Succeed())
+
+		r = &DeploymentToPDBReconciler{
+			Client: k8sClient,
+			Scheme: s,
+			Filter: &deploymentTestFilter{},
+		}
+	})
+
+	It("should set PDB minAvailable from HPA minReplicas instead of deployment replicas", func() {
+		// Create a deployment with 5 replicas (simulating HPA has scaled it up)
+		maxUnavailable := intstr.FromInt(0)
+		deployment := createDeployment(deploymentName, namespace, "hpa-app", 5, &maxUnavailable)
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		// Create an HPA targeting this deployment with minReplicas=2
+		minReplicas := int32(2)
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+			},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					Name:       deploymentName,
+				},
+				MinReplicas: &minReplicas,
+				MaxReplicas: 10,
+			},
+		}
+		Expect(k8sClient.Create(ctx, hpa)).To(Succeed())
+
+		// Reconcile — should create PDB with minAvailable=2 (HPA min), not 5 (deployment replicas)
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: namespace, Name: deploymentName},
+		}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: deploymentName}, pdb)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(2)))
+	})
+
+	It("should use deployment replicas for PDB minAvailable when no HPA exists", func() {
+		// Create a deployment with 3 replicas, no HPA
+		maxUnavailable := intstr.FromInt(0)
+		depName := "no-hpa-deployment"
+		deployment := createDeployment(depName, namespace, "no-hpa-app", 3, &maxUnavailable)
+		Expect(k8sClient.Create(ctx, deployment)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Namespace: namespace, Name: depName},
+		}
+		_, err := r.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		pdb := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: depName}, pdb)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(3)))
 	})
 })

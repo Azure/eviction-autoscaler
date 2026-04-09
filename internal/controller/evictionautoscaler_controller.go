@@ -125,11 +125,17 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
-		logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
-		// The resource version has changed, which means someone else has modified the Target.
-		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		EvictionAutoScaler.Status.MinReplicas = target.GetReplicas()
+		// Don't reset MinReplicas if a surge is in progress (e.g., HPA/KEDA-driven scaling
+		// changes the deployment generation as part of the surge, not a user change).
+		if hasTargetAnnotation(target) {
+			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
+		} else {
+			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
+			// The resource version has changed, which means someone else has modified the Target.
+			// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
+			EvictionAutoScaler.Status.MinReplicas = target.GetReplicas()
+		}
 		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}

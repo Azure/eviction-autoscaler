@@ -1108,6 +1108,18 @@ var _ = Describe("controller", Ordered, func() {
 				return nil
 			}, 30*time.Second, time.Second).Should(Succeed())
 
+			By("waiting for deployment to scale to 2 available replicas")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-hpa"}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 2 {
+					return fmt.Errorf("expected 2 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
 			By("draining the node to trigger evictions")
 			drain := func() error {
 				var podList corev1.PodList

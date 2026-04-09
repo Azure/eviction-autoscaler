@@ -25,11 +25,17 @@ const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original
 // This ensures that on retry after a crash between the two writes, the controller can detect
 // the incomplete state and re-drive the operation to completion.
 type SurgeApplier interface {
-	// ApplySurge sets the minimum replica count to surgeReplicas
+	// ApplySurge sets the minimum replica count to surgeReplicas.
+	// Callers may invoke this multiple times; implementations must be idempotent.
 	ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error
 	// RevertSurge restores the original minimum replica count.
 	// For deployment strategy, originalMinReplicas is used; for HPA/KEDA, the stored annotation is used.
 	RevertSurge(ctx context.Context, c client.Client, originalMinReplicas int32) error
+	// IsSurgeComplete returns true only when the surge intent annotation exists on the
+	// target AND every external resource (HPA, ScaledObject) has been updated to match.
+	// A false return with a present intent annotation signals a partial write that must
+	// be re-driven.
+	IsSurgeComplete() bool
 	// Name returns a human-readable name for logging
 	Name() string
 }
@@ -206,6 +212,12 @@ func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, c client.Clien
 	return c.Update(ctx, d.target.Obj())
 }
 
+func (d *DeploymentSurgeApplier) IsSurgeComplete() bool {
+	// For the deployment strategy, annotation and replicas are written in a single
+	// atomic update, so the presence of the annotation implies completeness.
+	return hasTargetAnnotation(d.target)
+}
+
 func (d *DeploymentSurgeApplier) Name() string {
 	return "deployment"
 }
@@ -257,19 +269,22 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ in
 
 	// Step 1: Revert HPA minReplicas first
 	hpa := h.hpa.DeepCopy()
-	if origStr, ok := hpa.Annotations[OriginalMinReplicasAnnotationKey]; ok {
-		orig, err := strconv.ParseInt(origStr, 10, 32)
-		if err == nil {
-			origInt32 := int32(orig)
-			hpa.Spec.MinReplicas = &origInt32
-		}
+	origStr, ok := hpa.Annotations[OriginalMinReplicasAnnotationKey]
+	if !ok {
+		return fmt.Errorf("cannot revert HPA %s/%s: missing %s annotation", hpa.Namespace, hpa.Name, OriginalMinReplicasAnnotationKey)
 	}
+	orig, err := strconv.ParseInt(origStr, 10, 32)
+	if err != nil {
+		return fmt.Errorf("cannot revert HPA %s/%s: invalid %s annotation value %q: %w", hpa.Namespace, hpa.Name, OriginalMinReplicasAnnotationKey, origStr, err)
+	}
+	origInt32 := int32(orig)
+	hpa.Spec.MinReplicas = &origInt32
 	delete(hpa.Annotations, OriginalMinReplicasAnnotationKey)
 	h.hpa = hpa
 	if err := c.Update(ctx, hpa); err != nil {
 		return fmt.Errorf("reverting HPA minReplicas: %w", err)
 	}
-	logger.V(1).Info("Reverted HPA minReplicas")
+	logger.V(1).Info("Reverted HPA minReplicas", "originalMin", origInt32)
 
 	// Step 2: Remove surge annotation from target (skip if already removed by another applier)
 	if hasTargetAnnotation(h.target) {
@@ -279,6 +294,19 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ in
 		}
 	}
 	return nil
+}
+
+func (h *HPASurgeApplier) IsSurgeComplete() bool {
+	if !hasTargetAnnotation(h.target) {
+		return false
+	}
+	// The HPA must also carry the original-min-replicas annotation, which is written
+	// in step 2 of ApplySurge. If it is missing, the HPA was never updated.
+	if h.hpa.Annotations == nil {
+		return false
+	}
+	_, ok := h.hpa.Annotations[OriginalMinReplicasAnnotationKey]
+	return ok
 }
 
 func (h *HPASurgeApplier) Name() string {
@@ -336,16 +364,19 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ i
 	// Step 1: Revert ScaledObject minReplicaCount first
 	obj := k.scaledObject.DeepCopy()
 	annotations := obj.GetAnnotations()
-	if origStr, ok := annotations[OriginalMinReplicasAnnotationKey]; ok {
-		if origStr == "" {
-			unstructured.RemoveNestedField(obj.Object, "spec", "minReplicaCount")
-		} else {
-			orig, err := strconv.ParseInt(origStr, 10, 64)
-			if err == nil {
-				if err := unstructured.SetNestedField(obj.Object, orig, "spec", "minReplicaCount"); err != nil {
-					return fmt.Errorf("restoring minReplicaCount: %w", err)
-				}
-			}
+	origStr, ok := annotations[OriginalMinReplicasAnnotationKey]
+	if !ok {
+		return fmt.Errorf("cannot revert ScaledObject %s/%s: missing %s annotation", obj.GetNamespace(), obj.GetName(), OriginalMinReplicasAnnotationKey)
+	}
+	if origStr == "" {
+		unstructured.RemoveNestedField(obj.Object, "spec", "minReplicaCount")
+	} else {
+		orig, err := strconv.ParseInt(origStr, 10, 64)
+		if err != nil {
+			return fmt.Errorf("cannot revert ScaledObject %s/%s: invalid %s annotation value %q: %w", obj.GetNamespace(), obj.GetName(), OriginalMinReplicasAnnotationKey, origStr, err)
+		}
+		if err := unstructured.SetNestedField(obj.Object, orig, "spec", "minReplicaCount"); err != nil {
+			return fmt.Errorf("restoring minReplicaCount: %w", err)
 		}
 	}
 	delete(annotations, OriginalMinReplicasAnnotationKey)
@@ -365,6 +396,20 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, c client.Client, _ i
 		}
 	}
 	return nil
+}
+
+func (k *KEDASurgeApplier) IsSurgeComplete() bool {
+	if !hasTargetAnnotation(k.target) {
+		return false
+	}
+	// The ScaledObject must also carry the original-min-replicas annotation, which is
+	// written in step 2 of ApplySurge. If it is missing, the ScaledObject was never updated.
+	annotations := k.scaledObject.GetAnnotations()
+	if annotations == nil {
+		return false
+	}
+	_, ok := annotations[OriginalMinReplicasAnnotationKey]
+	return ok
 }
 
 func (k *KEDASurgeApplier) Name() string {
@@ -401,6 +446,15 @@ func (comp *CompositeSurgeApplier) RevertSurge(ctx context.Context, c client.Cli
 		}
 	}
 	return nil
+}
+
+func (comp *CompositeSurgeApplier) IsSurgeComplete() bool {
+	for _, a := range comp.appliers {
+		if !a.IsSurgeComplete() {
+			return false
+		}
+	}
+	return true
 }
 
 func (comp *CompositeSurgeApplier) Name() string {

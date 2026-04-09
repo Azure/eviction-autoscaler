@@ -320,10 +320,12 @@ var _ = Describe("controller", Ordered, func() {
 					err = evictionClient.PolicyV1().Evictions(meta.Namespace).Evict(ctx, &policy.Eviction{
 						ObjectMeta: meta,
 					})
-					if errors.IsTooManyRequests(err) {
-						return fmt.Errorf("failed to evict %s/%s: %v", meta.Namespace, meta.Name, err)
+					if err != nil {
+						if errors.IsTooManyRequests(err) {
+							return fmt.Errorf("failed to evict %s/%s: %v", meta.Namespace, meta.Name, err)
+						}
+						return fmt.Errorf("failed to evict %s/%s: %w", meta.Namespace, meta.Name, err)
 					}
-					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 					fmt.Printf("evicted %s/%s\n", meta.Namespace, meta.Name)
 				}
 				return nil

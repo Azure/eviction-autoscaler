@@ -193,6 +193,34 @@ func hasTargetAnnotation(target Surger) bool {
 	return exists
 }
 
+// ResolveMinReplicas returns the effective minimum replica count for a workload.
+// Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
+// This ensures PDB minAvailable reflects the true floor when an autoscaler controls replicas.
+func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) int32 {
+	logger := log.FromContext(ctx)
+
+	// 1. Check KEDA ScaledObject
+	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
+	if err == nil && scaledObj != nil {
+		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
+			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount for PDB minAvailable",
+				"target", targetName, "minReplicaCount", val)
+			return int32(val)
+		}
+	}
+
+	// 2. Check standalone HPA
+	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+	if err == nil && hpa != nil && hpa.Spec.MinReplicas != nil {
+		logger.V(1).Info("Using HPA minReplicas for PDB minAvailable",
+			"target", targetName, "hpa", hpa.Name, "minReplicas", *hpa.Spec.MinReplicas)
+		return *hpa.Spec.MinReplicas
+	}
+
+	// 3. Fall back to deployment replicas
+	return deployReplicas
+}
+
 // --- DeploymentSurgeApplier ---
 // Surges by modifying the deployment/statefulset spec.replicas directly.
 // This is the default strategy when no KEDA or HPA is present.

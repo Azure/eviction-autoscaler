@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -140,33 +141,72 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
-		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
-		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
-		// no surge happened but customer already increased deployment replicas, then annotation would not exist
-		if surgeReplicas, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
+	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
+		return nil
+	}
+
+	// Determine the correct minAvailable value.
+	// When HPA/KEDA targets this deployment, minAvailable should always track
+	// the autoscaler's min replicas (not the deployment's current count, which
+	// may be scaled up by the autoscaler).
+	// When no HPA/KEDA exists, minAvailable tracks deployment.spec.replicas,
+	// but we skip updates if the replica change was caused by our own surge.
+	var minAvailable int32
+
+	hpa, hpaErr := findHPAForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+	scaledObj, kedaErr := findScaledObjectForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+
+	switch {
+	case kedaErr == nil && scaledObj != nil:
+		// KEDA controls this deployment — use ScaledObject minReplicaCount
+		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
+			minAvailable = int32(val)
+		} else {
+			minAvailable = 1 // KEDA default
+		}
+		logger.V(1).Info("Using KEDA ScaledObject minReplicaCount for PDB minAvailable",
+			"target", deployment.Name, "minAvailable", minAvailable)
+
+	case hpaErr == nil && hpa != nil:
+		// HPA controls this deployment — use HPA minReplicas
+		if hpa.Spec.MinReplicas != nil {
+			minAvailable = *hpa.Spec.MinReplicas
+		} else {
+			minAvailable = 1 // HPA default
+		}
+		logger.V(1).Info("Using HPA minReplicas for PDB minAvailable",
+			"target", deployment.Name, "hpa", hpa.Name, "minAvailable", minAvailable)
+
+	default:
+		// No autoscaler — track deployment.spec.replicas directly.
+		// But skip if the replica change was caused by our own eviction surge.
+		if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 			newReplicas, err := strconv.Atoi(surgeReplicas)
 			if err != nil {
 				logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
 					"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
 				return err
 			}
-
 			if int32(newReplicas) == *deployment.Spec.Replicas {
 				return nil
 			}
 		}
-		//someone else changed deployment num of replicas
-		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
-		err := r.Update(ctx, &pdb)
-		if err != nil {
-			logger.Error(err, "unable to update pdb minAvailable to deployment replicas ",
-				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
-			return err
-		}
-		logger.Info("Successfully updated pdb minAvailable to deployment replicas ",
-			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+		minAvailable = *deployment.Spec.Replicas
 	}
+
+	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
+		return nil // already correct
+	}
+
+	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
+	err := r.Update(ctx, &pdb)
+	if err != nil {
+		logger.Error(err, "unable to update pdb minAvailable",
+			"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)
+		return err
+	}
+	logger.Info("Successfully updated pdb minAvailable",
+		"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)
 	return nil
 }
 

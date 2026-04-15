@@ -40,6 +40,7 @@ type deploymentConfig struct {
 	Replicas       int32
 	MaxUnavailable int
 	Annotations    map[string]string
+	CPURequest     string // optional, e.g. "10m"
 }
 
 // createDeployment creates a deployment with the given configuration
@@ -79,6 +80,11 @@ spec:
       containers:
         - name: nginx
           image: nginx:latest
+{{- if .CPURequest}}
+          resources:
+            requests:
+              cpu: "{{.CPURequest}}"
+{{- end}}
 `
 	t, err := template.New("deployment").Parse(tmpl)
 	if err != nil {
@@ -92,12 +98,14 @@ spec:
 		Replicas       int32
 		MaxUnavailable string
 		Annotations    map[string]string
+		CPURequest     string
 	}{
 		Name:           cfg.Name,
 		Namespace:      cfg.Namespace,
 		Replicas:       cfg.Replicas,
 		MaxUnavailable: maxUnavailable,
 		Annotations:    cfg.Annotations,
+		CPURequest:     cfg.CPURequest,
 	}
 
 	if err := t.Execute(&buf, data); err != nil {

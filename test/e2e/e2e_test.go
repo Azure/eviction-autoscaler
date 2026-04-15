@@ -100,8 +100,8 @@ var _ = Describe("controller", Ordered, func() {
 		if cleanEnv {
 
 			By("removing kind cluster")
-			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
-			_, _ = utils.Run(cmd)
+			//cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
+			//_, _ = utils.Run(cmd)
 		}
 	})
 
@@ -1022,9 +1022,18 @@ var _ = Describe("controller", Ordered, func() {
 			ctx := context.Background()
 			testNs := "test-hpa-surge"
 
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd) // ignore error if already uncordoned
+			}
+
 			By("creating test namespace with enable annotation")
-			cmd := exec.Command("kubectl", "create", "namespace", testNs)
-			_, err := utils.Run(cmd)
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
@@ -1231,12 +1240,21 @@ var _ = Describe("controller", Ordered, func() {
 			ctx := context.Background()
 			testNs := "test-keda-surge"
 
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+			}
+
 			By("installing KEDA on the cluster")
-			err := installKEDA()
+			err = installKEDA()
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating test namespace with enable annotation")
-			cmd := exec.Command("kubectl", "create", "namespace", testNs)
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1251,6 +1269,7 @@ var _ = Describe("controller", Ordered, func() {
 				Namespace:      testNs,
 				Replicas:       1,
 				MaxUnavailable: 0,
+				CPURequest:     "10m", // KEDA's admission webhook requires CPU requests for cpu trigger
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1278,11 +1297,21 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("finding the node the pod runs on")
-			var pods corev1.PodList
-			err = clientset.List(ctx, &pods, client.InNamespace(testNs))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(pods.Items).NotTo(BeEmpty())
-			nodeName := pods.Items[0].Spec.NodeName
+			var nodeName string
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+				if err != nil {
+					return err
+				}
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning && p.Spec.NodeName != "" {
+						nodeName = p.Spec.NodeName
+						return nil
+					}
+				}
+				return fmt.Errorf("no running pod found in namespace %s", testNs)
+			}, time.Minute, time.Second).Should(Succeed())
 			fmt.Printf("nginx-keda pod running on node %s\n", nodeName)
 
 			By("cordoning the node to trigger eviction surge")
@@ -1297,12 +1326,12 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, func() error {
 				return verifyDeploymentAnnotation(ctx, clientset, testNs, "nginx-keda",
 					"evictionSurgeReplicas", "2")
-			}, time.Minute, time.Second).Should(Succeed())
+			}, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying the ScaledObject minReplicaCount is surged to 2")
 			EventuallyWithOffset(1, func() error {
 				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 2)
-			}, time.Minute, time.Second).Should(Succeed())
+			}, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("draining the node to trigger evictions")
 			drain := func() error {

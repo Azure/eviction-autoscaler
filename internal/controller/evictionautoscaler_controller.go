@@ -144,25 +144,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Log current state before checks
 	logger.Info(fmt.Sprintf("Checking PDB for %s: DisruptionsAllowed=%d, MinReplicas=%d", pdb.Name, pdb.Status.DisruptionsAllowed, EvictionAutoScaler.Status.MinReplicas))
 
-	// Ensure any incomplete surge from a prior reconcile is completed.
-	// This handles the case where the controller crashed or the second write failed
-	// after annotating the target but before updating the HPA/ScaledObject.
-	if hasTargetAnnotation(target) && !surgeApplier.IsSurgeComplete() {
-		surgeVal := target.Obj().GetAnnotations()[EvictionSurgeReplicasAnnotationKey]
-		surgeReplicas, err := strconv.ParseInt(surgeVal, 10, 32)
-		if err != nil {
-			logger.Error(err, "invalid surge annotation value during re-drive", "value", surgeVal)
-		} else {
-			logger.Info("Detected incomplete surge, re-driving scaler update", "surgeReplicas", surgeReplicas, "strategy", surgeApplier.Name())
-			if err := surgeApplier.ApplySurge(ctx, r.Client, int32(surgeReplicas)); err != nil {
-				return ctrl.Result{}, err
-			}
-			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "completed incomplete surge re-drive")
-			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
-	}
-
 	// Have we processed all evictions okay don't do anything else
 	if EvictionAutoScaler.Spec.LastEviction == EvictionAutoScaler.Status.LastEviction {
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
@@ -177,7 +158,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
 	//if we're not scaled up and theres new evictions we haven't processed
-	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas && !surgeApplier.IsSurgeComplete() {
+	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		// What if the evict went through because the pod being evicted wasn't ready anyways?
 		// TODO later. Surge more slowly based on number of evictions (need to move back to capturing them all)
 		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name())

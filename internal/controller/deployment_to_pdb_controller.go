@@ -145,12 +145,23 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
+	// Skip PDB updates if the replica change was caused by our own eviction surge.
+	// This applies regardless of whether HPA/KEDA is present.
+	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+		newReplicas, err := strconv.Atoi(surgeReplicas)
+		if err != nil {
+			logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
+				"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
+			return err
+		}
+		if int32(newReplicas) == *deployment.Spec.Replicas {
+			return nil
+		}
+	}
+
 	// Determine the correct minAvailable value.
-	// When HPA/KEDA targets this deployment, minAvailable should always track
-	// the autoscaler's min replicas (not the deployment's current count, which
-	// may be scaled up by the autoscaler).
-	// When no HPA/KEDA exists, minAvailable tracks deployment.spec.replicas,
-	// but we skip updates if the replica change was caused by our own surge.
+	// When HPA/KEDA targets this deployment, minAvailable tracks the autoscaler's
+	// min replicas (the floor). Otherwise, it tracks deployment.spec.replicas.
 	var minAvailable int32
 
 	hpa, hpaErr := findHPAForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
@@ -178,19 +189,6 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			"target", deployment.Name, "hpa", hpa.Name, "minAvailable", minAvailable)
 
 	default:
-		// No autoscaler — track deployment.spec.replicas directly.
-		// But skip if the replica change was caused by our own eviction surge.
-		if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
-			newReplicas, err := strconv.Atoi(surgeReplicas)
-			if err != nil {
-				logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
-					"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
-				return err
-			}
-			if int32(newReplicas) == *deployment.Spec.Replicas {
-				return nil
-			}
-		}
 		minAvailable = *deployment.Spec.Replicas
 	}
 

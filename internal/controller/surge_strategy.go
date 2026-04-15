@@ -23,6 +23,14 @@ const maxConflictRetries = 3
 
 // reGetAndUpdateTarget re-fetches the target to get the latest resourceVersion,
 // applies the given mutate function, and retries on conflict up to maxConflictRetries times.
+//
+// This is needed because HPA/KEDA ApplySurge and RevertSurge are two-step operations:
+// step 1 updates the HPA/ScaledObject, step 2 updates the deployment. Between these steps,
+// the HPA controller may modify the deployment via the /scale subresource, changing its
+// resourceVersion. If we used the stale resourceVersion from the start of the reconcile,
+// the deployment update would fail with a 409 Conflict (optimistic concurrency).
+// Re-fetching gets the latest resourceVersion, and retrying handles the case where
+// the HPA races us again between the re-fetch and the update.
 func reGetAndUpdateTarget(ctx context.Context, c client.Client, target Surger, mutate func()) error {
 	for i := 0; i < maxConflictRetries; i++ {
 		// Re-fetch to get fresh resourceVersion

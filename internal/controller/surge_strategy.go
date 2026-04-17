@@ -7,9 +7,46 @@ import (
 	"strconv"
 	"strings"
 
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
+
+const maxConflictRetries = 3
+
+// reGetAndUpdateTarget re-fetches the target to get the latest resourceVersion,
+// applies the given mutate function, and retries on conflict up to maxConflictRetries times.
+//
+// This is needed because HPA/KEDA ApplySurge and RevertSurge are two-step operations:
+// step 1 updates the HPA/ScaledObject, step 2 updates the deployment. Between these steps,
+// the HPA controller may modify the deployment via the /scale subresource, changing its
+// resourceVersion. If we used the stale resourceVersion from the start of the reconcile,
+// the deployment update would fail with a 409 Conflict (optimistic concurrency).
+// Re-fetching gets the latest resourceVersion, and retrying handles the case where
+// the HPA races us again between the re-fetch and the update.
+func reGetAndUpdateTarget(ctx context.Context, c client.Client, target Surger, mutate func()) error {
+	for i := 0; i < maxConflictRetries; i++ {
+		// Re-fetch to get fresh resourceVersion
+		obj := target.Obj()
+		if err := c.Get(ctx, types.NamespacedName{Name: obj.GetName(), Namespace: obj.GetNamespace()}, obj); err != nil {
+			return fmt.Errorf("re-fetching target: %w", err)
+		}
+		mutate()
+		// Use target.Obj() after mutate because SetReplicas may replace the underlying
+		// object via DeepCopy, making the captured 'obj' pointer stale.
+		err := c.Update(ctx, target.Obj())
+		if err == nil {
+			return nil
+		}
+		if !kerrors.IsConflict(err) {
+			return err
+		}
+		log.FromContext(ctx).V(1).Info("Conflict updating target, retrying", "attempt", i+1)
+	}
+	return fmt.Errorf("failed to update target after %d conflict retries", maxConflictRetries)
+}
 
 // SurgeApplier abstracts the mechanism for temporarily increasing minimum replicas.
 // Depending on whether KEDA, HPA, or neither is present, a different implementation is used.
@@ -43,7 +80,7 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 	}
 	if scaledObj != nil {
-		logger.Info("Found KEDA ScaledObject for target, skipping deployment surge (KEDA strategy not yet implemented)",
+		logger.Info("Found KEDA ScaledObject for target, skipping (KEDA surge strategy not yet implemented)",
 			"scaledObject", scaledObj.GetName(), "target", targetName)
 	}
 
@@ -53,13 +90,17 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 		return nil, fmt.Errorf("checking for HPA: %w", err)
 	}
 	if hpa != nil {
-		logger.Info("Found HPA for target, skipping deployment surge (HPA strategy not yet implemented)",
+		logger.Info("Found HPA for target, adding HPA surge applier",
 			"hpa", hpa.Name, "target", targetName)
+		appliers = append(appliers, &HPASurgeApplier{hpa: hpa, target: target})
 	}
 
-	// DeploymentSurgeApplier is the default strategy when no autoscaler appliers are added.
+	// DeploymentSurgeApplier is only needed when no autoscaler appliers were added.
+	// HPA/KEDA appliers already handle setting deployment replicas and the surge
+	// annotation internally (via reGetAndUpdateTarget), so adding DeploymentSurgeApplier
+	// alongside them would cause a stale-object conflict on the second Update.
 	if len(appliers) == 0 {
-		logger.V(1).Info("Using deployment surge strategy", "target", targetName)
+		logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
 		appliers = append(appliers, &DeploymentSurgeApplier{target: target})
 	}
 
@@ -114,6 +155,80 @@ func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, c client.Clien
 
 func (d *DeploymentSurgeApplier) Name() string {
 	return "deployment"
+}
+
+// --- HPASurgeApplier ---
+// Surges by temporarily increasing HPA spec.minReplicas.
+
+type HPASurgeApplier struct {
+	hpa    *autoscalingv2.HorizontalPodAutoscaler
+	target Surger
+}
+
+var _ SurgeApplier = &HPASurgeApplier{}
+
+func (h *HPASurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
+	logger := log.FromContext(ctx)
+
+	// Step 1: Update HPA minReplicas first to raise the floor.
+	// This must happen before setting deployment replicas to prevent a race where
+	// the HPA sync loop scales the deployment back down between the two writes.
+	hpa := h.hpa.DeepCopy()
+	hpa.Spec.MinReplicas = &surgeReplicas
+	h.hpa = hpa
+	if err := c.Update(ctx, hpa); err != nil {
+		return fmt.Errorf("updating HPA minReplicas: %w", err)
+	}
+	logger.V(1).Info("Updated HPA minReplicas", "minReplicas", surgeReplicas)
+
+	// Step 2: Set deployment replicas directly for immediate scale-up and annotate
+	// with surge intent marker. This avoids waiting for the HPA sync loop (~15s)
+	// and handles the case where the HPA cannot compute metrics (e.g., no metrics-server).
+	// Skip if already annotated (e.g., by another applier in a composite).
+	surgeVal := strconv.FormatInt(int64(surgeReplicas), 10)
+	if !hasTargetAnnotationWithValue(h.target, surgeVal) {
+		if err := reGetAndUpdateTarget(ctx, c, h.target, func() {
+			if h.target.GetReplicas() != surgeReplicas {
+				h.target.SetReplicas(surgeReplicas)
+			}
+			h.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, surgeVal)
+		}); err != nil {
+			return fmt.Errorf("setting replicas and annotating target: %w", err)
+		}
+		logger.V(1).Info("Set replicas and annotated target with surge intent", "replicas", surgeReplicas)
+	}
+	return nil
+}
+
+func (h *HPASurgeApplier) RevertSurge(ctx context.Context, c client.Client, originalMinReplicas int32) error {
+	logger := log.FromContext(ctx)
+
+	// Step 1: Revert HPA minReplicas using EA.Status.MinReplicas (the effective floor)
+	hpa := h.hpa.DeepCopy()
+	hpa.Spec.MinReplicas = &originalMinReplicas
+	h.hpa = hpa
+	if err := c.Update(ctx, hpa); err != nil {
+		return fmt.Errorf("reverting HPA minReplicas: %w", err)
+	}
+	logger.V(1).Info("Reverted HPA minReplicas", "originalMin", originalMinReplicas)
+
+	// Step 2: Remove surge annotation and set replicas directly for immediate scale-down.
+	// This avoids waiting for the HPA sync loop to enforce the reverted minReplicas.
+	if hasTargetAnnotation(h.target) {
+		if err := reGetAndUpdateTarget(ctx, c, h.target, func() {
+			if h.target.GetReplicas() != originalMinReplicas {
+				h.target.SetReplicas(originalMinReplicas)
+			}
+			h.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
+		}); err != nil {
+			return fmt.Errorf("removing surge annotation from target: %w", err)
+		}
+	}
+	return nil
+}
+
+func (h *HPASurgeApplier) Name() string {
+	return "hpa"
 }
 
 // --- CompositeSurgeApplier ---

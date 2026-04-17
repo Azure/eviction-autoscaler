@@ -27,6 +27,8 @@ import (
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -38,6 +40,7 @@ type deploymentConfig struct {
 	Replicas       int32
 	MaxUnavailable int
 	Annotations    map[string]string
+	CPURequest     string // optional, e.g. "10m"
 }
 
 // createDeployment creates a deployment with the given configuration
@@ -77,6 +80,11 @@ spec:
       containers:
         - name: nginx
           image: nginx:latest
+          {{- if .CPURequest}}
+          resources:
+            requests:
+              cpu: "{{.CPURequest}}"
+          {{- end}}
 `
 	t, err := template.New("deployment").Parse(tmpl)
 	if err != nil {
@@ -90,12 +98,14 @@ spec:
 		Replicas       int32
 		MaxUnavailable string
 		Annotations    map[string]string
+		CPURequest     string
 	}{
 		Name:           cfg.Name,
 		Namespace:      cfg.Namespace,
 		Replicas:       cfg.Replicas,
 		MaxUnavailable: maxUnavailable,
 		Annotations:    cfg.Annotations,
+		CPURequest:     cfg.CPURequest,
 	}
 
 	if err := t.Execute(&buf, data); err != nil {
@@ -280,4 +290,52 @@ spec:
 func deleteHPA(name, namespace string) {
 	cmd := exec.Command("kubectl", "delete", "hpa", name, "--namespace", namespace)
 	_, _ = utils.Run(cmd)
+}
+
+// verifyHPAMinReplicas checks if an HPA has the expected minReplicas value
+func verifyHPAMinReplicas(ctx context.Context, clientset client.Client, ns, name string, expectedMin int32) error {
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &hpa)
+	if err != nil {
+		return err
+	}
+	if hpa.Spec.MinReplicas == nil {
+		return fmt.Errorf("HPA minReplicas is nil")
+	}
+	if *hpa.Spec.MinReplicas != expectedMin {
+		return fmt.Errorf("expected HPA minReplicas to be %d, got %d", expectedMin, *hpa.Spec.MinReplicas)
+	}
+	return nil
+}
+
+// verifyDeploymentAnnotation checks if a deployment has the expected annotation value
+func verifyDeploymentAnnotation(
+	ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string,
+) error {
+	var dep appsv1.Deployment
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
+	if err != nil {
+		return err
+	}
+	val, ok := dep.Annotations[annotationKey]
+	if !ok {
+		return fmt.Errorf("annotation %q not found on deployment %s", annotationKey, name)
+	}
+	if val != expectedValue {
+		return fmt.Errorf("expected annotation %q=%q, got %q", annotationKey, expectedValue, val)
+	}
+	return nil
+}
+
+// verifyDeploymentNoAnnotation checks that a deployment does NOT have a specific annotation
+func verifyDeploymentNoAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey string) error {
+	var dep appsv1.Deployment
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
+	if err != nil {
+		return err
+	}
+	if _, ok := dep.Annotations[annotationKey]; ok {
+		return fmt.Errorf("annotation %q should not be present on deployment %s", annotationKey, name)
+	}
+	return nil
 }

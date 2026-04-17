@@ -9,15 +9,11 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
-
-var errNotFound = errors.New("not found")
 
 const maxConflictRetries = 3
 
@@ -69,133 +65,51 @@ type SurgeApplier interface {
 	Name() string
 }
 
-// detectSurgeApplier determines which surge strategy to use:
-// 1. If KEDA ScaledObject targets the workload → KEDASurgeApplier (modify minReplicaCount)
-// 2. If HPA targets the workload → HPASurgeApplier (modify minReplicas)
-// 3. Otherwise → DeploymentSurgeApplier (modify deployment.spec.replicas)
+// detectSurgeApplier determines which surge strategy to use by building a
+// composite of all applicable appliers. DeploymentSurgeApplier is always
+// included as the base (it sets deployment.spec.replicas directly). KEDA and
+// HPA appliers are added when their resources target this workload, ensuring
+// their floors are raised before the deployment scales.
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
 	logger := log.FromContext(ctx)
 
-	// 1. Check for KEDA ScaledObject targeting this workload
+	var appliers []SurgeApplier
+
+	// Check for KEDA ScaledObject targeting this workload
 	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
 		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 	}
+	if scaledObj != nil {
+		logger.Info("Found KEDA ScaledObject for target, adding KEDA surge applier",
+			"scaledObject", scaledObj.GetName(), "target", targetName)
+		appliers = append(appliers, &KEDASurgeApplier{scaledObject: scaledObj, target: target})
+	}
 
-	// 2. Check for standalone HPA targeting this workload
+	// Check for standalone HPA targeting this workload
 	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
 		return nil, fmt.Errorf("checking for HPA: %w", err)
 	}
-
-	// 3. If both KEDA and standalone HPA exist, surge both to avoid the HPA blocking scale-up
-	if scaledObj != nil && hpa != nil {
-		logger.Info("Found both KEDA ScaledObject and standalone HPA for target, using composite surge strategy",
-			"scaledObject", scaledObj.GetName(), "hpa", hpa.Name, "target", targetName)
-		return &CompositeSurgeApplier{
-			appliers: []SurgeApplier{
-				&KEDASurgeApplier{scaledObject: scaledObj, target: target},
-				&HPASurgeApplier{hpa: hpa, target: target},
-			},
-			target: target,
-		}, nil
-	}
-
-	// 4. KEDA only
-	if scaledObj != nil {
-		logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
-			"scaledObject", scaledObj.GetName(), "target", targetName)
-		return &KEDASurgeApplier{scaledObject: scaledObj, target: target}, nil
-	}
-
-	// 5. HPA only
 	if hpa != nil {
-		logger.Info("Found HPA for target, using HPA surge strategy",
+		logger.Info("Found HPA for target, adding HPA surge applier",
 			"hpa", hpa.Name, "target", targetName)
-		return &HPASurgeApplier{hpa: hpa, target: target}, nil
+		appliers = append(appliers, &HPASurgeApplier{hpa: hpa, target: target})
 	}
 
-	// 6. Fall back to direct deployment/statefulset replica management
-	logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
-	return &DeploymentSurgeApplier{target: target}, nil
-}
-
-// findScaledObjectForTarget looks for a KEDA ScaledObject targeting the given workload.
-// Returns nil, errNotFound if KEDA is not installed or no matching ScaledObject is found.
-func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*unstructured.Unstructured, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObjectList",
-	})
-
-	if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
-		if meta.IsNoMatchError(err) {
-			return nil, errNotFound
-		}
-		return nil, err
+	// DeploymentSurgeApplier is only needed when no autoscaler appliers were added.
+	// HPA/KEDA appliers already handle setting deployment replicas and the surge
+	// annotation internally (via reGetAndUpdateTarget), so adding DeploymentSurgeApplier
+	// alongside them would cause a stale-object conflict on the second Update.
+	if len(appliers) == 0 {
+		logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
+		appliers = append(appliers, &DeploymentSurgeApplier{target: target})
 	}
 
-	for i := range list.Items {
-		item := &list.Items[i]
-		scaleTargetRef, found, err := unstructured.NestedMap(item.Object, "spec", "scaleTargetRef")
-		if err != nil || !found {
-			continue
-		}
-		name, _ := scaleTargetRef["name"].(string)
-		kind, _ := scaleTargetRef["kind"].(string)
-		if kind == "" {
-			kind = "Deployment" // KEDA default
-		}
-		if name == targetName && strings.EqualFold(kind, targetKind) {
-			return item, nil
-		}
-	}
-
-	return nil, errNotFound
-}
-
-// findHPAForTarget looks for a standalone (non-KEDA-managed) HPA targeting the given workload.
-// KEDA-managed HPAs are filtered out because they are owned by the ScaledObject and should
-// be controlled via the KEDA strategy instead. This avoids accidentally modifying a KEDA-managed
-// HPA when the customer also has their own standalone HPA on a different deployment.
-// Returns nil, errNotFound if no matching standalone HPA is found.
-func findHPAForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*autoscalingv2.HorizontalPodAutoscaler, error) {
-	var hpaList autoscalingv2.HorizontalPodAutoscalerList
-	if err := c.List(ctx, &hpaList, client.InNamespace(namespace)); err != nil {
-		return nil, err
-	}
-
-	for i := range hpaList.Items {
-		hpa := &hpaList.Items[i]
-		if hpa.Spec.ScaleTargetRef.Name == targetName &&
-			strings.EqualFold(hpa.Spec.ScaleTargetRef.Kind, targetKind) {
-			if isKEDAManagedHPA(hpa) {
-				continue // skip KEDA-managed HPAs
-			}
-			return hpa, nil
-		}
-	}
-
-	return nil, errNotFound
-}
-
-// isKEDAManagedHPA returns true if the HPA is owned/managed by KEDA.
-// KEDA-managed HPAs have either an owner reference with kind "ScaledObject"
-// or the label "scaledobject.keda.sh/name".
-func isKEDAManagedHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) bool {
-	// Check for KEDA label
-	if _, ok := hpa.Labels["scaledobject.keda.sh/name"]; ok {
-		return true
-	}
-	// Check for owner reference from a ScaledObject
-	for _, ref := range hpa.OwnerReferences {
-		if ref.Kind == "ScaledObject" {
-			return true
-		}
-	}
-	return false
+	return &CompositeSurgeApplier{
+		appliers: appliers,
+		target:   target,
+	}, nil
 }
 
 // hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation
@@ -217,34 +131,6 @@ func hasTargetAnnotation(target Surger) bool {
 	}
 	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
 	return exists
-}
-
-// ResolveMinReplicas returns the effective minimum replica count for a workload.
-// Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
-// This ensures PDB minAvailable reflects the true floor when an autoscaler controls replicas.
-func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) int32 {
-	logger := log.FromContext(ctx)
-
-	// 1. Check KEDA ScaledObject
-	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
-	if err == nil && scaledObj != nil {
-		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
-			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount for PDB minAvailable",
-				"target", targetName, "minReplicaCount", val)
-			return int32(val)
-		}
-	}
-
-	// 2. Check standalone HPA
-	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
-	if err == nil && hpa != nil && hpa.Spec.MinReplicas != nil {
-		logger.V(1).Info("Using HPA minReplicas for PDB minAvailable",
-			"target", targetName, "hpa", hpa.Name, "minReplicas", *hpa.Spec.MinReplicas)
-		return *hpa.Spec.MinReplicas
-	}
-
-	// 3. Fall back to deployment replicas
-	return deployReplicas
 }
 
 // --- DeploymentSurgeApplier ---

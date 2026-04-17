@@ -143,9 +143,11 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	// When HPA/KEDA targets this deployment, a separate controller (AutoscalerToPDBReconciler)
 	// is responsible for tracking their minReplicas/minReplicaCount and updating PDB minAvailable.
 	// This controller should not interfere with autoscaler-driven replica changes.
-	_, kedaErr := findScaledObjectForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
-	_, hpaErr := findHPAForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
-	if kedaErr == nil || hpaErr == nil {
+	hasAS, err := HasAutoscaler(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+	if err != nil {
+		return err
+	}
+	if hasAS {
 		logger.V(1).Info("HPA/KEDA controls this deployment, skipping PDB minAvailable update",
 			"target", deployment.Name)
 		return nil
@@ -176,8 +178,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	}
 
 	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
-	err := r.Update(ctx, &pdb)
-	if err != nil {
+	if err = r.Update(ctx, &pdb); err != nil {
 		logger.Error(err, "unable to update pdb minAvailable",
 			"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)
 		return err

@@ -83,7 +83,10 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// We pass 0 as the fallback so we can detect when no autoscaler was found — if
 	// ResolveMinReplicas returns 0, it means neither HPA nor KEDA targets this deployment
 	// anymore. In that case, the deployment controller owns PDB updates and we bail out.
-	minAvailable := ResolveMinReplicas(ctx, r.Client, req.Namespace, req.Name, ResourceTypeDeployment, 0)
+	minAvailable, err := ResolveMinReplicas(ctx, r.Client, req.Namespace, req.Name, ResourceTypeDeployment, 0)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
 	if minAvailable == 0 {
 		logger.V(1).Info("No HPA/KEDA found for deployment, skipping PDB update",
 			"deployment", req.Name)

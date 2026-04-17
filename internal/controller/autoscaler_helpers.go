@@ -117,34 +117,38 @@ func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, 
 
 // ResolveMinReplicas returns the effective minimum replica count for a workload.
 // Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
+//
+// The returned bool indicates whether an autoscaler (KEDA or HPA) was found.
+// When true, the int32 is the autoscaler's floor (which may be 0 for KEDA scale-to-zero).
+// When false, the int32 is the deployReplicas fallback.
 // Returns an error on real API failures so the caller can retry rather than using a wrong value.
-func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) (int32, error) {
+func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) (int32, bool, error) {
 	logger := log.FromContext(ctx)
 
 	// 1. Check KEDA ScaledObject
 	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
-		return 0, err
+		return 0, false, err
 	}
 	if err == nil && scaledObj != nil {
-		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
+		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found {
 			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
 				"target", targetName, "minReplicaCount", val)
-			return int32(val), nil
+			return int32(val), true, nil
 		}
 	}
 
 	// 2. Check standalone HPA
 	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
-		return 0, err
+		return 0, false, err
 	}
 	if err == nil && hpa != nil && hpa.Spec.MinReplicas != nil {
 		logger.V(1).Info("Using HPA minReplicas",
 			"target", targetName, "hpa", hpa.Name, "minReplicas", *hpa.Spec.MinReplicas)
-		return *hpa.Spec.MinReplicas, nil
+		return *hpa.Spec.MinReplicas, true, nil
 	}
 
 	// 3. Fall back to deployment replicas
-	return deployReplicas, nil
+	return deployReplicas, false, nil
 }

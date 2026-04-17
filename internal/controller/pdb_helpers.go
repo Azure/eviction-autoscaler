@@ -91,7 +91,11 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 
 	// Use KEDA/HPA minReplicas when available instead of deployment.spec.replicas,
 	// since the autoscaler controls the actual replica count and may have scaled above its floor.
-	minAvailable, err := ResolveMinReplicas(ctx, c, deployment.Namespace, deployment.Name, ResourceTypeDeployment, *deployment.Spec.Replicas)
+	var deployReplicas int32 = 1
+	if deployment.Spec.Replicas != nil {
+		deployReplicas = *deployment.Spec.Replicas
+	}
+	minAvailable, _, err := ResolveMinReplicas(ctx, c, deployment.Namespace, deployment.Name, ResourceTypeDeployment, deployReplicas)
 	if err != nil {
 		return err
 	}

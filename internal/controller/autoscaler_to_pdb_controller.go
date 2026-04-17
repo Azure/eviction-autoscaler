@@ -80,14 +80,13 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Resolve the autoscaler's minimum replica floor (KEDA minReplicaCount > HPA minReplicas).
-	// We pass 0 as the fallback so we can detect when no autoscaler was found — if
-	// ResolveMinReplicas returns 0, it means neither HPA nor KEDA targets this deployment
-	// anymore. In that case, the deployment controller owns PDB updates and we bail out.
-	minAvailable, err := ResolveMinReplicas(ctx, r.Client, req.Namespace, req.Name, ResourceTypeDeployment, 0)
+	// If no autoscaler targets this deployment, the deployment controller owns PDB updates
+	// and we bail out. We pass 0 as the fallback (unused when found==true).
+	minAvailable, found, err := ResolveMinReplicas(ctx, r.Client, req.Namespace, req.Name, ResourceTypeDeployment, 0)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
-	if minAvailable == 0 {
+	if !found {
 		logger.V(1).Info("No HPA/KEDA found for deployment, skipping PDB update",
 			"deployment", req.Name)
 		return reconcile.Result{}, nil
@@ -142,9 +141,12 @@ func requeueDeploymentFromScaledObject() handler.TypedMapFunc[*unstructured.Unst
 			return nil
 		}
 		name, _ := scaleTargetRef["name"].(string)
+		if name == "" {
+			return nil
+		}
 		kind, _ := scaleTargetRef["kind"].(string)
 		if kind == "" {
-			kind = "Deployment"
+			kind = ResourceTypeDeployment
 		}
 		if !strings.EqualFold(kind, ResourceTypeDeployment) {
 			return nil

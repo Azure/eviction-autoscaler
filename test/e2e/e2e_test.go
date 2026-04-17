@@ -1028,11 +1028,11 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a deployment with 1 replica and maxUnavailable=0")
+			By("creating a deployment with 3 replicas and maxUnavailable=0")
 			err = createDeployment(deploymentConfig{
 				Name:           "nginx-hpa-pdb",
 				Namespace:      testNs,
-				Replicas:       1,
+				Replicas:       3,
 				MaxUnavailable: 0,
 			})
 			Expect(err).NotTo(HaveOccurred())
@@ -1041,11 +1041,11 @@ var _ = Describe("controller", Ordered, func() {
 			err = waitForDeployment("nginx-hpa-pdb", testNs)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating an HPA targeting the deployment with minReplicas=1")
-			err = createHPA("nginx-hpa-pdb", testNs, "nginx-hpa-pdb", 1, 5)
+			By("creating an HPA targeting the deployment with minReplicas=2")
+			err = createHPA("nginx-hpa-pdb", testNs, "nginx-hpa-pdb", 2, 10)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying PDB is created with minAvailable=1 (from HPA minReplicas)")
+			By("verifying PDB is created with minAvailable=2 (from HPA minReplicas, not deployment replicas=3)")
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
 			Expect(err).NotTo(HaveOccurred())
 			clientset, err := client.New(config, client.Options{Scheme: scheme})
@@ -1056,32 +1056,32 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 1)
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 2)
 			}, 30*time.Second, time.Second).Should(Succeed())
 
-			By("scaling deployment replicas to 3 manually (simulating HPA scale-up)")
+			By("scaling deployment replicas to 5 manually (simulating HPA scale-up)")
 			cmd = exec.Command("kubectl", "scale", "deployment", "nginx-hpa-pdb",
-				"--replicas=3", "--namespace", testNs)
+				"--replicas=5", "--namespace", testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("waiting for deployment to have 3 replicas ready")
+			By("waiting for deployment to have 5 replicas ready")
 			EventuallyWithOffset(1, func() error {
 				var dep appsv1.Deployment
 				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-hpa-pdb"}, &dep); err != nil {
 					return err
 				}
-				if dep.Status.AvailableReplicas < 3 {
-					return fmt.Errorf("expected 3 available replicas, got %d", dep.Status.AvailableReplicas)
+				if dep.Status.AvailableReplicas < 5 {
+					return fmt.Errorf("expected 5 available replicas, got %d", dep.Status.AvailableReplicas)
 				}
 				return nil
 			}, time.Minute, time.Second).Should(Succeed())
 
-			By("verifying PDB minAvailable stays at 1 (HPA min), not 3 (deployment replicas)")
+			By("verifying PDB minAvailable stays at 2 (HPA min), not 5 (deployment replicas)")
 			// Give the controller time to reconcile the deployment change
 			time.Sleep(5 * time.Second)
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 1)
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 2)
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("cleaning up HPA PDB test resources")

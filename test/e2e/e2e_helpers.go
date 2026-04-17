@@ -246,3 +246,38 @@ func verifyHasOwnerReference(ctx context.Context, clientset client.Client, ns, n
 	}
 	return nil
 }
+
+// createHPA creates an HPA targeting a deployment
+func createHPA(name, namespace, targetDeployment string, minReplicas, maxReplicas int32) error {
+	hpaYaml := fmt.Sprintf(`apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: %s
+  minReplicas: %d
+  maxReplicas: %d
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+`, name, namespace, targetDeployment, minReplicas, maxReplicas)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(hpaYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteHPA deletes a HorizontalPodAutoscaler
+func deleteHPA(name, namespace string) {
+	cmd := exec.Command("kubectl", "delete", "hpa", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+}

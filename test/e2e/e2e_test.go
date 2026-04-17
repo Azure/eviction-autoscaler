@@ -1012,5 +1012,83 @@ var _ = Describe("controller", Ordered, func() {
 
 			Expect(scrapeMetrics()).To(Succeed())
 		})
+
+		// Test 3: PDB minAvailable should use HPA minReplicas, not deployment replicas
+		It("should create PDB with minAvailable from HPA minReplicas when HPA targets the deployment", func() {
+			ctx := context.Background()
+			testNs := "test-hpa-pdb-min"
+
+			By("creating test namespace with enable annotation")
+			cmd := exec.Command("kubectl", "create", "namespace", testNs)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica and maxUnavailable=0")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-hpa-pdb",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-hpa-pdb", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating an HPA targeting the deployment with minReplicas=1")
+			err = createHPA("nginx-hpa-pdb", testNs, "nginx-hpa-pdb", 1, 5)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB is created with minAvailable=1 (from HPA minReplicas)")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-hpa-pdb")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 1)
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("scaling deployment replicas to 3 manually (simulating HPA scale-up)")
+			cmd = exec.Command("kubectl", "scale", "deployment", "nginx-hpa-pdb",
+				"--replicas=3", "--namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to have 3 replicas ready")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-hpa-pdb"}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 3 {
+					return fmt.Errorf("expected 3 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying PDB minAvailable stays at 1 (HPA min), not 3 (deployment replicas)")
+			// Give the controller time to reconcile the deployment change
+			time.Sleep(5 * time.Second)
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 1)
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("cleaning up HPA PDB test resources")
+			deleteHPA("nginx-hpa-pdb", testNs)
+			deleteDeployment("nginx-hpa-pdb", testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
 	})
 })

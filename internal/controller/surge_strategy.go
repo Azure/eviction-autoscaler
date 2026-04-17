@@ -9,6 +9,7 @@ import (
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -80,8 +81,9 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 	}
 	if scaledObj != nil {
-		logger.Info("Found KEDA ScaledObject for target, skipping (KEDA surge strategy not yet implemented)",
+		logger.Info("Found KEDA ScaledObject for target, adding KEDA surge applier",
 			"scaledObject", scaledObj.GetName(), "target", targetName)
+		appliers = append(appliers, &KEDASurgeApplier{scaledObject: scaledObj, target: target})
 	}
 
 	// Check for standalone HPA targeting this workload
@@ -229,6 +231,85 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, c client.Client, orig
 
 func (h *HPASurgeApplier) Name() string {
 	return "hpa"
+}
+
+// --- KEDASurgeApplier ---
+// Surges by temporarily increasing ScaledObject spec.minReplicaCount.
+
+type KEDASurgeApplier struct {
+	scaledObject *unstructured.Unstructured
+	target       Surger
+}
+
+var _ SurgeApplier = &KEDASurgeApplier{}
+
+func (k *KEDASurgeApplier) ApplySurge(ctx context.Context, c client.Client, surgeReplicas int32) error {
+	logger := log.FromContext(ctx)
+
+	// Step 1: Update ScaledObject minReplicaCount first to raise the floor.
+	// This must happen before setting deployment replicas to prevent a race where
+	// KEDA/HPA scales the deployment back down between the two writes.
+	obj := k.scaledObject.DeepCopy()
+	if err := unstructured.SetNestedField(obj.Object, int64(surgeReplicas), "spec", "minReplicaCount"); err != nil {
+		return fmt.Errorf("setting minReplicaCount: %w", err)
+	}
+	k.scaledObject = obj
+	if err := c.Update(ctx, obj); err != nil {
+		return fmt.Errorf("updating ScaledObject minReplicaCount: %w", err)
+	}
+	logger.V(1).Info("Updated ScaledObject minReplicaCount", "minReplicaCount", surgeReplicas)
+
+	// Step 2: Set deployment replicas directly for immediate scale-up and annotate
+	// with surge intent marker. This avoids waiting for the KEDA→HPA sync loop
+	// and handles the case where the HPA cannot compute metrics (e.g., no metrics-server).
+	// Skip if already annotated (e.g., by another applier in a composite).
+	surgeVal := strconv.FormatInt(int64(surgeReplicas), 10)
+	if !hasTargetAnnotationWithValue(k.target, surgeVal) {
+		if err := reGetAndUpdateTarget(ctx, c, k.target, func() {
+			if k.target.GetReplicas() != surgeReplicas {
+				k.target.SetReplicas(surgeReplicas)
+			}
+			k.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, surgeVal)
+		}); err != nil {
+			return fmt.Errorf("setting replicas and annotating target: %w", err)
+		}
+		logger.V(1).Info("Set replicas and annotated target with surge intent", "replicas", surgeReplicas)
+	}
+	return nil
+}
+
+func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, c client.Client, originalMinReplicas int32) error {
+	logger := log.FromContext(ctx)
+
+	// Step 1: Revert ScaledObject minReplicaCount using EA.Status.MinReplicas (the effective floor)
+	obj := k.scaledObject.DeepCopy()
+	if err := unstructured.SetNestedField(obj.Object, int64(originalMinReplicas), "spec", "minReplicaCount"); err != nil {
+		return fmt.Errorf("restoring minReplicaCount: %w", err)
+	}
+
+	k.scaledObject = obj
+	if err := c.Update(ctx, obj); err != nil {
+		return fmt.Errorf("reverting ScaledObject minReplicaCount: %w", err)
+	}
+	logger.V(1).Info("Reverted ScaledObject minReplicaCount", "originalMin", originalMinReplicas)
+
+	// Step 2: Remove surge annotation and set replicas directly for immediate scale-down.
+	// This avoids waiting for the KEDA→HPA sync loop to enforce the reverted minReplicaCount.
+	if hasTargetAnnotation(k.target) {
+		if err := reGetAndUpdateTarget(ctx, c, k.target, func() {
+			if k.target.GetReplicas() != originalMinReplicas {
+				k.target.SetReplicas(originalMinReplicas)
+			}
+			k.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
+		}); err != nil {
+			return fmt.Errorf("removing surge annotation from target: %w", err)
+		}
+	}
+	return nil
+}
+
+func (k *KEDASurgeApplier) Name() string {
+	return "keda"
 }
 
 // --- CompositeSurgeApplier ---

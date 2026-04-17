@@ -48,6 +48,7 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;update
 
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)

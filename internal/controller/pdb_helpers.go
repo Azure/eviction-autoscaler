@@ -89,6 +89,13 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 	controller := true
 	blockOwnerDeletion := true
 
+	// Use KEDA/HPA minReplicas when available instead of deployment.spec.replicas,
+	// since the autoscaler controls the actual replica count and may have scaled above its floor.
+	minAvailable, err := ResolveMinReplicas(ctx, c, deployment.Namespace, deployment.Name, ResourceTypeDeployment, *deployment.Spec.Replicas)
+	if err != nil {
+		return err
+	}
+
 	pdb := &policyv1.PodDisruptionBudget{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      deployment.Name,
@@ -109,7 +116,7 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 			},
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
-			MinAvailable: &intstr.IntOrString{IntVal: *deployment.Spec.Replicas},
+			MinAvailable: &intstr.IntOrString{IntVal: minAvailable},
 			Selector:     &metav1.LabelSelector{MatchLabels: deployment.Spec.Selector.MatchLabels},
 		},
 	}

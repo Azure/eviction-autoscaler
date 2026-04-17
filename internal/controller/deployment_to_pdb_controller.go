@@ -140,33 +140,51 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	if EvictionAutoScaler.Status.TargetGeneration != deployment.GetGeneration() {
-		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
-		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
-		// no surge happened but customer already increased deployment replicas, then annotation would not exist
-		if surgeReplicas, scaleUpAnnotationExists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; scaleUpAnnotationExists {
-			newReplicas, err := strconv.Atoi(surgeReplicas)
-			if err != nil {
-				logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
-					"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
-				return err
-			}
+	// When HPA/KEDA targets this deployment, a separate controller (AutoscalerToPDBReconciler)
+	// is responsible for tracking their minReplicas/minReplicaCount and updating PDB minAvailable.
+	// This controller should not interfere with autoscaler-driven replica changes.
+	hasAS, err := HasAutoscaler(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+	if err != nil {
+		return err
+	}
+	if hasAS {
+		logger.V(1).Info("HPA/KEDA controls this deployment, skipping PDB minAvailable update",
+			"target", deployment.Name)
+		return nil
+	}
 
-			if int32(newReplicas) == *deployment.Spec.Replicas {
-				return nil
-			}
-		}
-		//someone else changed deployment num of replicas
-		pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: *deployment.Spec.Replicas}
-		err := r.Update(ctx, &pdb)
+	// No autoscaler — only proceed if the deployment generation actually changed
+	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
+		return nil
+	}
+
+	// Track deployment.spec.replicas directly.
+	// But skip if the replica change was caused by our own eviction surge.
+	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+		newReplicas, err := strconv.Atoi(surgeReplicas)
 		if err != nil {
-			logger.Error(err, "unable to update pdb minAvailable to deployment replicas ",
-				"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+			logger.Error(err, "unable to parse surge replicas from annotation NOT updating",
+				"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
 			return err
 		}
-		logger.Info("Successfully updated pdb minAvailable to deployment replicas ",
-			"namespace", pdb.Namespace, "name", pdb.Name, "replicas", *deployment.Spec.Replicas)
+		if int32(newReplicas) == *deployment.Spec.Replicas {
+			return nil
+		}
 	}
+	minAvailable := *deployment.Spec.Replicas
+
+	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
+		return nil // already correct
+	}
+
+	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
+	if err = r.Update(ctx, &pdb); err != nil {
+		logger.Error(err, "unable to update pdb minAvailable",
+			"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)
+		return err
+	}
+	logger.Info("Successfully updated pdb minAvailable",
+		"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)
 	return nil
 }
 

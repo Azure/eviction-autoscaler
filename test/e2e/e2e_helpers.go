@@ -27,6 +27,8 @@ import (
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -38,6 +40,7 @@ type deploymentConfig struct {
 	Replicas       int32
 	MaxUnavailable int
 	Annotations    map[string]string
+	CPURequest     string // optional, e.g. "10m"
 }
 
 // createDeployment creates a deployment with the given configuration
@@ -77,6 +80,11 @@ spec:
       containers:
         - name: nginx
           image: nginx:latest
+{{- if .CPURequest}}
+          resources:
+            requests:
+              cpu: "{{.CPURequest}}"
+{{- end}}
 `
 	t, err := template.New("deployment").Parse(tmpl)
 	if err != nil {
@@ -90,12 +98,14 @@ spec:
 		Replicas       int32
 		MaxUnavailable string
 		Annotations    map[string]string
+		CPURequest     string
 	}{
 		Name:           cfg.Name,
 		Namespace:      cfg.Namespace,
 		Replicas:       cfg.Replicas,
 		MaxUnavailable: maxUnavailable,
 		Annotations:    cfg.Annotations,
+		CPURequest:     cfg.CPURequest,
 	}
 
 	if err := t.Execute(&buf, data); err != nil {
@@ -245,4 +255,159 @@ func verifyHasOwnerReference(ctx context.Context, clientset client.Client, ns, n
 		return fmt.Errorf("PDB has no owner references")
 	}
 	return nil
+}
+
+// createHPA creates an HPA targeting a deployment
+func createHPA(name, namespace, targetDeployment string, minReplicas, maxReplicas int32) error {
+	hpaYaml := fmt.Sprintf(`apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: %s
+  minReplicas: %d
+  maxReplicas: %d
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 80
+`, name, namespace, targetDeployment, minReplicas, maxReplicas)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(hpaYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteHPA deletes a HorizontalPodAutoscaler
+func deleteHPA(name, namespace string) {
+	cmd := exec.Command("kubectl", "delete", "hpa", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+}
+
+// verifyHPAMinReplicas checks if an HPA has the expected minReplicas value
+func verifyHPAMinReplicas(ctx context.Context, clientset client.Client, ns, name string, expectedMin int32) error {
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &hpa)
+	if err != nil {
+		return err
+	}
+	if hpa.Spec.MinReplicas == nil {
+		return fmt.Errorf("HPA minReplicas is nil")
+	}
+	if *hpa.Spec.MinReplicas != expectedMin {
+		return fmt.Errorf("expected HPA minReplicas to be %d, got %d", expectedMin, *hpa.Spec.MinReplicas)
+	}
+	return nil
+}
+
+// verifyDeploymentAnnotation checks if a deployment has the expected annotation value
+func verifyDeploymentAnnotation(
+	ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string,
+) error {
+	var dep appsv1.Deployment
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
+	if err != nil {
+		return err
+	}
+	val, ok := dep.Annotations[annotationKey]
+	if !ok {
+		return fmt.Errorf("annotation %q not found on deployment %s", annotationKey, name)
+	}
+	if val != expectedValue {
+		return fmt.Errorf("expected annotation %q=%q, got %q", annotationKey, expectedValue, val)
+	}
+	return nil
+}
+
+// verifyDeploymentNoAnnotation checks that a deployment does NOT have a specific annotation
+func verifyDeploymentNoAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey string) error {
+	var dep appsv1.Deployment
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
+	if err != nil {
+		return err
+	}
+	if _, ok := dep.Annotations[annotationKey]; ok {
+		return fmt.Errorf("annotation %q should not be present on deployment %s", annotationKey, name)
+	}
+	return nil
+}
+
+// createKEDAScaledObject creates a KEDA ScaledObject targeting a deployment
+func createKEDAScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int32) error {
+	scaledObjectYaml := fmt.Sprintf(`apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  scaleTargetRef:
+    name: %s
+    kind: Deployment
+  minReplicaCount: %d
+  maxReplicaCount: %d
+  triggers:
+  - type: cpu
+    metadata:
+      type: Utilization
+      value: "80"
+`, name, namespace, targetDeployment, minReplicaCount, maxReplicaCount)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(scaledObjectYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteKEDAScaledObject deletes a KEDA ScaledObject
+func deleteKEDAScaledObject(name, namespace string) {
+	cmd := exec.Command("kubectl", "delete", "scaledobject", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+}
+
+// verifyKEDAScaledObjectMinReplicas checks the minReplicaCount on a ScaledObject using kubectl
+func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32) error {
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace,
+		"-o", "jsonpath={.spec.minReplicaCount}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	actual := strings.TrimSpace(string(output))
+	expected := fmt.Sprintf("%d", expectedMin)
+	if actual != expected {
+		return fmt.Errorf("expected ScaledObject minReplicaCount=%s, got %s", expected, actual)
+	}
+	return nil
+}
+
+// installKEDA installs KEDA using Helm
+func installKEDA() error {
+	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
+	_, _ = utils.Run(cmd) // ignore error if repo already exists
+	cmd = exec.Command("helm", "repo", "update")
+	_, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
+		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
+	_, err = utils.Run(cmd)
+	return err
+}
+
+// uninstallKEDA removes KEDA
+func uninstallKEDA() {
+	cmd := exec.Command("helm", "uninstall", "keda", "--namespace", "keda")
+	_, _ = utils.Run(cmd)
+	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
+	_, _ = utils.Run(cmd)
 }

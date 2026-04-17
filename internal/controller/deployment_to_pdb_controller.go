@@ -10,7 +10,6 @@ import (
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -141,12 +140,24 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
+	// When HPA/KEDA targets this deployment, a separate controller (AutoscalerToPDBReconciler)
+	// is responsible for tracking their minReplicas/minReplicaCount and updating PDB minAvailable.
+	// This controller should not interfere with autoscaler-driven replica changes.
+	_, kedaErr := findScaledObjectForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+	_, hpaErr := findHPAForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
+	if kedaErr == nil || hpaErr == nil {
+		logger.V(1).Info("HPA/KEDA controls this deployment, skipping PDB minAvailable update",
+			"target", deployment.Name)
+		return nil
+	}
+
+	// No autoscaler — only proceed if the deployment generation actually changed
 	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
 		return nil
 	}
 
-	// Skip PDB updates if the replica change was caused by our own eviction surge.
-	// This applies regardless of whether HPA/KEDA is present.
+	// Track deployment.spec.replicas directly.
+	// But skip if the replica change was caused by our own eviction surge.
 	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 		newReplicas, err := strconv.Atoi(surgeReplicas)
 		if err != nil {
@@ -158,39 +169,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			return nil
 		}
 	}
-
-	// Determine the correct minAvailable value.
-	// When HPA/KEDA targets this deployment, minAvailable tracks the autoscaler's
-	// min replicas (the floor). Otherwise, it tracks deployment.spec.replicas.
-	var minAvailable int32
-
-	hpa, hpaErr := findHPAForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
-	scaledObj, kedaErr := findScaledObjectForTarget(ctx, r.Client, deployment.Namespace, deployment.Name, ResourceTypeDeployment)
-
-	switch {
-	case kedaErr == nil && scaledObj != nil:
-		// KEDA controls this deployment — use ScaledObject minReplicaCount
-		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
-			minAvailable = int32(val)
-		} else {
-			minAvailable = 1 // KEDA default
-		}
-		logger.V(1).Info("Using KEDA ScaledObject minReplicaCount for PDB minAvailable",
-			"target", deployment.Name, "minAvailable", minAvailable)
-
-	case hpaErr == nil && hpa != nil:
-		// HPA controls this deployment — use HPA minReplicas
-		if hpa.Spec.MinReplicas != nil {
-			minAvailable = *hpa.Spec.MinReplicas
-		} else {
-			minAvailable = 1 // HPA default
-		}
-		logger.V(1).Info("Using HPA minReplicas for PDB minAvailable",
-			"target", deployment.Name, "hpa", hpa.Name, "minAvailable", minAvailable)
-
-	default:
-		minAvailable = *deployment.Spec.Replicas
-	}
+	minAvailable := *deployment.Spec.Replicas
 
 	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
 		return nil // already correct

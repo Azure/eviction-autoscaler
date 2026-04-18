@@ -163,8 +163,7 @@ func requeueDeploymentFromScaledObject() handler.TypedMapFunc[*unstructured.Unst
 // SetupWithManager registers watches on HPA and KEDA ScaledObject resources.
 func (r *AutoscalerToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
-		// No primary "For" resource — this controller is driven entirely by watches.
-		// We use a dummy source to satisfy the builder and rely on Watches below.
+		Named("autoscaler-to-pdb").
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{},
 			handler.EnqueueRequestsFromMapFunc(requeueDeploymentFromHPA()))
 

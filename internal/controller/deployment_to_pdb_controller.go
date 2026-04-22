@@ -157,7 +157,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	// No autoscaler — only proceed if the deployment generation actually changed	
+	// No autoscaler — only proceed if the deployment generation actually changed
 	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
 		return nil
 	}

@@ -1084,6 +1084,18 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 2)
 			}, 30*time.Second, time.Second).Should(Succeed())
 
+			By("updating HPA minReplicas from 2 to 3 to test AutoscalerToPDBReconciler")
+			cmd = exec.Command("kubectl", "patch", "hpa", "nginx-hpa-pdb",
+				"--namespace", testNs,
+				"--type=merge", "-p", `{"spec":{"minReplicas":3}}`)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB minAvailable updates to 3 (tracks HPA minReplicas change)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-hpa-pdb", 3)
+			}, time.Minute, time.Second).Should(Succeed())
+
 			By("cleaning up HPA PDB test resources")
 			deleteHPA("nginx-hpa-pdb", testNs)
 			deleteDeployment("nginx-hpa-pdb", testNs)

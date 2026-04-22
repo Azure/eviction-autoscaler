@@ -115,7 +115,11 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, *pdb)
 	}
 
-	// Create a new PDB for the Deployment using helper function
+	// Create a new PDB for the Deployment using helper function.
+	// PDB creation is always handled here (not in AutoscalerToPDBReconciler) because
+	// creation is gated by the pdb-create annotation on the Deployment. CreatePDBForDeployment
+	// uses ResolveMinReplicas to pick the correct initial minAvailable from the autoscaler floor.
+	// After creation, the autoscaler controller takes over minAvailable updates.
 	if err := CreatePDBForDeployment(ctx, r.Client, &deployment); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -153,13 +157,16 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	// No autoscaler — only proceed if the deployment generation actually changed
+	// No autoscaler — only proceed if the deployment generation actually changed	
 	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
 		return nil
 	}
 
 	// Track deployment.spec.replicas directly.
 	// But skip if the replica change was caused by our own eviction surge.
+	//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
+	//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
+	// no surge happened but customer already increased deployment replicas, then annotation would not exist
 	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 		newReplicas, err := strconv.Atoi(surgeReplicas)
 		if err != nil {

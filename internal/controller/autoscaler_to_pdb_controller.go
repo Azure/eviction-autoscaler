@@ -7,6 +7,7 @@ import (
 
 	v1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -24,6 +25,11 @@ import (
 // and updates the PDB minAvailable to match their min replicas floor.
 // This ensures the PDB stays correct when an autoscaler's minReplicas/minReplicaCount
 // changes without a corresponding deployment spec change.
+//
+// A single controller handles both HPA and ScaledObject because the reconcile logic
+// is identical (resolve the target deployment from scaleTargetRef → resolve min replicas
+// floor → update PDB). Two separate controllers would duplicate this logic without
+// any benefit.
 type AutoscalerToPDBReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -34,7 +40,7 @@ type AutoscalerToPDBReconciler struct {
 // +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch
 
 // Reconcile is triggered when an HPA or ScaledObject changes. The request key is the
-// target deployment's namespace/name (mapped by the watch handlers).
+// autoscaler's namespace/name. We resolve the target deployment from its scaleTargetRef.
 func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -49,17 +55,30 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, nil
 	}
 
-	// Resolve the target deployment from the HPA/ScaledObject's scaleTargetRef.
-	// The watch mappers translate HPA/ScaledObject events into deployment namespace/name keys.
-	// If the deployment doesn't exist (e.g. HPA outlived it), there's nothing to do.
+	// Resolve the target deployment name from the autoscaler's scaleTargetRef.
+	// Try HPA first, then ScaledObject.
+	deploymentName, err := r.resolveDeploymentName(ctx, req)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	if deploymentName == "" {
+		return reconcile.Result{}, nil
+	}
+
+	// Fetch the target deployment. If it doesn't exist (e.g. HPA outlived it), there's nothing to do.
 	var deployment v1.Deployment
-	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: deploymentName}, &deployment); err != nil {
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
 	// Find the PDB that matches this deployment's pod selector labels.
 	// Only consider PDBs created by this controller (ownedBy annotation) — user-managed PDBs
 	// should not be modified. If no controller-owned PDB exists, there's nothing to update.
+	//
+	// PDB creation is intentionally left to DeploymentToPDBReconciler, not this controller.
+	// The pdb-create annotation lives on the Deployment, so the deployment controller is the
+	// natural place to gate and create PDBs. Duplicating that decision here (or supporting
+	// the annotation on HPA/ScaledObject too) would add complexity without benefit.
 	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, true)
 	if err != nil {
 		return reconcile.Result{}, err
@@ -82,13 +101,13 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	// Resolve the autoscaler's minimum replica floor (KEDA minReplicaCount > HPA minReplicas).
 	// If no autoscaler targets this deployment, the deployment controller owns PDB updates
 	// and we bail out. We pass 0 as the fallback (unused when found==true).
-	minAvailable, found, err := ResolveMinReplicas(ctx, r.Client, req.Namespace, req.Name, ResourceTypeDeployment, 0)
+	minAvailable, found, err := ResolveMinReplicas(ctx, r.Client, req.Namespace, deploymentName, ResourceTypeDeployment, 0)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if !found {
 		logger.V(1).Info("No HPA/KEDA found for deployment, skipping PDB update",
-			"deployment", req.Name)
+			"deployment", deploymentName)
 		return reconcile.Result{}, nil
 	}
 
@@ -110,64 +129,63 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return reconcile.Result{}, nil
 }
 
-// requeueDeploymentFromHPA maps an HPA event to the target deployment's reconcile request.
-func requeueDeploymentFromHPA() handler.MapFunc {
-	return func(_ context.Context, obj client.Object) []reconcile.Request {
-		hpa, ok := obj.(*autoscalingv2.HorizontalPodAutoscaler)
-		if !ok {
-			return nil
-		}
-		// Skip KEDA-managed HPAs — the ScaledObject watch handles those
-		if isKEDAManagedHPA(hpa) {
-			return nil
+// resolveDeploymentName extracts the target deployment name from the autoscaler
+// identified by req.NamespacedName. Tries HPA first, then ScaledObject.
+// Returns "" if the autoscaler doesn't target a Deployment or was not found.
+func (r *AutoscalerToPDBReconciler) resolveDeploymentName(ctx context.Context, req ctrl.Request) (string, error) {
+	// Try HPA
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	if err := r.Get(ctx, req.NamespacedName, &hpa); err == nil {
+		// Skip KEDA-managed HPAs — the ScaledObject event handles those
+		if isKEDAManagedHPA(&hpa) {
+			return "", nil
 		}
 		if !strings.EqualFold(hpa.Spec.ScaleTargetRef.Kind, ResourceTypeDeployment) {
-			return nil
+			return "", nil
 		}
-		return []reconcile.Request{{
-			NamespacedName: types.NamespacedName{
-				Namespace: hpa.Namespace,
-				Name:      hpa.Spec.ScaleTargetRef.Name,
-			},
-		}}
+		return hpa.Spec.ScaleTargetRef.Name, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", err
 	}
-}
 
-// requeueDeploymentFromScaledObject maps a KEDA ScaledObject event to the target deployment.
-func requeueDeploymentFromScaledObject() handler.TypedMapFunc[*unstructured.Unstructured, reconcile.Request] {
-	return func(_ context.Context, obj *unstructured.Unstructured) []reconcile.Request {
-		scaleTargetRef, found, err := unstructured.NestedMap(obj.Object, "spec", "scaleTargetRef")
+	// Try ScaledObject
+	scaledObj := &unstructured.Unstructured{}
+	scaledObj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
+	})
+	if err := r.Get(ctx, req.NamespacedName, scaledObj); err == nil {
+		scaleTargetRef, found, err := unstructured.NestedMap(scaledObj.Object, "spec", "scaleTargetRef")
 		if err != nil || !found {
-			return nil
+			return "", nil
 		}
 		name, _ := scaleTargetRef["name"].(string)
-		if name == "" {
-			return nil
-		}
 		kind, _ := scaleTargetRef["kind"].(string)
 		if kind == "" {
 			kind = ResourceTypeDeployment
 		}
 		if !strings.EqualFold(kind, ResourceTypeDeployment) {
-			return nil
+			return "", nil
 		}
-		return []reconcile.Request{{
-			NamespacedName: types.NamespacedName{
-				Namespace: obj.GetNamespace(),
-				Name:      name,
-			},
-		}}
+		return name, nil
+	} else if !apierrors.IsNotFound(err) {
+		return "", err
 	}
+
+	return "", nil
 }
 
 // SetupWithManager registers watches on HPA and KEDA ScaledObject resources.
+// Events are enqueued with the autoscaler's own key; Reconcile resolves the
+// target deployment from the autoscaler's scaleTargetRef.
 func (r *AutoscalerToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	builder := ctrl.NewControllerManagedBy(mgr).
 		Named("autoscaler-to-pdb").
 		Watches(&autoscalingv2.HorizontalPodAutoscaler{},
-			handler.EnqueueRequestsFromMapFunc(requeueDeploymentFromHPA()))
+			&handler.EnqueueRequestForObject{})
 
-	// Try to watch KEDA ScaledObjects (only if the CRD is installed)
+	// Try to watch KEDA ScaledObjects (only if the CRD is installed).
+	// CRD discovery happens once at startup. If KEDA is installed after the controller
+	// starts, a restart is required to begin watching ScaledObjects.
 	scaledObjectGVK := schema.GroupVersionKind{
 		Group:   "keda.sh",
 		Version: "v1alpha1",
@@ -179,7 +197,7 @@ func (r *AutoscalerToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	if err := r.discoverScaledObjectCRD(mgr); err == nil {
 		builder = builder.WatchesRawSource(
 			source.Kind(mgr.GetCache(), scaledObj,
-				handler.TypedEnqueueRequestsFromMapFunc(requeueDeploymentFromScaledObject())))
+				&handler.TypedEnqueueRequestForObject[*unstructured.Unstructured]{}))
 	} else {
 		mgr.GetLogger().Info("KEDA ScaledObject CRD not found, skipping ScaledObject watch")
 	}

@@ -193,6 +193,8 @@ func main() {
 		}
 		setupLog.Info("DeploymentToPDBReconciler setup completed")
 
+		// Watches both HPA and KEDA ScaledObject changes to keep PDB minAvailable
+		// in sync with the autoscaler's min replicas floor.
 		if err = (&controllers.AutoscalerToPDBReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),

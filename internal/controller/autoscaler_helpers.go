@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -16,6 +17,9 @@ import (
 var errNotFound = errors.New("not found")
 
 // findScaledObjectForTarget looks for a KEDA ScaledObject targeting the given workload.
+// We use unstructured types instead of importing github.com/kedacore/keda/v2 because
+// KEDA's module pulls in 80+ direct dependencies (AWS, Azure, GCP SDKs, Kafka, etc.)
+// which would massively bloat our dependency tree for just two types.
 // Returns nil, errNotFound if KEDA is not installed or no matching ScaledObject is found.
 func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*unstructured.Unstructured, error) {
 	list := &unstructured.UnstructuredList{}
@@ -32,10 +36,14 @@ func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, 
 		return nil, err
 	}
 
-	for i := range list.Items {
-		item := &list.Items[i]
+	for _, item := range list.Items {
 		scaleTargetRef, found, err := unstructured.NestedMap(item.Object, "spec", "scaleTargetRef")
-		if err != nil || !found {
+		if err != nil {
+			return nil, fmt.Errorf("failed to read scaleTargetRef from ScaledObject %s/%s: %w", namespace, item.GetName(), err)
+		}
+		if !found {
+			log.FromContext(ctx).V(1).Info("ScaledObject missing scaleTargetRef, skipping",
+				"namespace", namespace, "name", item.GetName())
 			continue
 		}
 		name, _ := scaleTargetRef["name"].(string)
@@ -44,7 +52,7 @@ func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, 
 			kind = "Deployment" // KEDA default
 		}
 		if name == targetName && strings.EqualFold(kind, targetKind) {
-			return item, nil
+			return &item, nil
 		}
 	}
 
@@ -97,19 +105,19 @@ func isKEDAManagedHPA(hpa *autoscalingv2.HorizontalPodAutoscaler) bool {
 // Returns an error on real API failures (not errNotFound) so the caller can retry.
 func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (bool, error) {
 	_, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil && !errors.Is(err, errNotFound) {
-		return false, err
-	}
 	if err == nil {
 		return true, nil
+	}
+	if !errors.Is(err, errNotFound) {
+		return false, err
 	}
 
 	_, err = findHPAForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil && !errors.Is(err, errNotFound) {
-		return false, err
-	}
 	if err == nil {
 		return true, nil
+	}
+	if !errors.Is(err, errNotFound) {
+		return false, err
 	}
 
 	return false, nil
@@ -117,34 +125,38 @@ func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, 
 
 // ResolveMinReplicas returns the effective minimum replica count for a workload.
 // Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
+//
+// The returned bool indicates whether an autoscaler (KEDA or HPA) was found.
+// When true, the int32 is the autoscaler's floor (which may be 0 for KEDA scale-to-zero).
+// When false, the int32 is the deployReplicas fallback.
 // Returns an error on real API failures so the caller can retry rather than using a wrong value.
-func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) (int32, error) {
+func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetName, targetKind string, deployReplicas int32) (int32, bool, error) {
 	logger := log.FromContext(ctx)
 
 	// 1. Check KEDA ScaledObject
 	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
-		return 0, err
+		return 0, false, err
 	}
 	if err == nil && scaledObj != nil {
-		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found && val > 0 {
+		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found {
 			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
 				"target", targetName, "minReplicaCount", val)
-			return int32(val), nil
+			return int32(val), true, nil
 		}
 	}
 
 	// 2. Check standalone HPA
 	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 	if err != nil && !errors.Is(err, errNotFound) {
-		return 0, err
+		return 0, false, err
 	}
 	if err == nil && hpa != nil && hpa.Spec.MinReplicas != nil {
 		logger.V(1).Info("Using HPA minReplicas",
 			"target", targetName, "hpa", hpa.Name, "minReplicas", *hpa.Spec.MinReplicas)
-		return *hpa.Spec.MinReplicas, nil
+		return *hpa.Spec.MinReplicas, true, nil
 	}
 
 	// 3. Fall back to deployment replicas
-	return deployReplicas, nil
+	return deployReplicas, false, nil
 }

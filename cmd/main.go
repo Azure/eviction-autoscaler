@@ -192,6 +192,18 @@ func main() {
 			os.Exit(1)
 		}
 		setupLog.Info("DeploymentToPDBReconciler setup completed")
+
+		// Watches both HPA and KEDA ScaledObject changes to keep PDB minAvailable
+		// in sync with the autoscaler's min replicas floor.
+		if err = (&controllers.AutoscalerToPDBReconciler{
+			Client: mgr.GetClient(),
+			Scheme: mgr.GetScheme(),
+			Filter: nsfilter,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "AutoscalerToPDBReconciler")
+			os.Exit(1)
+		}
+		setupLog.Info("AutoscalerToPDBReconciler setup completed")
 	}
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{

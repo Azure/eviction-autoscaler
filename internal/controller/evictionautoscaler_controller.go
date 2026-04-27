@@ -114,13 +114,31 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
 
+	// Detect surge strategy based on KEDA, HPA, or plain deployment
+	surgeApplier, err := detectSurgeApplier(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target)
+	if err != nil {
+		logger.Error(err, "failed to detect surge strategy")
+		return ctrl.Result{}, err
+	}
+
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
-		logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
-		// The resource version has changed, which means someone else has modified the Target.
-		// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		EvictionAutoScaler.Status.MinReplicas = target.GetReplicas()
+		// Don't reset MinReplicas if a surge is in progress (e.g., HPA/KEDA-driven scaling
+		// changes the deployment generation as part of the surge, not a user change).
+		if hasTargetAnnotation(target) {
+			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
+		} else {
+			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
+			// The resource version has changed, which means someone else has modified the Target.
+			// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
+			// Use ResolveMinReplicas to track the effective floor (HPA minReplicas, KEDA minReplicaCount, or deployment replicas).
+			minReplicas, _, resolveErr := ResolveMinReplicas(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target.GetReplicas())
+			if resolveErr != nil {
+				return ctrl.Result{}, resolveErr
+			}
+			EvictionAutoScaler.Status.MinReplicas = minReplicas
+		}
 		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
@@ -145,7 +163,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if pdb.Status.DisruptionsAllowed == 0 && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
 		// What if the evict went through because the pod being evicted wasn't ready anyways?
 		// TODO later. Surge more slowly based on number of evictions (need to move back to capturing them all)
-		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction)
+		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name())
 
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
@@ -155,15 +173,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
 
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
-		target.SetReplicas(newReplicas)
-		//adding annotations here is an atomic operation;
-		//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
-		//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
-		// this is to solve customer scaling up deployment manually so EvictionAutoScaler minAvailable needs to be updated
-		target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(newReplicas), 10))
-		err = r.Update(ctx, target.Obj())
+		err = surgeApplier.ApplySurge(ctx, r.Client, newReplicas)
 		if err != nil {
-			logger.Error(err, "failed to update Target", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
+			logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
 			return ctrl.Result{}, err
 		}
 
@@ -171,7 +183,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas))
+		logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), newReplicas, surgeApplier.Name()))
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
@@ -192,15 +204,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	//still at a scaled out state check if we can scale back down
-	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas { //would we ever be below min replicas
+	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
 
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
-		target.SetReplicas(EvictionAutoScaler.Status.MinReplicas)
-		target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
-		err = r.Update(ctx, target.Obj())
+		err = surgeApplier.RevertSurge(ctx, r.Client, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -209,7 +219,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
 
 		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled down %s %s/%s to %d replicas", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), target.GetReplicas()))
+		logger.Info(fmt.Sprintf("Reverted surge on %s %s/%s (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeApplier.Name()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()

@@ -30,7 +30,8 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 	})
 
 	It("should set replicas and add annotation on ApplySurge", func() {
-		dep := createTestDeployment("surge-apply", namespace, 1)
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-apply", namespace, "surge-apply", 1, &maxUnavailable)
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		target := &DeploymentWrapper{obj: dep}
@@ -47,10 +48,9 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 	})
 
 	It("should revert replicas and remove annotation on RevertSurge", func() {
-		dep := createTestDeployment("surge-revert", namespace, 1)
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-revert", namespace, "surge-revert", 3, &maxUnavailable)
 		dep.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "3"}
-		replicas := int32(3)
-		dep.Spec.Replicas = &replicas
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		target := &DeploymentWrapper{obj: dep}
@@ -66,7 +66,8 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 	})
 
 	It("should return 'deployment' as Name", func() {
-		dep := createTestDeployment("surge-name", namespace, 1)
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-name", namespace, "surge-name", 1, &maxUnavailable)
 		target := &DeploymentWrapper{obj: dep}
 		applier := &DeploymentSurgeApplier{target: target}
 		Expect(applier.Name()).To(Equal("deployment"))
@@ -91,7 +92,8 @@ var _ = Describe("CompositeSurgeApplier", func() {
 	})
 
 	It("should apply surge through all appliers in order", func() {
-		dep := createTestDeployment("composite-apply", namespace, 1)
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("composite-apply", namespace, "composite-apply", 1, &maxUnavailable)
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		target := &DeploymentWrapper{obj: dep}
@@ -110,9 +112,8 @@ var _ = Describe("CompositeSurgeApplier", func() {
 	})
 
 	It("should revert surge through all appliers in order", func() {
-		dep := createTestDeployment("composite-revert", namespace, 1)
-		replicas := int32(4)
-		dep.Spec.Replicas = &replicas
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("composite-revert", namespace, "composite-revert", 4, &maxUnavailable)
 		dep.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "4"}
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
@@ -132,7 +133,8 @@ var _ = Describe("CompositeSurgeApplier", func() {
 	})
 
 	It("should return composite name with all applier names", func() {
-		dep := createTestDeployment("composite-name", namespace, 1)
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("composite-name", namespace, "composite-name", 1, &maxUnavailable)
 		target := &DeploymentWrapper{obj: dep}
 		composite := &CompositeSurgeApplier{
 			appliers: []SurgeApplier{&DeploymentSurgeApplier{target: target}},
@@ -193,36 +195,3 @@ var _ = Describe("hasTargetAnnotationWithValue", func() {
 		Expect(hasTargetAnnotationWithValue(target, "3")).To(BeTrue())
 	})
 })
-
-// createTestDeployment creates a minimal deployment for testing
-func createTestDeployment(name, namespace string, replicas int32) *appsv1.Deployment {
-	maxUnavailable := intstr.FromInt(0)
-	return &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": name},
-			},
-			Strategy: appsv1.DeploymentStrategy{
-				Type: appsv1.RollingUpdateDeploymentStrategyType,
-				RollingUpdate: &appsv1.RollingUpdateDeployment{
-					MaxUnavailable: &maxUnavailable,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": name},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{Name: "nginx", Image: "nginx:latest"},
-					},
-				},
-			},
-		},
-	}
-}

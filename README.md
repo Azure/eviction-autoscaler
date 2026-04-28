@@ -27,8 +27,10 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
-- **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs.
-- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler)
+- **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
+- **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
+- **Autoscaler-to-PDB Controller** (Optional): Watches HPA and KEDA ScaledObject changes and updates PDB `minAvailable` to track the autoscaler's min replicas floor, even when deployment replicas don't change.
+- **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler). Defers to the Autoscaler-to-PDB controller when an HPA or KEDA ScaledObject is present.
 
 ```mermaid
 graph TD;
@@ -37,16 +39,22 @@ graph TD;
     CRD[Eviction Autoscaler Custom Resource]
     Controller[Eviction-Autoscaler Controller]
     Deployment[Deployment or StatefulSet]
+    HPA[HPA / KEDA ScaledObject]
     PDB[Pod Disruption Budget]
     PDBController[Optional PDB creator]
+    AutoscalerToPDB[Autoscaler-to-PDB Controller]
 
 
     Cordon -->|Triggers| NodeController
     NodeController -->|writes spec| CRD
     CRD -->|spec watched by| Controller
-    Controller -->|surges and shrinks| Deployment
+    Controller -->|surges via| HPA
+    Controller -->|surges directly if no HPA| Deployment
     Controller -->|Writes status| CRD
     Controller -->|reads allowed disruptions | PDB
+    HPA -->|controls| Deployment
+    AutoscalerToPDB -->|watches| HPA
+    AutoscalerToPDB -->|updates minAvailable| PDB
     PDBController -->|watches | Deployment
     PDBController -->|creates if not exist| PDB
 ```

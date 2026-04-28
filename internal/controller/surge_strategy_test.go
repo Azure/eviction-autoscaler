@@ -35,9 +35,9 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		target := &DeploymentWrapper{obj: dep}
-		applier := &DeploymentSurgeApplier{target: target}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
 
-		err := applier.ApplySurge(ctx, k8sClient, 3)
+		err := applier.ApplySurge(ctx, 3)
 		Expect(err).ToNot(HaveOccurred())
 
 		// Re-fetch the deployment from the API
@@ -54,9 +54,9 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
 
 		target := &DeploymentWrapper{obj: dep}
-		applier := &DeploymentSurgeApplier{target: target}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
 
-		err := applier.RevertSurge(ctx, k8sClient, 1)
+		err := applier.RevertSurge(ctx, 1)
 		Expect(err).ToNot(HaveOccurred())
 
 		var updated appsv1.Deployment
@@ -69,7 +69,7 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 		maxUnavailable := intstr.FromInt(0)
 		dep := createDeployment("surge-name", namespace, "surge-name", 1, &maxUnavailable)
 		target := &DeploymentWrapper{obj: dep}
-		applier := &DeploymentSurgeApplier{target: target}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
 		Expect(applier.Name()).To(Equal("deployment"))
 	})
 })
@@ -98,11 +98,11 @@ var _ = Describe("CompositeSurgeApplier", func() {
 
 		target := &DeploymentWrapper{obj: dep}
 		composite := &CompositeSurgeApplier{
-			appliers: []SurgeApplier{&DeploymentSurgeApplier{target: target}},
+			appliers: []SurgeApplier{&DeploymentSurgeApplier{client: k8sClient, target: target}},
 			target:   target,
 		}
 
-		err := composite.ApplySurge(ctx, k8sClient, 4)
+		err := composite.ApplySurge(ctx, 4)
 		Expect(err).ToNot(HaveOccurred())
 
 		var updated appsv1.Deployment
@@ -119,11 +119,11 @@ var _ = Describe("CompositeSurgeApplier", func() {
 
 		target := &DeploymentWrapper{obj: dep}
 		composite := &CompositeSurgeApplier{
-			appliers: []SurgeApplier{&DeploymentSurgeApplier{target: target}},
+			appliers: []SurgeApplier{&DeploymentSurgeApplier{client: k8sClient, target: target}},
 			target:   target,
 		}
 
-		err := composite.RevertSurge(ctx, k8sClient, 1)
+		err := composite.RevertSurge(ctx, 1)
 		Expect(err).ToNot(HaveOccurred())
 
 		var updated appsv1.Deployment
@@ -137,7 +137,7 @@ var _ = Describe("CompositeSurgeApplier", func() {
 		dep := createDeployment("composite-name", namespace, "composite-name", 1, &maxUnavailable)
 		target := &DeploymentWrapper{obj: dep}
 		composite := &CompositeSurgeApplier{
-			appliers: []SurgeApplier{&DeploymentSurgeApplier{target: target}},
+			appliers: []SurgeApplier{&DeploymentSurgeApplier{client: k8sClient, target: target}},
 			target:   target,
 		}
 		Expect(composite.Name()).To(Equal("composite(deployment)"))

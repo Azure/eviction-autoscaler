@@ -126,7 +126,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		// Don't reset MinReplicas if a surge is in progress (e.g., HPA/KEDA-driven scaling
 		// changes the deployment generation as part of the surge, not a user change).
-		if hasTargetAnnotation(target) {
+		if surgeApplier.IsSurgeActive() {
 			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
 		} else {
 			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
@@ -173,7 +173,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
 
 		newReplicas := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
-		err = surgeApplier.ApplySurge(ctx, r.Client, newReplicas)
+		err = surgeApplier.ApplySurge(ctx, newReplicas)
 		if err != nil {
 			logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
 			return ctrl.Result{}, err
@@ -210,7 +210,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
-		err = surgeApplier.RevertSurge(ctx, r.Client, EvictionAutoScaler.Status.MinReplicas)
+		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {
 			return ctrl.Result{}, err
 		}

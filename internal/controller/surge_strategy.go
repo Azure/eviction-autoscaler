@@ -36,32 +36,37 @@ type SurgeApplier interface {
 // HPA appliers are added when their resources target this workload, ensuring
 // their floors are raised before the deployment scales.
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
-	if !strings.EqualFold(targetKind, ResourceTypeDeployment) {
-		return nil, fmt.Errorf("unsupported target kind %q: only Deployment is supported for surge strategies", targetKind)
-	}
-
 	logger := log.FromContext(ctx)
 
 	var appliers []SurgeApplier
 
-	// Check for KEDA ScaledObject targeting this workload
-	scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil && !errors.Is(err, errNotFound) {
-		return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
-	}
-	if scaledObj != nil {
-		logger.Info("Found KEDA ScaledObject for target, skipping deployment surge (KEDA strategy not yet implemented)",
-			"scaledObject", scaledObj.GetName(), "target", targetName)
-	}
+	// HPA and KEDA only target Deployments; skip autoscaler detection for other kinds.
+	if strings.EqualFold(targetKind, ResourceTypeDeployment) {
+		// Check for KEDA ScaledObject targeting this workload
+		scaledObj, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
+		}
+		if scaledObj != nil {
+			// KEDA surge strategy not yet implemented — skip surging entirely so we
+			// don't bypass KEDA by mutating deployment replicas directly.
+			logger.Info("Found KEDA ScaledObject for target, skipping surge (KEDA strategy not yet implemented)",
+				"scaledObject", scaledObj.GetName(), "target", targetName)
+			return &NoOpSurgeApplier{}, nil
+		}
 
-	// Check for standalone HPA targeting this workload
-	hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
-	if err != nil && !errors.Is(err, errNotFound) {
-		return nil, fmt.Errorf("checking for HPA: %w", err)
-	}
-	if hpa != nil {
-		logger.Info("Found HPA for target, skipping deployment surge (HPA strategy not yet implemented)",
-			"hpa", hpa.Name, "target", targetName)
+		// Check for standalone HPA targeting this workload
+		hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, fmt.Errorf("checking for HPA: %w", err)
+		}
+		if hpa != nil {
+			// HPA surge strategy not yet implemented — skip surging entirely so we
+			// don't bypass HPA by mutating deployment replicas directly.
+			logger.Info("Found HPA for target, skipping surge (HPA strategy not yet implemented)",
+				"hpa", hpa.Name, "target", targetName)
+			return &NoOpSurgeApplier{}, nil
+		}
 	}
 
 	// DeploymentSurgeApplier is the default strategy when no autoscaler appliers are added.
@@ -96,6 +101,20 @@ func hasTargetAnnotation(target Surger) bool {
 	_, exists := annotations[EvictionSurgeReplicasAnnotationKey]
 	return exists
 }
+
+// --- NoOpSurgeApplier ---
+// Returned when an autoscaler (HPA/KEDA) targets the workload but its surge
+// strategy is not yet implemented. Does nothing on apply/revert so we don't
+// bypass the autoscaler by mutating deployment replicas directly.
+
+type NoOpSurgeApplier struct{}
+
+var _ SurgeApplier = &NoOpSurgeApplier{}
+
+func (n *NoOpSurgeApplier) ApplySurge(_ context.Context, _ int32) error  { return nil }
+func (n *NoOpSurgeApplier) RevertSurge(_ context.Context, _ int32) error { return nil }
+func (n *NoOpSurgeApplier) IsSurgeActive() bool                          { return false }
+func (n *NoOpSurgeApplier) Name() string                                 { return "noop" }
 
 // --- DeploymentSurgeApplier ---
 // Surges by modifying the deployment/statefulset spec.replicas directly.

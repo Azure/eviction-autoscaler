@@ -1087,9 +1087,9 @@ var _ = Describe("controller", Ordered, func() {
 			err = clientset.Update(ctx, &node)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying the deployment gets the evictionSurgeReplicas annotation (intent marker)")
+			By("verifying the HPA gets the evictionSurgeReplicas annotation (surge marker)")
 			EventuallyWithOffset(1, func() error {
-				return verifyDeploymentAnnotation(ctx, clientset, testNs, "nginx-hpa",
+				return verifyHPAAnnotation(ctx, clientset, testNs, "nginx-hpa",
 					"evictionSurgeReplicas", "2")
 			}, time.Minute, time.Second).Should(Succeed())
 
@@ -1135,9 +1135,9 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyHPAMinReplicas(ctx, clientset, testNs, "nginx-hpa", 1)
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
-			By("verifying the evictionSurgeReplicas annotation is removed from deployment")
+			By("verifying the evictionSurgeReplicas annotation is removed from HPA")
 			EventuallyWithOffset(1, func() error {
-				return verifyDeploymentNoAnnotation(ctx, clientset, testNs, "nginx-hpa",
+				return verifyHPANoAnnotation(ctx, clientset, testNs, "nginx-hpa",
 					"evictionSurgeReplicas")
 			}, 2*time.Minute, time.Second).Should(Succeed())
 

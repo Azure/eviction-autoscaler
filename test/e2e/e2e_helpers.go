@@ -339,3 +339,33 @@ func verifyDeploymentNoAnnotation(ctx context.Context, clientset client.Client, 
 	}
 	return nil
 }
+
+// verifyHPAAnnotation checks if an HPA has the expected annotation value
+func verifyHPAAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string) error {
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &hpa)
+	if err != nil {
+		return err
+	}
+	val, ok := hpa.Annotations[annotationKey]
+	if !ok {
+		return fmt.Errorf("annotation %q not found on HPA %s", annotationKey, name)
+	}
+	if val != expectedValue {
+		return fmt.Errorf("expected HPA annotation %q=%q, got %q", annotationKey, expectedValue, val)
+	}
+	return nil
+}
+
+// verifyHPANoAnnotation checks that an HPA does NOT have a specific annotation
+func verifyHPANoAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey string) error {
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &hpa)
+	if err != nil {
+		return err
+	}
+	if _, ok := hpa.Annotations[annotationKey]; ok {
+		return fmt.Errorf("annotation %q should not be present on HPA %s", annotationKey, name)
+	}
+	return nil
+}

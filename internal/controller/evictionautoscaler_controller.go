@@ -29,6 +29,7 @@ import (
 )
 
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
+const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {

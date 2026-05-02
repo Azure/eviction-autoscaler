@@ -27,7 +27,6 @@ import (
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -308,40 +307,10 @@ func verifyHPAMinReplicas(ctx context.Context, clientset client.Client, ns, name
 	return nil
 }
 
-// verifyDeploymentAnnotation checks if a deployment has the expected annotation value
-func verifyDeploymentAnnotation(
+// verifyHPAAnnotation checks if an HPA has the expected annotation value
+func verifyHPAAnnotation(
 	ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string,
 ) error {
-	var dep appsv1.Deployment
-	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
-	if err != nil {
-		return err
-	}
-	val, ok := dep.Annotations[annotationKey]
-	if !ok {
-		return fmt.Errorf("annotation %q not found on deployment %s", annotationKey, name)
-	}
-	if val != expectedValue {
-		return fmt.Errorf("expected annotation %q=%q, got %q", annotationKey, expectedValue, val)
-	}
-	return nil
-}
-
-// verifyDeploymentNoAnnotation checks that a deployment does NOT have a specific annotation
-func verifyDeploymentNoAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey string) error {
-	var dep appsv1.Deployment
-	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &dep)
-	if err != nil {
-		return err
-	}
-	if _, ok := dep.Annotations[annotationKey]; ok {
-		return fmt.Errorf("annotation %q should not be present on deployment %s", annotationKey, name)
-	}
-	return nil
-}
-
-// verifyHPAAnnotation checks if an HPA has the expected annotation value
-func verifyHPAAnnotation(ctx context.Context, clientset client.Client, ns, name, annotationKey, expectedValue string) error {
 	var hpa autoscalingv2.HorizontalPodAutoscaler
 	err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &hpa)
 	if err != nil {

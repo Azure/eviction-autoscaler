@@ -338,3 +338,111 @@ func verifyHPANoAnnotation(ctx context.Context, clientset client.Client, ns, nam
 	}
 	return nil
 }
+
+// --- KEDA helpers ---
+
+// createKEDAScaledObject creates a KEDA ScaledObject targeting a deployment
+func createKEDAScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int32) error {
+	scaledObjectYaml := fmt.Sprintf(`apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  scaleTargetRef:
+    name: %s
+    kind: Deployment
+  minReplicaCount: %d
+  maxReplicaCount: %d
+  triggers:
+  - type: cpu
+    metadata:
+      type: Utilization
+      value: "80"
+`, name, namespace, targetDeployment, minReplicaCount, maxReplicaCount)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(scaledObjectYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteKEDAScaledObject deletes a KEDA ScaledObject
+func deleteKEDAScaledObject(name, namespace string) {
+	cmd := exec.Command("kubectl", "delete", "scaledobject", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+}
+
+// verifyKEDAScaledObjectMinReplicas checks the minReplicaCount on a ScaledObject using kubectl
+func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32) error {
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace,
+		"-o", "jsonpath={.spec.minReplicaCount}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	actual := strings.TrimSpace(string(output))
+	expected := fmt.Sprintf("%d", expectedMin)
+	if actual != expected {
+		return fmt.Errorf("expected ScaledObject minReplicaCount=%s, got %s", expected, actual)
+	}
+	return nil
+}
+
+// verifyKEDAScaledObjectAnnotation checks if a ScaledObject has the expected annotation value
+func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedValue string) error {
+	jsonpath := fmt.Sprintf("{.metadata.annotations['%s']}", annotationKey)
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace,
+		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	actual := strings.TrimSpace(string(output))
+	if actual != expectedValue {
+		return fmt.Errorf("expected ScaledObject annotation %s=%s, got %s", annotationKey, expectedValue, actual)
+	}
+	return nil
+}
+
+// verifyKEDAScaledObjectNoAnnotation checks that a ScaledObject does NOT have a specific annotation
+func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) error {
+	jsonpath := fmt.Sprintf("{.metadata.annotations['%s']}", annotationKey)
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace,
+		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	actual := strings.TrimSpace(string(output))
+	if actual != "" {
+		return fmt.Errorf("annotation %s should not be present on ScaledObject %s, got %s", annotationKey, name, actual)
+	}
+	return nil
+}
+
+// installKEDA installs KEDA using Helm
+func installKEDA() error {
+	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
+	_, _ = utils.Run(cmd) // ignore error if repo already exists
+	cmd = exec.Command("helm", "repo", "update")
+	_, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
+		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
+	_, err = utils.Run(cmd)
+	return err
+}
+
+// uninstallKEDA removes KEDA
+func uninstallKEDA() {
+	cmd := exec.Command("helm", "uninstall", "keda", "--namespace", "keda")
+	_, _ = utils.Run(cmd)
+	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
+	_, _ = utils.Run(cmd)
+}

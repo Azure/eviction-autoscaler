@@ -61,17 +61,18 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 			return nil, fmt.Errorf("checking for HPA: %w", err)
 		}
 		if hpa != nil {
-			// HPA surge strategy not yet implemented — skip surging entirely so we
-			// don't bypass HPA by mutating deployment replicas directly.
-			logger.Info("Found HPA for target, skipping surge (HPA strategy not yet implemented)",
+			logger.Info("Found HPA for target, adding HPA surge applier",
 				"hpa", hpa.Name, "target", targetName)
-			return &NoOpSurgeApplier{}, nil
+			appliers = append(appliers, &HPASurgeApplier{client: c, hpa: hpa, target: target})
 		}
 	}
 
-	// DeploymentSurgeApplier is the default strategy when no autoscaler appliers are added.
+	// DeploymentSurgeApplier is only needed when no autoscaler appliers were added.
+	// HPA/KEDA appliers already handle setting deployment replicas and the surge
+	// annotation internally (via reGetAndUpdateTarget), so adding DeploymentSurgeApplier
+	// alongside them would cause a stale-object conflict on the second Update.
 	if len(appliers) == 0 {
-		logger.V(1).Info("Using deployment surge strategy", "target", targetName)
+		logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
 		appliers = append(appliers, &DeploymentSurgeApplier{client: c, target: target})
 	}
 
@@ -151,17 +152,6 @@ func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 // Surges multiple resources (e.g., both KEDA ScaledObject and standalone HPA) when both
 // target the same workload. This prevents the standalone HPA from blocking scale-up when
 // only the ScaledObject is surged, or vice versa.
-//
-// Ordering: appliers are always invoked in KEDA → HPA → Deployment order.
-// The autoscaler floor (KEDA minReplicaCount or HPA minReplicas) must be raised
-// *before* setting deployment replicas, otherwise the autoscaler's sync loop can
-// scale the deployment back down between the two writes.
-//
-// Reverts follow the same order (not reversed) because the autoscaler floor must
-// be lowered first — if we reverted the deployment replicas before lowering the
-// HPA/KEDA floor, the autoscaler would immediately scale the deployment back up
-// to the still-surged floor value.
-//
 // The target annotation (evictionSurgeReplicas) is written once by the first applier;
 // subsequent appliers skip re-annotating the target to avoid duplicate writes.
 

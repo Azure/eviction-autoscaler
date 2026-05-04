@@ -36,6 +36,7 @@ import (
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -52,6 +53,7 @@ var scheme = runtime.NewScheme()
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(appsv1.AddToScheme(scheme))
+	utilruntime.Must(autoscalingv2.AddToScheme(scheme))
 	utilruntime.Must(policy.AddToScheme(scheme))
 	utilruntime.Must(types.AddToScheme(scheme))
 }
@@ -1013,7 +1015,147 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(scrapeMetrics()).To(Succeed())
 		})
 
-		// Test 3: PDB minAvailable should use HPA minReplicas, not deployment replicas
+		// Test 3: HPA surge strategy - when an HPA exists, surge by updating HPA minReplicas instead of deployment replicas
+		It("should surge via HPA minReplicas when an HPA targets the deployment", func() {
+			ctx := context.Background()
+			testNs := "test-hpa-surge"
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd) // ignore error if already uncordoned
+			}
+
+			By("creating test namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica and maxUnavailable=0")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-hpa",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-hpa", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating an HPA targeting the deployment")
+			err = createHPA("nginx-hpa", testNs, "nginx-hpa", 1, 5)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-hpa")
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, "nginx-hpa")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+			fmt.Printf("nginx-hpa pod running on node %s\n", nodeName)
+
+			By("cordoning the node to trigger eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the HPA gets the evictionSurgeReplicas annotation (surge marker)")
+			EventuallyWithOffset(1, func() error {
+				return verifyHPAAnnotation(ctx, clientset, testNs, "nginx-hpa",
+					"evictionSurgeReplicas", "2")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the HPA minReplicas is surged to 2 (not the deployment replicas)")
+			EventuallyWithOffset(1, func() error {
+				return verifyHPAMinReplicas(ctx, clientset, testNs, "nginx-hpa", 2)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("waiting for deployment to scale to 2 available replicas")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-hpa"}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 2 {
+					return fmt.Errorf("expected 2 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("draining the node to trigger evictions")
+			drain := func() error {
+				var podList corev1.PodList
+				err := clientset.List(ctx, &podList, client.InNamespace(testNs),
+					client.MatchingFields{"spec.nodeName": nodeName})
+				if err != nil {
+					return err
+				}
+				for _, p := range podList.Items {
+					err = evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: p.ObjectMeta,
+					})
+					if err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying HPA minReplicas reverts to 1 after cooldown")
+			EventuallyWithOffset(1, func() error {
+				return verifyHPAMinReplicas(ctx, clientset, testNs, "nginx-hpa", 1)
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the evictionSurgeReplicas annotation is removed from HPA")
+			EventuallyWithOffset(1, func() error {
+				return verifyHPANoAnnotation(ctx, clientset, testNs, "nginx-hpa",
+					"evictionSurgeReplicas")
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning the node")
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("cleaning up HPA test resources")
+			deleteHPA("nginx-hpa", testNs)
+			deleteDeployment("nginx-hpa", testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
+
+		// Test 3b: PDB minAvailable should use HPA minReplicas, not deployment replicas
 		It("should create PDB with minAvailable from HPA minReplicas when HPA targets the deployment", func() {
 			ctx := context.Background()
 			testNs := "test-hpa-pdb-min"

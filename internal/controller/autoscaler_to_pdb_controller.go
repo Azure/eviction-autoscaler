@@ -71,6 +71,19 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// Don't update PDB minAvailable during an active surge. The eviction controller
+	// temporarily raises replicas (and possibly HPA/KEDA minReplicas) above the floor
+	// to handle evictions. Updating the PDB now would lock in the surged value as the
+	// new floor. The surge revert path will restore original values, and the next
+	// reconcile after that will set minAvailable correctly.
+	// Check the HPA/KEDA object for the surge annotation (not the deployment),
+	// since the surge annotation is placed on the autoscaler object.
+	if r.isSurgeActiveOnAutoscaler(ctx, req) {
+		logger.V(1).Info("Surge active on autoscaler, skipping PDB minAvailable update",
+			"deployment", deployment.Name)
+		return reconcile.Result{}, nil
+	}
+
 	// Find the PDB that matches this deployment's pod selector labels.
 	// Only consider PDBs created by this controller (ownedBy annotation) — user-managed PDBs
 	// should not be modified. If no controller-owned PDB exists, there's nothing to update.
@@ -84,17 +97,6 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, err
 	}
 	if !found {
-		return reconcile.Result{}, nil
-	}
-
-	// Don't update PDB minAvailable during an active surge. The eviction controller
-	// temporarily raises replicas (and possibly HPA/KEDA minReplicas) above the floor
-	// to handle evictions. Updating the PDB now would lock in the surged value as the
-	// new floor. The surge revert path will restore original values, and the next
-	// reconcile after that will set minAvailable correctly.
-	if _, surgeActive := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; surgeActive {
-		logger.V(1).Info("Surge active on deployment, skipping PDB minAvailable update",
-			"deployment", deployment.Name)
 		return reconcile.Result{}, nil
 	}
 
@@ -172,6 +174,32 @@ func (r *AutoscalerToPDBReconciler) resolveDeploymentName(ctx context.Context, r
 	}
 
 	return "", nil
+}
+
+// isSurgeActiveOnAutoscaler checks whether the HPA or ScaledObject identified by req
+// has the evictionSurgeReplicas annotation, indicating an active surge.
+func (r *AutoscalerToPDBReconciler) isSurgeActiveOnAutoscaler(ctx context.Context, req ctrl.Request) bool {
+	// Check HPA
+	var hpa autoscalingv2.HorizontalPodAutoscaler
+	if err := r.Get(ctx, req.NamespacedName, &hpa); err == nil {
+		if _, exists := hpa.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+			return true
+		}
+	}
+
+	// Check ScaledObject
+	scaledObj := &unstructured.Unstructured{}
+	scaledObj.SetGroupVersionKind(schema.GroupVersionKind{
+		Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
+	})
+	if err := r.Get(ctx, req.NamespacedName, scaledObj); err == nil {
+		annotations := scaledObj.GetAnnotations()
+		if _, exists := annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+			return true
+		}
+	}
+
+	return false
 }
 
 // SetupWithManager registers watches on HPA and KEDA ScaledObject resources.

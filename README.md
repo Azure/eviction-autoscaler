@@ -621,6 +621,28 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 
 ## Usage
 
+### HPA Surge Annotations
+
+When an HPA targets a deployment, the eviction autoscaler places annotations on the **HPA object** (not the deployment) during a surge:
+
+| Annotation | Placed On | Value | Purpose |
+|---|---|---|---|
+| `evictionSurgeReplicas` | HPA | Surged replica count (e.g., `"3"`) | Marks that a surge is active |
+| `eviction-autoscaler.azure.com/original-min-replicas` | HPA | Pre-surge minReplicas (e.g., `"1"`) | Stores the original value for revert |
+| `evictionSurgeReplicas` | Deployment | Surged replica count | Only used when **no** HPA/KEDA is present |
+
+These annotations are managed automatically by the controller. They are set atomically with the HPA `minReplicas` change during surge and removed during revert. You should not modify them manually.
+
+**Inspecting surge state:**
+
+```bash
+# Check if a surge is active on an HPA
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations}'
+
+# Check the original minReplicas that will be restored on revert
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations.eviction-autoscaler\.azure\.com/original-min-replicas}'
+```
+
 ### Build and Push Multi-Arch Image
 
 Use `docker buildx` through the Make target to build and push a manifest image for multiple architectures.

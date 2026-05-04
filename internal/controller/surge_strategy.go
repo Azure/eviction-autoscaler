@@ -48,11 +48,9 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 			return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 		}
 		if scaledObj != nil {
-			// KEDA surge strategy not yet implemented — skip surging entirely so we
-			// don't bypass KEDA by mutating deployment replicas directly.
-			logger.Info("Found KEDA ScaledObject for target, skipping surge (KEDA strategy not yet implemented)",
+			logger.Info("Found KEDA ScaledObject for target, adding KEDA surge applier",
 				"scaledObject", scaledObj.GetName(), "target", targetName)
-			return &NoOpSurgeApplier{}, nil
+			appliers = append(appliers, &KEDASurgeApplier{client: c, scaledObject: scaledObj, target: target})
 		}
 
 		// Check for standalone HPA targeting this workload

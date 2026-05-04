@@ -54,6 +54,10 @@ func (h *HPASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) e
 	// Annotations are on the HPA (not the deployment) so we don't modify the
 	// deployment's metadata, avoiding unnecessary generation tracking complexity.
 	if h.hpa.Annotations == nil || h.hpa.Annotations[EvictionSurgeReplicasAnnotationKey] != surgeVal {
+		logger.Info("Surging HPA",
+			"hpa", h.hpa.Name,
+			"namespace", h.hpa.Namespace,
+			"targetMinReplicas", surgeReplicas)
 		hpa := h.hpa.DeepCopy()
 		originalMin := int32(1) // default
 		if hpa.Spec.MinReplicas != nil {
@@ -113,7 +117,10 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	if err := h.client.Update(ctx, hpa); err != nil {
 		return fmt.Errorf("reverting HPA minReplicas and removing annotations: %w", err)
 	}
-	logger.V(1).Info("Reverted HPA minReplicas and removed surge annotations", "revertTo", revertTo)
+	logger.Info("Reverted HPA surge",
+		"hpa", h.hpa.Name,
+		"namespace", h.hpa.Namespace,
+		"revertTo", revertTo)
 
 	// Don't set deployment replicas directly — let HPA handle the scale-down
 	// on its next sync (~15s). The eviction has already completed so there is

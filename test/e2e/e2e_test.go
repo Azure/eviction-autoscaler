@@ -98,10 +98,10 @@ var _ = Describe("controller", Ordered, func() {
 		//utils.UninstallPrometheusOperator()
 
 		if cleanEnv {
-			//
-			//By("removing kind cluster")
-			//cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
-			//_, _ = utils.Run(cmd)
+
+			By("removing kind cluster")
+			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
+			_, _ = utils.Run(cmd)
 		}
 	})
 

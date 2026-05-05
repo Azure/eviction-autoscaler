@@ -1340,7 +1340,8 @@ var _ = Describe("controller", Ordered, func() {
 			depOut, _ := utils.Run(depCmd)
 			depVal := strings.TrimSpace(string(depOut))
 			if depVal != "" {
-				fmt.Printf("WARNING: annotation landed on deployment (%s), not ScaledObject — controller used DeploymentSurgeApplier\n", depVal)
+				fmt.Printf("WARNING: annotation landed on deployment (%s), not ScaledObject\n",
+					depVal)
 			}
 
 			By("verifying deployment replicas are surged (should happen regardless of which applier)")

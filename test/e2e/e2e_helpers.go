@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -436,17 +435,27 @@ func installKEDACRDs() error {
 	if _, err := utils.Run(cmd); err != nil {
 		return err
 	}
-	tmpDir, err := os.MkdirTemp("", "keda-crds-*")
+	// Render only CRD templates from the chart (they live under templates/crds/, not a top-level crds/ dir).
+	tmpFile, err := os.CreateTemp("", "keda-crds-*.yaml")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-	cmd = exec.Command("helm", "pull", "kedacore/keda", "--untar", "--untardir", tmpDir)
-	if _, err = utils.Run(cmd); err != nil {
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
+
+	cmd = exec.Command("helm", "template", "keda-crds", "kedacore/keda",
+		"--show-only", "templates/crds/crd-scaledobjects.yaml",
+		"--show-only", "templates/crds/crd-scaledjobs.yaml",
+		"--show-only", "templates/crds/crd-triggerauthentications.yaml",
+		"--show-only", "templates/crds/crd-clustertriggerauthentications.yaml")
+	crdYAML, err := utils.Run(cmd)
+	if err != nil {
 		return err
 	}
-	cmd = exec.Command("kubectl", "apply", "--server-side",
-		"-f", filepath.Join(tmpDir, "keda", "crds"))
+	if err = os.WriteFile(tmpFile.Name(), crdYAML, 0600); err != nil {
+		return err
+	}
+	cmd = exec.Command("kubectl", "apply", "--server-side", "-f", tmpFile.Name())
 	_, err = utils.Run(cmd)
 	return err
 }

@@ -47,7 +47,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 		})
 
 		It("should return true when evictionSurgeReplicas annotation is present", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 1, 5)
+			obj := createScaledObject("test-so-active", "default", "test-deploy", 1, 5)
 			obj.SetAnnotations(map[string]string{EvictionSurgeReplicasAnnotationKey: "3"})
 			applier := &KEDASurgeApplier{scaledObject: obj}
 			Expect(applier.IsSurgeActive()).To(BeTrue())

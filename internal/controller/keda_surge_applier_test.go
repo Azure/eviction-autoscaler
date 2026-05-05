@@ -10,6 +10,8 @@ import (
 )
 
 // createScaledObject creates an unstructured KEDA ScaledObject for testing.
+//
+//nolint:unparam // test helper — parameters vary across test suites, not just this file
 func createScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int64) *unstructured.Unstructured {
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(schema.GroupVersionKind{
@@ -47,7 +49,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 		})
 
 		It("should return true when evictionSurgeReplicas annotation is present", func() {
-			obj := createScaledObject("test-so-active", "default", "test-deploy", 1, 5)
+			obj := createScaledObject("test-so", "default", "test-deploy", 1, 5)
 			obj.SetAnnotations(map[string]string{EvictionSurgeReplicasAnnotationKey: "3"})
 			applier := &KEDASurgeApplier{scaledObject: obj}
 			Expect(applier.IsSurgeActive()).To(BeTrue())
@@ -59,7 +61,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 		// These tests verify the annotation and minReplicaCount logic in isolation.
 
 		It("should read originalMin from existing minReplicaCount", func() {
-			obj := createScaledObject("test-so", "test-ns", "test-deploy", 2, 10)
+			obj := createScaledObject("test-so", "default", "test-deploy", 2, 10)
 			val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
 			Expect(found).To(BeTrue())
 			Expect(val).To(Equal(int64(2)))

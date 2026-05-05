@@ -59,7 +59,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 		// These tests verify the annotation and minReplicaCount logic in isolation.
 
 		It("should read originalMin from existing minReplicaCount", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 2, 10)
+			obj := createScaledObject("test-so", "test-ns", "test-deploy", 2, 10)
 			val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
 			Expect(found).To(BeTrue())
 			Expect(val).To(Equal(int64(2)))

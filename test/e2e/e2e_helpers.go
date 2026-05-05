@@ -20,7 +20,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"text/template"
 
@@ -425,6 +427,30 @@ func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) e
 }
 
 // installKEDA installs KEDA using Helm
+// installKEDACRDs registers only the KEDA CRDs on the cluster (without installing the full operator).
+// This must be called before the controller starts so its informer cache discovers the ScaledObject GVK.
+func installKEDACRDs() error {
+	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
+	_, _ = utils.Run(cmd) // ignore error if repo already exists
+	cmd = exec.Command("helm", "repo", "update")
+	if _, err := utils.Run(cmd); err != nil {
+		return err
+	}
+	tmpDir, err := os.MkdirTemp("", "keda-crds-*")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmpDir)
+	cmd = exec.Command("helm", "pull", "kedacore/keda", "--untar", "--untardir", tmpDir)
+	if _, err = utils.Run(cmd); err != nil {
+		return err
+	}
+	cmd = exec.Command("kubectl", "apply", "--server-side",
+		"-f", filepath.Join(tmpDir, "keda", "crds"))
+	_, err = utils.Run(cmd)
+	return err
+}
+
 func installKEDA() error {
 	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
 	_, _ = utils.Run(cmd) // ignore error if repo already exists

@@ -98,10 +98,10 @@ var _ = Describe("controller", Ordered, func() {
 		//utils.UninstallPrometheusOperator()
 
 		if cleanEnv {
-
-			By("removing kind cluster")
-			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
-			_, _ = utils.Run(cmd)
+			//
+			//By("removing kind cluster")
+			//cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
+			//_, _ = utils.Run(cmd)
 		}
 	})
 
@@ -143,6 +143,11 @@ var _ = Describe("controller", Ordered, func() {
 				MaxUnavailable: 0,
 			})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred()) // Deploy the controller using the Helm chart
+
+			By("registering KEDA CRDs so the controller cache discovers ScaledObject GVK at startup")
+			err = installKEDACRDs()
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
 			By("deploying the controller-manager with Helm")
 
 			// Split the image into repository and tag so we can

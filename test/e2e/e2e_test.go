@@ -1332,11 +1332,37 @@ var _ = Describe("controller", Ordered, func() {
 			err = clientset.Update(ctx, &node)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("checking which surge strategy was used (ScaledObject annotation vs deployment annotation)")
+			// If the controller used DeploymentSurgeApplier instead of KEDASurgeApplier,
+			// the annotation will be on the deployment, not the ScaledObject.
+			// This helps diagnose whether findScaledObjectForTarget detected KEDA.
+			EventuallyWithOffset(1, func() string {
+				// Check ScaledObject first
+				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					"--namespace", testNs,
+					"-o", "jsonpath={.metadata.annotations.evictionSurgeReplicas}")
+				soOut, _ := utils.Run(soCmd)
+				soVal := strings.TrimSpace(string(soOut))
+				if soVal != "" {
+					return "keda:" + soVal
+				}
+				// Check deployment
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err == nil {
+					if v, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+						return "deployment:" + v
+					}
+				}
+				return ""
+			}, 3*time.Minute, time.Second).ShouldNot(BeEmpty(),
+				"Neither ScaledObject nor deployment got the evictionSurgeReplicas annotation")
+
+			// Now verify it landed on the ScaledObject (not the deployment)
 			By("verifying the ScaledObject gets the evictionSurgeReplicas annotation (surge marker)")
 			EventuallyWithOffset(1, func() error {
 				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
 					"evictionSurgeReplicas", "2")
-			}, 3*time.Minute, time.Second).Should(Succeed())
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("verifying the ScaledObject minReplicaCount is surged to 2")
 			EventuallyWithOffset(1, func() error {

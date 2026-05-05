@@ -456,8 +456,33 @@ func installKEDACRDs() error {
 		return err
 	}
 	cmd = exec.Command("kubectl", "apply", "--server-side", "-f", tmpFile.Name())
-	_, err = utils.Run(cmd)
-	return err
+	if _, err = utils.Run(cmd); err != nil {
+		return err
+	}
+
+	// Add Helm ownership metadata so `helm install keda` can adopt these CRDs.
+	// KEDA puts CRDs in templates/crds/ (not the standard crds/ dir), so --skip-crds
+	// doesn't help and Helm refuses to install if CRDs lack its ownership labels.
+	kedaCRDs := []string{
+		"scaledobjects.keda.sh",
+		"scaledjobs.keda.sh",
+		"triggerauthentications.keda.sh",
+		"clustertriggerauthentications.keda.sh",
+	}
+	for _, crd := range kedaCRDs {
+		cmd = exec.Command("kubectl", "label", "crd", crd,
+			"app.kubernetes.io/managed-by=Helm", "--overwrite")
+		if _, err = utils.Run(cmd); err != nil {
+			return err
+		}
+		cmd = exec.Command("kubectl", "annotate", "crd", crd,
+			"meta.helm.sh/release-name=keda",
+			"meta.helm.sh/release-namespace=keda", "--overwrite")
+		if _, err = utils.Run(cmd); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func installKEDA() error {
@@ -469,7 +494,7 @@ func installKEDA() error {
 		return err
 	}
 	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
-		"--namespace", "keda", "--create-namespace", "--skip-crds", "--wait", "--timeout", "300s")
+		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
 	_, err = utils.Run(cmd)
 	return err
 }

@@ -440,7 +440,7 @@ func installKEDACRDs() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 	cmd = exec.Command("helm", "pull", "kedacore/keda", "--untar", "--untardir", tmpDir)
 	if _, err = utils.Run(cmd); err != nil {
 		return err

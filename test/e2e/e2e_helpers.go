@@ -469,7 +469,7 @@ func installKEDA() error {
 		return err
 	}
 	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
-		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
+		"--namespace", "keda", "--create-namespace", "--skip-crds", "--wait", "--timeout", "300s")
 	_, err = utils.Run(cmd)
 	return err
 }

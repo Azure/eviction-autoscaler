@@ -232,9 +232,9 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
 		})
 
-		It("should deal with an eviction when allowedDisruptions == 0 for statefulset!", func() {
+		It("should skip StatefulSet targets without surging", func() {
 
-			By("creating a Deployment resource")
+			By("creating a StatefulSet resource")
 			statefulSet := &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      statefulSetName,
@@ -247,19 +247,14 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 							"app": "example",
 						},
 					},
-					/*Strategy: appsv1.StatefulSetStrategy{
-						RollingUpdate: &appsv1.RollingUpdateDeployment{
-							MaxSurge: &surge,
-						},
-					},*/
-					Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
+					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Labels: map[string]string{
 								"app": "example",
 							},
 						},
-						Spec: corev1.PodSpec{ // Use corev1.PodSpec
-							Containers: []corev1.Container{ // Use corev1.Container
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
 								{
 									Name:  "nginx",
 									Image: "nginx:latest",
@@ -278,14 +273,13 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			EvictionAutoScaler.Spec.TargetKind = "statefulset"
 			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 
-			By("scaling up on reconcile")
+			By("reconciling and verifying StatefulSet is skipped")
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 				Filter: &evictionTestFilter{},
 			}
 
-			// run it once to populate target genration
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
@@ -295,7 +289,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
 			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
-				PodName:      "somepod", //
+				PodName:      "somepod",
 				EvictionTime: metav1.Now(),
 			}
 			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
@@ -305,16 +299,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify EvictionAutoScaler resource
-			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal("somepod"))
-			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).To(Equal(EvictionAutoScaler.Spec.LastEviction.EvictionTime))
-
-			// Verify Deployment scaling if necessary
+			// Verify StatefulSet replicas are unchanged (skip, no surge)
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: statefulSetName, Namespace: namespace}, statefulSet)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*statefulSet.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
+			Expect(*statefulSet.Spec.Replicas).To(Equal(int32(1)))
 		})
 
 		//should this be merged with above?

@@ -1320,6 +1320,14 @@ var _ = Describe("controller", Ordered, func() {
 			err = createKEDAScaledObject("nginx-keda", testNs, "nginx-keda", 1, 5)
 			Expect(err).NotTo(HaveOccurred())
 
+			By("verifying PDB and EvictionAutoScaler are created")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
 			By("verifying KEDA created an HPA for the ScaledObject")
 			EventuallyWithOffset(1, func() error {
 				var hpaList autoscalingv2.HorizontalPodAutoscalerList
@@ -1344,14 +1352,6 @@ var _ = Describe("controller", Ordered, func() {
 			for _, p := range ctrlPods.Items {
 				fmt.Printf("controller pod %s running on node %s\n", p.Name, p.Spec.NodeName)
 			}
-
-			By("verifying PDB and EvictionAutoScaler are created")
-			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
-			Expect(err).NotTo(HaveOccurred())
-			clientset, err := client.New(config, client.Options{Scheme: scheme})
-			Expect(err).NotTo(HaveOccurred())
-			evictionClient, err := kubernetes.NewForConfig(config)
-			Expect(err).NotTo(HaveOccurred())
 
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbCreated(ctx, clientset, testNs, "nginx-keda")

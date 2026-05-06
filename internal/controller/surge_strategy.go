@@ -31,10 +31,15 @@ type SurgeApplier interface {
 }
 
 // detectSurgeApplier determines which surge strategy to use by building a
-// composite of all applicable appliers. DeploymentSurgeApplier is always
-// included as the base (it sets deployment.spec.replicas directly). KEDA and
-// HPA appliers are added when their resources target this workload, ensuring
-// their floors are raised before the deployment scales.
+// composite of all applicable appliers. KEDA and HPA appliers are added when
+// their resources target this workload, ensuring their floors are raised before
+// the deployment scales.
+//
+// Surge precedence: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment replicas.
+// The surge value is calculated from the highest-priority autoscaler's baseline
+// (via ResolveMinReplicas). Each applier guards against lowering its floor below
+// the current value, so a KEDA-derived surge cannot weaken a standalone HPA's
+// existing protection in the unlikely event both target the same deployment.
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
 	logger := log.FromContext(ctx)
 

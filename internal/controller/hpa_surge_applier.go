@@ -59,6 +59,20 @@ func (h *HPASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) e
 		if hpa.Spec.MinReplicas != nil {
 			originalMin = *hpa.Spec.MinReplicas
 		}
+
+		// Only raise the floor, never lower it. This guards against the edge case
+		// where a standalone HPA and a KEDA ScaledObject both target the same
+		// deployment. The surge value is derived from KEDA's baseline (which takes
+		// precedence in ResolveMinReplicas) and may be lower than the standalone
+		// HPA's current minReplicas. Lowering the HPA would weaken its protection.
+		// Note: KEDA-managed HPAs are filtered out by isKEDAManagedHPA, so this
+		// applier only runs for user-created standalone HPAs.
+		if surgeReplicas <= originalMin {
+			logger.V(1).Info("HPA minReplicas already at or above surge value, skipping HPA surge",
+				"hpa", hpa.Name, "currentMin", originalMin, "surgeReplicas", surgeReplicas)
+			return nil
+		}
+
 		hpa.Spec.MinReplicas = &surgeReplicas
 		if hpa.Annotations == nil {
 			hpa.Annotations = make(map[string]string)

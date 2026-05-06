@@ -69,6 +69,14 @@ func (k *KEDASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) 
 			originalMin = val
 		}
 
+		// Only raise the floor, never lower it. If the ScaledObject's current
+		// minReplicaCount is already at or above the surge value, skip the update.
+		if int64(surgeReplicas) <= originalMin {
+			logger.V(1).Info("ScaledObject minReplicaCount already at or above surge value, skipping",
+				"scaledObject", obj.GetName(), "currentMin", originalMin, "surgeReplicas", surgeReplicas)
+			return nil
+		}
+
 		if err := unstructured.SetNestedField(obj.Object, int64(surgeReplicas), "spec", "minReplicaCount"); err != nil {
 			return fmt.Errorf("setting minReplicaCount: %w", err)
 		}

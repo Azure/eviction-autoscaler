@@ -43,18 +43,6 @@ jobs:
       - name: e2e
         run: make test-e2e
 
-      - name: Dump cluster state on failure
-        if: always()
-        run: |
-          mkdir -p /tmp/e2e-logs
-          kubectl logs -n eviction-autoscaler -l app.kubernetes.io/name=eviction-autoscaler --tail=2000 > /tmp/e2e-logs/controller.log 2>&1 || true
-          kubectl get pods -A -o wide > /tmp/e2e-logs/pods.txt 2>&1 || true
-          kubectl get nodes -o wide > /tmp/e2e-logs/nodes.txt 2>&1 || true
-          kubectl get scaledobjects -A -o yaml > /tmp/e2e-logs/scaledobjects.yaml 2>&1 || true
-          kubectl get hpa -A -o yaml > /tmp/e2e-logs/hpa.yaml 2>&1 || true
-          kubectl get pdb -A -o yaml > /tmp/e2e-logs/pdb.yaml 2>&1 || true
-          kubectl get deployments -A -o wide > /tmp/e2e-logs/deployments.txt 2>&1 || true
-
       - name: Upload e2e logs
         if: always()
         uses: actions/upload-artifact@v4

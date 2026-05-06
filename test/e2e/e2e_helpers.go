@@ -506,3 +506,38 @@ func uninstallKEDA() {
 	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
 	_, _ = utils.Run(cmd)
 }
+
+const e2eLogsDir = "/tmp/e2e-logs"
+
+// dumpClusterState writes controller logs and cluster resource state to e2eLogsDir
+// so CI can upload them as artifacts for post-mortem debugging.
+func dumpClusterState() {
+	if err := os.MkdirAll(e2eLogsDir, 0750); err != nil {
+		fmt.Printf("failed to create log dir: %v\n", err)
+		return
+	}
+
+	dumps := []struct {
+		file string
+		args []string
+	}{
+		{"controller.log", []string{"logs", "-n", "eviction-autoscaler",
+			"-l", "app.kubernetes.io/name=eviction-autoscaler", "--tail=2000"}},
+		{"pods.txt", []string{"get", "pods", "-A", "-o", "wide"}},
+		{"nodes.txt", []string{"get", "nodes", "-o", "wide"}},
+		{"deployments.txt", []string{"get", "deployments", "-A", "-o", "wide"}},
+		{"pdb.yaml", []string{"get", "pdb", "-A", "-o", "yaml"}},
+		{"hpa.yaml", []string{"get", "hpa", "-A", "-o", "yaml"}},
+		{"scaledobjects.yaml", []string{"get", "scaledobjects.keda.sh", "-A", "-o", "yaml"}},
+		{"events.txt", []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
+	}
+
+	for _, d := range dumps {
+		out, err := exec.Command("kubectl", d.args...).CombinedOutput()
+		if err != nil {
+			out = append(out, []byte(fmt.Sprintf("\nerror: %v\n", err))...)
+		}
+		_ = os.WriteFile(e2eLogsDir+"/"+d.file, out, 0600)
+	}
+	fmt.Printf("cluster state dumped to %s\n", e2eLogsDir)
+}

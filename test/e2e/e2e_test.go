@@ -94,13 +94,12 @@ var _ = Describe("controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		//By("uninstalling the Prometheus manager bundle")
-		//utils.UninstallPrometheusOperator()
+		By("dumping cluster state for CI artifacts")
+		dumpClusterState()
 
 		if cleanEnv {
-
 			By("removing kind cluster")
-			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
+			cmd := exec.Command("kind", "delete", "cluster", "--name", kindClusterName)
 			_, _ = utils.Run(cmd)
 		}
 	})

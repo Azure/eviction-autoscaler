@@ -273,7 +273,7 @@ Configuration options will be documented here in future updates. If you have sug
 >    az k8s-extension delete --resource-group <your-resource-group> \
 >      --cluster-name <your-cluster-name> \
 >      --cluster-type managedClusters \
->      --name evictionautoscaler --yes
+>      --name eviction-autoscaler --yes
 >    ```
 >
 > 2. Re-install the extension with your updated configuration settings using the `az k8s-extension create` command shown above.

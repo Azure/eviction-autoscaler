@@ -37,7 +37,7 @@ type AutoscalerToPDBReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;update
 
 // Reconcile is triggered when an HPA or ScaledObject changes. The request key is the
 // autoscaler's namespace/name. We resolve the target deployment from its scaleTargetRef.

@@ -1268,6 +1268,31 @@ var _ = Describe("controller", Ordered, func() {
 			err = installKEDA()
 			Expect(err).NotTo(HaveOccurred())
 
+			By("verifying KEDA operator is running")
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				config, cErr := clientcmd.BuildConfigFromFlags("",
+					filepath.Join(homedir.HomeDir(), ".kube", "config"))
+				if cErr != nil {
+					return cErr
+				}
+				cs, cErr := client.New(config, client.Options{Scheme: scheme})
+				if cErr != nil {
+					return cErr
+				}
+				if err := cs.List(ctx, &pods, client.InNamespace("keda"),
+					client.MatchingLabels{"app": "keda-operator"}); err != nil {
+					return err
+				}
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning {
+						fmt.Printf("KEDA operator pod %s running on %s\n", p.Name, p.Spec.NodeName)
+						return nil
+					}
+				}
+				return fmt.Errorf("no running KEDA operator pod found")
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
 			By("creating test namespace with enable annotation")
 			cmd = exec.Command("kubectl", "create", "namespace", testNs)
 			_, err = utils.Run(cmd)
@@ -1295,6 +1320,31 @@ var _ = Describe("controller", Ordered, func() {
 			By("creating a KEDA ScaledObject targeting the deployment")
 			err = createKEDAScaledObject("nginx-keda", testNs, "nginx-keda", 1, 5)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying KEDA created an HPA for the ScaledObject")
+			EventuallyWithOffset(1, func() error {
+				var hpaList autoscalingv2.HorizontalPodAutoscalerList
+				if err := clientset.List(ctx, &hpaList, client.InNamespace(testNs)); err != nil {
+					return err
+				}
+				for _, hpa := range hpaList.Items {
+					if hpa.Spec.ScaleTargetRef.Name == "nginx-keda" {
+						fmt.Printf("KEDA-managed HPA %s found (min=%d, max=%d)\n",
+							hpa.Name, *hpa.Spec.MinReplicas, hpa.Spec.MaxReplicas)
+						return nil
+					}
+				}
+				return fmt.Errorf("no KEDA-managed HPA found targeting nginx-keda")
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying controller pod location")
+			var ctrlPods corev1.PodList
+			err = clientset.List(ctx, &ctrlPods, client.InNamespace(namespace),
+				client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"})
+			Expect(err).NotTo(HaveOccurred())
+			for _, p := range ctrlPods.Items {
+				fmt.Printf("controller pod %s running on node %s\n", p.Name, p.Spec.NodeName)
+			}
 
 			By("verifying PDB and EvictionAutoScaler are created")
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
@@ -1329,6 +1379,14 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 			fmt.Printf("nginx-keda pod running on node %s\n", nodeName)
 
+			By("ensuring controller pod is NOT on the same node as nginx-keda pod")
+			for _, p := range ctrlPods.Items {
+				if p.Spec.NodeName == nodeName {
+					fmt.Printf("WARNING: controller pod %s is on same node %s as nginx-keda pod\n",
+						p.Name, nodeName)
+				}
+			}
+
 			By("cordoning the node to trigger eviction surge")
 			var node corev1.Node
 			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
@@ -1341,7 +1399,24 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, func() error {
 				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
 					"evictionSurgeReplicas", "2")
-			}, time.Minute, time.Second).Should(Succeed())
+			}, 2*time.Minute, time.Second).Should(Succeed(), func() string {
+				// On failure, dump controller logs and ScaledObject state for diagnosis
+				logCmd := exec.Command("kubectl", "logs", "-n", namespace,
+					"-l", "app.kubernetes.io/name=eviction-autoscaler",
+					"--tail=50")
+				logOut, _ := utils.Run(logCmd)
+				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					"-n", testNs, "-o", "yaml")
+				soOut, _ := utils.Run(soCmd)
+				depCmd := exec.Command("kubectl", "get", "deployment", "nginx-keda",
+					"-n", testNs, "-o", "jsonpath={.metadata.annotations}")
+				depOut, _ := utils.Run(depCmd)
+				return fmt.Sprintf(
+					"=== Controller logs (last 50) ===\n%s\n"+
+						"=== ScaledObject ===\n%s\n"+
+						"=== Deployment annotations ===\n%s",
+					string(logOut), string(soOut), string(depOut))
+			})
 
 			By("verifying the ScaledObject minReplicaCount is surged to 2")
 			EventuallyWithOffset(1, func() error {

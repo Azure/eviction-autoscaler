@@ -1302,13 +1302,12 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("creating a deployment with 1 replica, maxUnavailable=0 and CPU request")
+			By("creating a deployment with 1 replica and maxUnavailable=0")
 			err = createDeployment(deploymentConfig{
 				Name:           "nginx-keda",
 				Namespace:      testNs,
 				Replicas:       1,
 				MaxUnavailable: 0,
-				CPURequest:     "10m", // KEDA admission webhook requires CPU requests for cpu trigger
 			})
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1328,20 +1327,25 @@ var _ = Describe("controller", Ordered, func() {
 			evictionClient, err := kubernetes.NewForConfig(config)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("verifying KEDA created an HPA for the ScaledObject")
+			By("verifying KEDA ScaledObject is ready")
 			EventuallyWithOffset(1, func() error {
-				var hpaList autoscalingv2.HorizontalPodAutoscalerList
-				if err := clientset.List(ctx, &hpaList, client.InNamespace(testNs)); err != nil {
+				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					"-n", testNs, "-o",
+					"jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				soOut, err := utils.Run(soCmd)
+				if err != nil {
 					return err
 				}
-				for _, hpa := range hpaList.Items {
-					if hpa.Spec.ScaleTargetRef.Name == "nginx-keda" {
-						fmt.Printf("KEDA-managed HPA %s found (min=%d, max=%d)\n",
-							hpa.Name, *hpa.Spec.MinReplicas, hpa.Spec.MaxReplicas)
-						return nil
-					}
+				status := strings.TrimSpace(string(soOut))
+				if status != "True" {
+					// Dump full status for debugging
+					dCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+						"-n", testNs, "-o", "jsonpath={.status}")
+					dOut, _ := utils.Run(dCmd)
+					return fmt.Errorf("ScaledObject not ready (status=%s), full: %s", status, string(dOut))
 				}
-				return fmt.Errorf("no KEDA-managed HPA found targeting nginx-keda")
+				fmt.Println("KEDA ScaledObject is Ready")
+				return nil
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying controller pod location")

@@ -356,11 +356,13 @@ spec:
   minReplicaCount: %d
   maxReplicaCount: %d
   triggers:
-  - type: cpu
+  - type: cron
     metadata:
-      type: Utilization
-      value: "80"
-`, name, namespace, targetDeployment, minReplicaCount, maxReplicaCount)
+      timezone: Etc/UTC
+      start: "0 0 * * *"
+      end: "59 23 * * *"
+      desiredReplicas: "%d"
+`, name, namespace, targetDeployment, minReplicaCount, maxReplicaCount, minReplicaCount)
 
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(scaledObjectYaml)

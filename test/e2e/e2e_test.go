@@ -1426,6 +1426,27 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 2)
 			}, time.Minute, time.Second).Should(Succeed())
 
+			By("verifying original-min-replicas annotation is set on ScaledObject during surge")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
+					"original-min-replicas", "1")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying deployment does NOT have evictionSurgeReplicas annotation (should be on ScaledObject only)")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("deployment should NOT have evictionSurgeReplicas annotation during KEDA surge")
+				}
+				if _, ok := dep.Annotations["original-min-replicas"]; ok {
+					return fmt.Errorf("deployment should NOT have original-min-replicas annotation during KEDA surge")
+				}
+				return nil
+			}, 30*time.Second, time.Second).Should(Succeed())
+
 			By("waiting for deployment to scale to 2 available replicas")
 			EventuallyWithOffset(1, func() error {
 				var dep appsv1.Deployment
@@ -1468,6 +1489,17 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
 					"evictionSurgeReplicas")
 			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying original-min-replicas annotation is removed from ScaledObject after revert")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
+					"original-min-replicas")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying PDB minAvailable tracks ScaledObject minReplicaCount (back to 1)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-keda", 1)
+			}, time.Minute, time.Second).Should(Succeed())
 
 			By("uncordoning the node")
 			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)

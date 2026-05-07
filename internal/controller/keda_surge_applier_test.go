@@ -1,13 +1,18 @@
 package controllers
 
 import (
-	"fmt"
+	"context"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // createScaledObject creates an unstructured KEDA ScaledObject for testing.
@@ -57,240 +62,181 @@ var _ = Describe("KEDASurgeApplier", func() {
 		})
 	})
 
-	Describe("ApplySurge annotations (in-memory)", func() {
-		// Note: Full ApplySurge with c.Update requires KEDA CRD installed in envtest.
-		// These tests verify the annotation and minReplicaCount logic in isolation.
+	Describe("ApplySurge with fake client", func() {
+		var (
+			ctx     context.Context
+			so      *unstructured.Unstructured
+			deploy  *appsv1.Deployment
+			applier *KEDASurgeApplier
+		)
 
-		It("should read originalMin from existing minReplicaCount", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 2, 10)
-			val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
+		BeforeEach(func() {
+			ctx = context.Background()
+			so = createScaledObject("test-so", "default", "test-deploy", 1, 5)
+			deploy = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+			}
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(deploy).
+				WithStatusSubresource(deploy).
+				Build()
+			// Register ScaledObject in the fake client by creating it
+			Expect(fc.Create(ctx, so)).To(Succeed())
+
+			target := &DeploymentWrapper{obj: deploy}
+			applier = &KEDASurgeApplier{client: fc, scaledObject: so, target: target}
+		})
+
+		It("should set evictionSurgeReplicas and original-min-replicas on ScaledObject", func() {
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
+
+			// Re-read ScaledObject from fake client
+			updated := &unstructured.Unstructured{}
+			updated.SetGroupVersionKind(so.GroupVersionKind())
+			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
+
+			Expect(updated.GetAnnotations()).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "2"))
+			Expect(updated.GetAnnotations()).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
+
+			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
 			Expect(found).To(BeTrue())
 			Expect(val).To(Equal(int64(2)))
 		})
 
-		It("should default originalMin to 0 when minReplicaCount is not set", func() {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
-			})
-			obj.SetName("test-so")
-			obj.SetNamespace("default")
+		It("should set deployment replicas directly for immediate effect", func() {
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
 
-			_, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeFalse())
-			// KEDASurgeApplier defaults to 0 when not found
+			var dep appsv1.Deployment
+			Expect(applier.client.Get(ctx, keyFor(deploy), &dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
 		})
 
-		It("should be able to set minReplicaCount on unstructured object", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 1, 5)
-			err := unstructured.SetNestedField(obj.Object, int64(3), "spec", "minReplicaCount")
-			Expect(err).ToNot(HaveOccurred())
+		It("should NOT place surge annotations on the deployment", func() {
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
 
-			val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeTrue())
-			Expect(val).To(Equal(int64(3)))
-		})
-
-		It("should be able to set and remove annotations on unstructured object", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 1, 5)
-
-			// Set annotations
-			ann := obj.GetAnnotations()
-			if ann == nil {
-				ann = make(map[string]string)
+			var dep appsv1.Deployment
+			Expect(applier.client.Get(ctx, keyFor(deploy), &dep)).To(Succeed())
+			if dep.Annotations != nil {
+				Expect(dep.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+				Expect(dep.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
 			}
-			ann[EvictionSurgeReplicasAnnotationKey] = "3"
-			ann[OriginalMinReplicasAnnotationKey] = "1"
-			obj.SetAnnotations(ann)
-
-			Expect(obj.GetAnnotations()).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "3"))
-			Expect(obj.GetAnnotations()).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
-
-			// Remove annotations
-			ann = obj.GetAnnotations()
-			delete(ann, EvictionSurgeReplicasAnnotationKey)
-			delete(ann, OriginalMinReplicasAnnotationKey)
-			obj.SetAnnotations(ann)
-
-			Expect(obj.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
-			Expect(obj.GetAnnotations()).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
-		})
-	})
-
-	Describe("RevertSurge annotation priority (in-memory)", func() {
-		It("should prefer annotation value over passed-in originalMinReplicas", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 3, 5)
-			obj.SetAnnotations(map[string]string{
-				EvictionSurgeReplicasAnnotationKey: "3",
-				OriginalMinReplicasAnnotationKey:   "1",
-			})
-
-			// Simulate what RevertSurge does: read annotation
-			annotations := obj.GetAnnotations()
-			revertTo := int64(99) // passed-in value (should be overridden)
-			if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-				parsed, err := parseIntFromString(val)
-				Expect(err).ToNot(HaveOccurred())
-				revertTo = parsed
-			}
-			Expect(revertTo).To(Equal(int64(1))) // annotation wins
 		})
 
-		It("should fall back to passed-in value when annotation is missing", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 3, 5)
-			// No annotations set
+		It("should be idempotent when called twice with same surge value", func() {
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
+			// Re-read to get fresh resourceVersion
+			fresh := &unstructured.Unstructured{}
+			fresh.SetGroupVersionKind(so.GroupVersionKind())
+			Expect(applier.client.Get(ctx, keyFor(so), fresh)).To(Succeed())
+			applier.scaledObject = fresh
 
-			annotations := obj.GetAnnotations()
-			revertTo := int64(2) // passed-in fallback
-			if annotations != nil {
-				if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-					parsed, err := parseIntFromString(val)
-					Expect(err).ToNot(HaveOccurred())
-					revertTo = parsed
-				}
-			}
-			Expect(revertTo).To(Equal(int64(2))) // fallback used
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed()) // should not error
+		})
+
+		It("should skip surge when minReplicaCount already above surge value", func() {
+			// ScaledObject with minReplicaCount=5, surge to 2 should be skipped
+			highSO := createScaledObject("high-so", "default", "test-deploy", 5, 10)
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+			Expect(fc.Create(ctx, highSO)).To(Succeed())
+
+			target := &DeploymentWrapper{obj: deploy}
+			highApplier := &KEDASurgeApplier{client: fc, scaledObject: highSO, target: target}
+
+			Expect(highApplier.ApplySurge(ctx, 2)).To(Succeed())
+
+			// ScaledObject should NOT have surge annotations (skipped)
+			updated := &unstructured.Unstructured{}
+			updated.SetGroupVersionKind(highSO.GroupVersionKind())
+			Expect(fc.Get(ctx, keyFor(highSO), updated)).To(Succeed())
+			Expect(updated.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
 		})
 	})
 
-	Describe("ApplySurge sets original-min-replicas annotation", func() {
-		It("should store original minReplicaCount in annotation during surge", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 3, 10)
+	Describe("RevertSurge with fake client", func() {
+		var (
+			ctx     context.Context
+			so      *unstructured.Unstructured
+			deploy  *appsv1.Deployment
+			applier *KEDASurgeApplier
+		)
 
-			// Simulate ApplySurge: read original, set surge, annotate
-			originalMin := int64(0)
-			if val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount"); found {
-				originalMin = val
-			}
-			Expect(originalMin).To(Equal(int64(3)))
-
-			surgeReplicas := int64(4)
-			err := unstructured.SetNestedField(obj.Object, surgeReplicas, "spec", "minReplicaCount")
-			Expect(err).ToNot(HaveOccurred())
-
-			ann := obj.GetAnnotations()
-			if ann == nil {
-				ann = make(map[string]string)
-			}
-			ann[EvictionSurgeReplicasAnnotationKey] = "4"
-			ann[OriginalMinReplicasAnnotationKey] = "3"
-			obj.SetAnnotations(ann)
-
-			// Verify both annotations are set
-			Expect(obj.GetAnnotations()).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "4"))
-			Expect(obj.GetAnnotations()).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "3"))
-			// Verify minReplicaCount is surged
-			val, _, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
-			Expect(val).To(Equal(int64(4)))
-		})
-
-		It("should store 0 as original when minReplicaCount is unset (scale-to-zero)", func() {
-			obj := &unstructured.Unstructured{}
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
-			})
-			obj.SetName("test-so")
-			obj.SetNamespace("default")
-
-			originalMin := int64(0)
-			if val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount"); found {
-				originalMin = val
-			}
-			Expect(originalMin).To(Equal(int64(0)))
-
-			ann := make(map[string]string)
-			ann[OriginalMinReplicasAnnotationKey] = "0"
-			obj.SetAnnotations(ann)
-
-			Expect(obj.GetAnnotations()).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "0"))
-		})
-	})
-
-	Describe("RevertSurge removes annotations", func() {
-		It("should remove both surge annotations and restore minReplicaCount on revert", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 4, 10) // currently surged
-			obj.SetAnnotations(map[string]string{
-				EvictionSurgeReplicasAnnotationKey: "4",
-				OriginalMinReplicasAnnotationKey:   "2",
-			})
-
-			// Simulate RevertSurge: read original from annotation
-			annotations := obj.GetAnnotations()
-			revertTo := int64(0)
-			if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-				parsed, err := parseIntFromString(val)
-				Expect(err).ToNot(HaveOccurred())
-				revertTo = parsed
-			}
-			Expect(revertTo).To(Equal(int64(2)))
-
-			// Revert minReplicaCount
-			err := unstructured.SetNestedField(obj.Object, revertTo, "spec", "minReplicaCount")
-			Expect(err).ToNot(HaveOccurred())
-
-			// Remove annotations
-			ann := obj.GetAnnotations()
-			delete(ann, EvictionSurgeReplicasAnnotationKey)
-			delete(ann, OriginalMinReplicasAnnotationKey)
-			obj.SetAnnotations(ann)
-
-			// Verify annotations are gone
-			Expect(obj.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
-			Expect(obj.GetAnnotations()).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
-			// Verify minReplicaCount is reverted
-			val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeTrue())
-			Expect(val).To(Equal(int64(2)))
-		})
-	})
-
-	Describe("Deployment is not annotated during KEDA surge", func() {
-		It("should not place surge annotations on the deployment target", func() {
-			// KEDA surge annotations go on the ScaledObject, not the Deployment.
-			// Verify that a deployment wrapper remains clean when KEDA surge is used.
-			so := createScaledObject("test-so", "default", "test-deploy", 1, 5)
-
-			// Simulate surge on ScaledObject
-			ann := so.GetAnnotations()
-			if ann == nil {
-				ann = make(map[string]string)
-			}
-			ann[EvictionSurgeReplicasAnnotationKey] = "2"
-			ann[OriginalMinReplicasAnnotationKey] = "1"
-			so.SetAnnotations(ann)
-
-			// Deployment should have no surge annotations
-			deploy := &DeploymentWrapper{obj: &appsv1.Deployment{}}
-			deploy.obj.Name = "test-deploy"
-			deploy.obj.Namespace = "default"
-
-			deployAnnotations := deploy.Obj().GetAnnotations()
-			if deployAnnotations != nil {
-				Expect(deployAnnotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
-				Expect(deployAnnotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
-			}
-		})
-	})
-
-	Describe("Idempotent ApplySurge", func() {
-		It("should skip ScaledObject update when already surged to target value", func() {
-			obj := createScaledObject("test-so", "default", "test-deploy", 2, 10)
-			obj.SetAnnotations(map[string]string{
+		BeforeEach(func() {
+			ctx = context.Background()
+			// Start with a surged ScaledObject
+			so = createScaledObject("test-so", "default", "test-deploy", 2, 5)
+			so.SetAnnotations(map[string]string{
 				EvictionSurgeReplicasAnnotationKey: "2",
 				OriginalMinReplicasAnnotationKey:   "1",
 			})
+			deploy = &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
+			}
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(deploy).
+				Build()
+			Expect(fc.Create(ctx, so)).To(Succeed())
 
-			// Check idempotency condition: annotation matches surge value
-			annotations := obj.GetAnnotations()
-			surgeVal := "2"
-			alreadySurged := annotations != nil && annotations[EvictionSurgeReplicasAnnotationKey] == surgeVal
-			Expect(alreadySurged).To(BeTrue())
+			target := &DeploymentWrapper{obj: deploy}
+			applier = &KEDASurgeApplier{client: fc, scaledObject: so, target: target}
+		})
+
+		It("should restore minReplicaCount from original-min-replicas annotation", func() {
+			Expect(applier.RevertSurge(ctx, 99)).To(Succeed()) // 99 should be overridden by annotation
+
+			updated := &unstructured.Unstructured{}
+			updated.SetGroupVersionKind(so.GroupVersionKind())
+			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
+
+			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
+			Expect(found).To(BeTrue())
+			Expect(val).To(Equal(int64(1))) // from annotation, not 99
+		})
+
+		It("should remove both surge annotations after revert", func() {
+			Expect(applier.RevertSurge(ctx, 1)).To(Succeed())
+
+			updated := &unstructured.Unstructured{}
+			updated.SetGroupVersionKind(so.GroupVersionKind())
+			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
+
+			Expect(updated.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+			Expect(updated.GetAnnotations()).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+		})
+
+		It("should fall back to passed-in value when annotation is missing", func() {
+			// Remove annotations before revert
+			noAnnSO := createScaledObject("no-ann-so", "default", "test-deploy", 3, 5)
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
+			Expect(fc.Create(ctx, noAnnSO)).To(Succeed())
+
+			target := &DeploymentWrapper{obj: deploy}
+			noAnnApplier := &KEDASurgeApplier{client: fc, scaledObject: noAnnSO, target: target}
+
+			Expect(noAnnApplier.RevertSurge(ctx, 2)).To(Succeed())
+
+			updated := &unstructured.Unstructured{}
+			updated.SetGroupVersionKind(noAnnSO.GroupVersionKind())
+			Expect(fc.Get(ctx, keyFor(noAnnSO), updated)).To(Succeed())
+
+			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
+			Expect(found).To(BeTrue())
+			Expect(val).To(Equal(int64(2))) // passed-in fallback
 		})
 	})
 })
 
-func parseIntFromString(s string) (int64, error) {
-	var val int64
-	_, err := fmt.Sscanf(s, "%d", &val)
-	return val, err
+func keyFor(obj interface{ GetName() string; GetNamespace() string }) client.ObjectKey {
+	return client.ObjectKey{Name: obj.GetName(), Namespace: obj.GetNamespace()}
 }

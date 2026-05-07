@@ -237,6 +237,9 @@ var _ = Describe("KEDASurgeApplier", func() {
 	})
 })
 
-func keyFor(obj interface{ GetName() string; GetNamespace() string }) client.ObjectKey {
+func keyFor(obj interface {
+	GetName() string
+	GetNamespace() string
+}) client.ObjectKey {
 	return client.ObjectKey{Name: obj.GetName(), Namespace: obj.GetNamespace()}
 }

@@ -19,6 +19,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -395,15 +396,22 @@ func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32
 
 // verifyKEDAScaledObjectAnnotation checks if a ScaledObject has the expected annotation value
 func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedValue string) error {
-	jsonpath := fmt.Sprintf("{.metadata.annotations['%s']}", annotationKey)
+	// Use -o json and parse in Go because kubectl jsonpath doesn't handle
+	// annotation keys with dots/slashes (e.g. eviction-autoscaler.azure.com/original-min-replicas).
 	cmd := exec.Command("kubectl", "get", "scaledobject", name,
-		"--namespace", namespace,
-		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+		"--namespace", namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return err
 	}
-	actual := strings.TrimSpace(string(output))
+	annotations, err := extractAnnotations(output)
+	if err != nil {
+		return err
+	}
+	actual, exists := annotations[annotationKey]
+	if !exists {
+		return fmt.Errorf("expected ScaledObject annotation %s=%s, got ", annotationKey, expectedValue)
+	}
 	if actual != expectedValue {
 		return fmt.Errorf("expected ScaledObject annotation %s=%s, got %s", annotationKey, expectedValue, actual)
 	}
@@ -412,19 +420,36 @@ func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedVa
 
 // verifyKEDAScaledObjectNoAnnotation checks that a ScaledObject does NOT have a specific annotation
 func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) error {
-	jsonpath := fmt.Sprintf("{.metadata.annotations['%s']}", annotationKey)
 	cmd := exec.Command("kubectl", "get", "scaledobject", name,
-		"--namespace", namespace,
-		"-o", fmt.Sprintf("jsonpath=%s", jsonpath))
+		"--namespace", namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return err
 	}
-	actual := strings.TrimSpace(string(output))
-	if actual != "" {
-		return fmt.Errorf("annotation %s should not be present on ScaledObject %s, got %s", annotationKey, name, actual)
+	annotations, err := extractAnnotations(output)
+	if err != nil {
+		return err
+	}
+	if val, exists := annotations[annotationKey]; exists {
+		return fmt.Errorf("annotation %s should not be present on ScaledObject %s, got %s", annotationKey, name, val)
 	}
 	return nil
+}
+
+// extractAnnotations parses kubectl JSON output and returns the annotations map.
+func extractAnnotations(jsonOutput []byte) (map[string]string, error) {
+	var obj struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(jsonOutput, &obj); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+	if obj.Metadata.Annotations == nil {
+		return map[string]string{}, nil
+	}
+	return obj.Metadata.Annotations, nil
 }
 
 // installKEDA installs KEDA using Helm

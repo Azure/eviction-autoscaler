@@ -124,12 +124,15 @@ func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, 
 }
 
 // ResolveMinReplicas returns the effective minimum replica count for a workload.
-// Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
+// Priority: KEDA ScaledObject minReplicaCount > standalone HPA minReplicas > deployment.spec.replicas.
 //
-// KEDA always takes precedence because it is the primary autoscaler; its managed
-// HPA is filtered out by isKEDAManagedHPA, so only standalone HPAs are considered
-// at tier 2. This value drives the surge calculation (baseline + 1), while each
-// individual applier guards against lowering its own floor below the current value.
+// The strategies are mutually exclusive in detectSurgeApplier: when a KEDA
+// ScaledObject is present, only the KEDA strategy is used (any standalone HPA
+// on the same target is treated as unsupported and ignored). This function
+// mirrors that precedence for baseline calculation.
+//
+// KEDA-managed HPAs are filtered out by isKEDAManagedHPA, so only user-created
+// standalone HPAs are considered at tier 2.
 //
 // The returned bool indicates whether an autoscaler (KEDA or HPA) was found.
 // When true, the int32 is the autoscaler's floor (which may be 0 for KEDA scale-to-zero).

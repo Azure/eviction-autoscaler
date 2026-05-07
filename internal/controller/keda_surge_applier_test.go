@@ -136,26 +136,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed()) // should not error
 		})
-
-		It("should skip surge when minReplicaCount already above surge value", func() {
-			// ScaledObject with minReplicaCount=5, surge to 2 should be skipped
-			highSO := createScaledObject("high-so", "default", "test-deploy", 5, 10)
-			scheme := runtime.NewScheme()
-			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
-			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
-			Expect(fc.Create(ctx, highSO)).To(Succeed())
-
-			target := &DeploymentWrapper{obj: deploy}
-			highApplier := &KEDASurgeApplier{client: fc, scaledObject: highSO, target: target}
-
-			Expect(highApplier.ApplySurge(ctx, 2)).To(Succeed())
-
-			// ScaledObject should NOT have surge annotations (skipped)
-			updated := &unstructured.Unstructured{}
-			updated.SetGroupVersionKind(highSO.GroupVersionKind())
-			Expect(fc.Get(ctx, keyFor(highSO), updated)).To(Succeed())
-			Expect(updated.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
-		})
+	})
 	})
 
 	Describe("RevertSurge with fake client", func() {

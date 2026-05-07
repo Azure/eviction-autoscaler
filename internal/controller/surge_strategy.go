@@ -30,20 +30,22 @@ type SurgeApplier interface {
 	Name() string
 }
 
-// detectSurgeApplier determines which surge strategy to use by building a
-// composite of all applicable appliers. KEDA and HPA appliers are added when
-// their resources target this workload, ensuring their floors are raised before
-// the deployment scales.
+// detectSurgeApplier determines which surge strategy to use based on the
+// autoscaler resources targeting this workload. The strategies are mutually
+// exclusive — exactly one applier is returned:
 //
-// Surge precedence: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment replicas.
-// The surge value is calculated from the highest-priority autoscaler's baseline
-// (via ResolveMinReplicas). Each applier guards against lowering its floor below
-// the current value, so a KEDA-derived surge cannot weaken a standalone HPA's
-// existing protection in the unlikely event both target the same deployment.
+//   - KEDA ScaledObject present → KEDASurgeApplier (raises minReplicaCount + sets deployment replicas)
+//   - Standalone HPA present (no KEDA) → HPASurgeApplier (raises minReplicas + sets deployment replicas)
+//   - Neither → DeploymentSurgeApplier (sets deployment replicas directly)
+//
+// KEDA + standalone HPA on the same target is treated as unsupported. KEDA already
+// creates and owns its own HPA for the target, and validates against unmanaged HPAs
+// on the same scale target. If we detect both, we use the KEDA strategy only and
+// log a warning — the eviction autoscaler can't fix multiple-writer conflicts and
+// shouldn't try. KEDA-managed HPAs (identified by label/ownerRef) are always
+// filtered out by findHPAForTarget and never reach this logic.
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
 	logger := log.FromContext(ctx)
-
-	var appliers []SurgeApplier
 
 	// HPA and KEDA only target Deployments; skip autoscaler detection for other kinds.
 	if strings.EqualFold(targetKind, ResourceTypeDeployment) {
@@ -53,36 +55,37 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 			return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 		}
 		if scaledObj != nil {
-			logger.Info("Found KEDA ScaledObject for target, adding KEDA surge applier",
+			logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
 				"scaledObject", scaledObj.GetName(), "target", targetName)
-			appliers = append(appliers, &KEDASurgeApplier{client: c, scaledObject: scaledObj, target: target})
+
+			// Warn if a standalone HPA also targets this deployment. This is an
+			// unsupported configuration — KEDA already owns an HPA for the target.
+			// We proceed with KEDA-only and do not modify the standalone HPA.
+			standaloneHPA, hpaErr := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+			if hpaErr == nil && standaloneHPA != nil {
+				logger.Info("WARNING: standalone HPA and KEDA ScaledObject both target the same deployment; "+
+					"this is unsupported — using KEDA strategy only, standalone HPA will not be modified",
+					"hpa", standaloneHPA.Name, "scaledObject", scaledObj.GetName(), "target", targetName)
+			}
+
+			return &KEDASurgeApplier{client: c, scaledObject: scaledObj, target: target}, nil
 		}
 
-		// Check for standalone HPA targeting this workload
+		// No KEDA — check for standalone HPA
 		hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 		if err != nil && !errors.Is(err, errNotFound) {
 			return nil, fmt.Errorf("checking for HPA: %w", err)
 		}
 		if hpa != nil {
-			logger.Info("Found HPA for target, adding HPA surge applier",
+			logger.Info("Found standalone HPA for target, using HPA surge strategy",
 				"hpa", hpa.Name, "target", targetName)
-			appliers = append(appliers, &HPASurgeApplier{client: c, hpa: hpa, target: target})
+			return &HPASurgeApplier{client: c, hpa: hpa, target: target}, nil
 		}
 	}
 
-	// DeploymentSurgeApplier is only needed when no autoscaler appliers were added.
-	// HPA/KEDA appliers already handle setting deployment replicas and the surge
-	// annotation internally (via reGetAndUpdateTarget), so adding DeploymentSurgeApplier
-	// alongside them would cause a stale-object conflict on the second Update.
-	if len(appliers) == 0 {
-		logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
-		appliers = append(appliers, &DeploymentSurgeApplier{client: c, target: target})
-	}
-
-	return &CompositeSurgeApplier{
-		appliers: appliers,
-		target:   target,
-	}, nil
+	// No autoscaler found — surge by modifying deployment replicas directly.
+	logger.V(1).Info("No KEDA or HPA found, using deployment surge strategy", "target", targetName)
+	return &DeploymentSurgeApplier{client: c, target: target}, nil
 }
 
 // hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation

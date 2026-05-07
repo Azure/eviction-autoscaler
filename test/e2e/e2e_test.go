@@ -1429,7 +1429,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("verifying original-min-replicas annotation is set on ScaledObject during surge")
 			EventuallyWithOffset(1, func() error {
 				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
-					"original-min-replicas", "1")
+					"eviction-autoscaler.azure.com/original-min-replicas", "1")
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying deployment does NOT have evictionSurgeReplicas annotation (should be on ScaledObject only)")
@@ -1441,7 +1441,7 @@ var _ = Describe("controller", Ordered, func() {
 				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
 					return fmt.Errorf("deployment should NOT have evictionSurgeReplicas annotation during KEDA surge")
 				}
-				if _, ok := dep.Annotations["original-min-replicas"]; ok {
+				if _, ok := dep.Annotations["eviction-autoscaler.azure.com/original-min-replicas"]; ok {
 					return fmt.Errorf("deployment should NOT have original-min-replicas annotation during KEDA surge")
 				}
 				return nil
@@ -1493,7 +1493,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("verifying original-min-replicas annotation is removed from ScaledObject after revert")
 			EventuallyWithOffset(1, func() error {
 				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
-					"original-min-replicas")
+					"eviction-autoscaler.azure.com/original-min-replicas")
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying PDB minAvailable tracks ScaledObject minReplicaCount (back to 1)")

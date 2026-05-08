@@ -12,9 +12,14 @@ import (
 )
 
 // SurgeApplier abstracts the mechanism for temporarily increasing minimum replicas.
-// Depending on whether KEDA, HPA, or neither is present, a different implementation is used.
+// Exactly one implementation is used per deployment, determined by detectSurgeApplier:
+//   - KEDASurgeApplier: when a KEDA ScaledObject targets the deployment
+//   - HPASurgeApplier: when a standalone HPA targets the deployment (no KEDA)
+//   - DeploymentSurgeApplier: when neither KEDA nor HPA is present
 //
-// For multi-resource strategies (HPA, KEDA): the HPA/KEDA floor is raised first, then
+// KEDA + standalone HPA on the same target is unsupported and rejected by detectSurgeApplier.
+//
+// For autoscaler strategies (HPA, KEDA): the autoscaler floor is raised first, then
 // deployment replicas are set directly for immediate effect. On failure, the reconcile
 // loop retries ApplySurge idempotently until the deployment write succeeds.
 type SurgeApplier interface {
@@ -40,10 +45,10 @@ type SurgeApplier interface {
 //
 // KEDA + standalone HPA on the same target is treated as unsupported. KEDA already
 // creates and owns its own HPA for the target, and validates against unmanaged HPAs
-// on the same scale target. If we detect both, we use the KEDA strategy only and
-// log a warning — the eviction autoscaler can't fix multiple-writer conflicts and
-// shouldn't try. KEDA-managed HPAs (identified by label/ownerRef) are always
-// filtered out by findHPAForTarget and never reach this logic.
+// on the same scale target. If we detect both, we return an error — the eviction
+// autoscaler can't fix multiple-writer conflicts and shouldn't try. The reconciler
+// logs the error and skips the deployment. KEDA-managed HPAs (identified by
+// label/ownerRef) are always filtered out by findHPAForTarget and never reach this logic.
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
 	logger := log.FromContext(ctx)
 
@@ -55,19 +60,20 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 			return nil, fmt.Errorf("checking for KEDA ScaledObject: %w", err)
 		}
 		if scaledObj != nil {
-			logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
-				"scaledObject", scaledObj.GetName(), "target", targetName)
-
-			// Warn if a standalone HPA also targets this deployment. This is an
-			// unsupported configuration — KEDA already owns an HPA for the target.
-			// We proceed with KEDA-only and do not modify the standalone HPA.
+			// Reject if a standalone HPA also targets this deployment. This is an
+			// unsupported configuration — KEDA already owns an HPA for the target,
+			// and having an additional standalone HPA creates multiple-writer conflicts
+			// that the eviction autoscaler cannot resolve safely.
 			standaloneHPA, hpaErr := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 			if hpaErr == nil && standaloneHPA != nil {
-				logger.Info("WARNING: standalone HPA and KEDA ScaledObject both target the same deployment; "+
-					"this is unsupported — using KEDA strategy only, standalone HPA will not be modified",
-					"hpa", standaloneHPA.Name, "scaledObject", scaledObj.GetName(), "target", targetName)
+				return nil, fmt.Errorf("unsupported configuration: both KEDA ScaledObject %q and "+
+					"standalone HPA %q target deployment %q in namespace %q — "+
+					"eviction autoscaler cannot safely surge with multiple autoscaler writers",
+					scaledObj.GetName(), standaloneHPA.Name, targetName, namespace)
 			}
 
+			logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
+				"scaledObject", scaledObj.GetName(), "target", targetName)
 			return &KEDASurgeApplier{client: c, scaledObject: scaledObj, target: target}, nil
 		}
 
@@ -89,7 +95,7 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 }
 
 // hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation
-// with the expected value. Used internally by appliers to avoid redundant writes in composite mode.
+// with the expected value. Used by DeploymentSurgeApplier for idempotency checks.
 func hasTargetAnnotationWithValue(target Surger, value string) bool {
 	annotations := target.Obj().GetAnnotations()
 	if annotations == nil {
@@ -110,9 +116,7 @@ func hasTargetAnnotation(target Surger) bool {
 }
 
 // --- NoOpSurgeApplier ---
-// Returned when an autoscaler (HPA/KEDA) targets the workload but its surge
-// strategy is not yet implemented. Does nothing on apply/revert so we don't
-// bypass the autoscaler by mutating deployment replicas directly.
+// Used when surge should be skipped entirely (e.g., unsupported target kind).
 
 type NoOpSurgeApplier struct{}
 
@@ -155,11 +159,9 @@ func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 }
 
 // --- CompositeSurgeApplier ---
-// Surges multiple resources (e.g., both KEDA ScaledObject and standalone HPA) when both
-// target the same workload. This prevents the standalone HPA from blocking scale-up when
-// only the ScaledObject is surged, or vice versa.
-// The target annotation (evictionSurgeReplicas) is written once by the first applier;
-// subsequent appliers skip re-annotating the target to avoid duplicate writes.
+// Wraps a single surge applier. Strategies are mutually exclusive — detectSurgeApplier
+// returns exactly one applier, so the appliers slice always has exactly one element.
+// Kept for structural compatibility; may be removed in a future cleanup.
 
 type CompositeSurgeApplier struct {
 	appliers []SurgeApplier

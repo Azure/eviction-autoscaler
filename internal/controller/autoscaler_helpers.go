@@ -108,9 +108,10 @@ func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, 
 // Priority: KEDA ScaledObject minReplicaCount > standalone HPA minReplicas > deployment.spec.replicas.
 //
 // The strategies are mutually exclusive in detectSurgeApplier: when a KEDA
-// ScaledObject is present, only the KEDA strategy is used (any standalone HPA
-// on the same target is treated as unsupported and ignored). This function
-// mirrors that precedence for baseline calculation.
+// ScaledObject is present, only the KEDA strategy is used. If a standalone HPA
+// also targets the same deployment, detectSurgeApplier rejects the configuration
+// with an error (unsupported). This function mirrors that precedence for baseline
+// calculation but does not enforce the rejection — that is done by detectSurgeApplier.
 //
 // KEDA-managed HPAs are filtered out by isKEDAManagedHPA, so only user-created
 // standalone HPAs are considered at tier 2.

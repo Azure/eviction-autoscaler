@@ -137,7 +137,6 @@ var _ = Describe("KEDASurgeApplier", func() {
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed()) // should not error
 		})
 	})
-	})
 
 	Describe("RevertSurge with fake client", func() {
 		var (

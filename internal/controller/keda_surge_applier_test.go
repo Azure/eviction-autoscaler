@@ -3,9 +3,9 @@ package controllers
 import (
 	"context"
 
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"

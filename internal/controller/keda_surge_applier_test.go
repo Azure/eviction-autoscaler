@@ -5,33 +5,31 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-// createScaledObject creates an unstructured KEDA ScaledObject for testing.
-//
-//nolint:unparam // test helper — parameters vary across test suites, not just this file
-func createScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int64) *unstructured.Unstructured {
-	obj := &unstructured.Unstructured{}
-	obj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObject",
-	})
-	obj.SetName(name)
-	obj.SetNamespace(namespace)
-	_ = unstructured.SetNestedField(obj.Object, targetDeployment, "spec", "scaleTargetRef", "name")
-	_ = unstructured.SetNestedField(obj.Object, "Deployment", "spec", "scaleTargetRef", "kind")
-	_ = unstructured.SetNestedField(obj.Object, minReplicaCount, "spec", "minReplicaCount")
-	_ = unstructured.SetNestedField(obj.Object, maxReplicaCount, "spec", "maxReplicaCount")
-	return obj
+// createScaledObject creates a typed KEDA ScaledObject for testing.
+func createScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int32) *kedav1alpha1.ScaledObject {
+	return &kedav1alpha1.ScaledObject{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: kedav1alpha1.ScaledObjectSpec{
+			ScaleTargetRef: &kedav1alpha1.ScaleTarget{
+				Name: targetDeployment,
+				Kind: "Deployment",
+			},
+			MinReplicaCount: ptr.To(minReplicaCount),
+			MaxReplicaCount: ptr.To(maxReplicaCount),
+		},
+	}
 }
 
 var _ = Describe("KEDASurgeApplier", func() {
@@ -65,7 +63,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 	Describe("ApplySurge with fake client", func() {
 		var (
 			ctx     context.Context
-			so      *unstructured.Unstructured
+			so      *kedav1alpha1.ScaledObject
 			deploy  *appsv1.Deployment
 			applier *KEDASurgeApplier
 		)
@@ -79,13 +77,12 @@ var _ = Describe("KEDASurgeApplier", func() {
 			}
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
 			fc := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(deploy).
+				WithObjects(deploy, so).
 				WithStatusSubresource(deploy).
 				Build()
-			// Register ScaledObject in the fake client by creating it
-			Expect(fc.Create(ctx, so)).To(Succeed())
 
 			target := &DeploymentWrapper{obj: deploy}
 			applier = &KEDASurgeApplier{client: fc, scaledObject: so, target: target}
@@ -95,16 +92,13 @@ var _ = Describe("KEDASurgeApplier", func() {
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
 
 			// Re-read ScaledObject from fake client
-			updated := &unstructured.Unstructured{}
-			updated.SetGroupVersionKind(so.GroupVersionKind())
-			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
+			var updated kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &updated)).To(Succeed())
 
-			Expect(updated.GetAnnotations()).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "2"))
-			Expect(updated.GetAnnotations()).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
-
-			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeTrue())
-			Expect(val).To(Equal(int64(2)))
+			Expect(updated.Annotations).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "2"))
+			Expect(updated.Annotations).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
+			Expect(updated.Spec.MinReplicaCount).ToNot(BeNil())
+			Expect(*updated.Spec.MinReplicaCount).To(Equal(int32(2)))
 		})
 
 		It("should set deployment replicas directly for immediate effect", func() {
@@ -129,10 +123,9 @@ var _ = Describe("KEDASurgeApplier", func() {
 		It("should be idempotent when called twice with same surge value", func() {
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
 			// Re-read to get fresh resourceVersion
-			fresh := &unstructured.Unstructured{}
-			fresh.SetGroupVersionKind(so.GroupVersionKind())
-			Expect(applier.client.Get(ctx, keyFor(so), fresh)).To(Succeed())
-			applier.scaledObject = fresh
+			var fresh kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &fresh)).To(Succeed())
+			applier.scaledObject = &fresh
 
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed()) // should not error
 		})
@@ -141,7 +134,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 	Describe("RevertSurge with fake client", func() {
 		var (
 			ctx     context.Context
-			so      *unstructured.Unstructured
+			so      *kedav1alpha1.ScaledObject
 			deploy  *appsv1.Deployment
 			applier *KEDASurgeApplier
 		)
@@ -150,21 +143,21 @@ var _ = Describe("KEDASurgeApplier", func() {
 			ctx = context.Background()
 			// Start with a surged ScaledObject
 			so = createScaledObject("test-so", "default", "test-deploy", 2, 5)
-			so.SetAnnotations(map[string]string{
+			so.Annotations = map[string]string{
 				EvictionSurgeReplicasAnnotationKey: "2",
 				OriginalMinReplicasAnnotationKey:   "1",
-			})
+			}
 			deploy = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
 				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
 			}
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
 			fc := fake.NewClientBuilder().
 				WithScheme(scheme).
-				WithObjects(deploy).
+				WithObjects(deploy, so).
 				Build()
-			Expect(fc.Create(ctx, so)).To(Succeed())
 
 			target := &DeploymentWrapper{obj: deploy}
 			applier = &KEDASurgeApplier{client: fc, scaledObject: so, target: target}
@@ -173,46 +166,37 @@ var _ = Describe("KEDASurgeApplier", func() {
 		It("should restore minReplicaCount from original-min-replicas annotation", func() {
 			Expect(applier.RevertSurge(ctx, 99)).To(Succeed()) // 99 should be overridden by annotation
 
-			updated := &unstructured.Unstructured{}
-			updated.SetGroupVersionKind(so.GroupVersionKind())
-			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
-
-			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeTrue())
-			Expect(val).To(Equal(int64(1))) // from annotation, not 99
+			var updated kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &updated)).To(Succeed())
+			Expect(updated.Spec.MinReplicaCount).ToNot(BeNil())
+			Expect(*updated.Spec.MinReplicaCount).To(Equal(int32(1))) // from annotation, not 99
 		})
 
 		It("should remove both surge annotations after revert", func() {
 			Expect(applier.RevertSurge(ctx, 1)).To(Succeed())
 
-			updated := &unstructured.Unstructured{}
-			updated.SetGroupVersionKind(so.GroupVersionKind())
-			Expect(applier.client.Get(ctx, keyFor(so), updated)).To(Succeed())
-
-			Expect(updated.GetAnnotations()).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
-			Expect(updated.GetAnnotations()).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+			var updated kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &updated)).To(Succeed())
+			Expect(updated.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+			Expect(updated.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
 		})
 
 		It("should fall back to passed-in value when annotation is missing", func() {
-			// Remove annotations before revert
 			noAnnSO := createScaledObject("no-ann-so", "default", "test-deploy", 3, 5)
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
-			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy).Build()
-			Expect(fc.Create(ctx, noAnnSO)).To(Succeed())
+			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy, noAnnSO).Build()
 
 			target := &DeploymentWrapper{obj: deploy}
 			noAnnApplier := &KEDASurgeApplier{client: fc, scaledObject: noAnnSO, target: target}
 
 			Expect(noAnnApplier.RevertSurge(ctx, 2)).To(Succeed())
 
-			updated := &unstructured.Unstructured{}
-			updated.SetGroupVersionKind(noAnnSO.GroupVersionKind())
-			Expect(fc.Get(ctx, keyFor(noAnnSO), updated)).To(Succeed())
-
-			val, found, _ := unstructured.NestedInt64(updated.Object, "spec", "minReplicaCount")
-			Expect(found).To(BeTrue())
-			Expect(val).To(Equal(int64(2))) // passed-in fallback
+			var updated kedav1alpha1.ScaledObject
+			Expect(fc.Get(ctx, keyFor(noAnnSO), &updated)).To(Succeed())
+			Expect(updated.Spec.MinReplicaCount).ToNot(BeNil())
+			Expect(*updated.Spec.MinReplicaCount).To(Equal(int32(2))) // passed-in fallback
 		})
 	})
 })

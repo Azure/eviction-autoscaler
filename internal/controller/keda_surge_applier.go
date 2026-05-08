@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -34,7 +34,7 @@ import (
 
 type KEDASurgeApplier struct {
 	client       client.Client
-	scaledObject *unstructured.Unstructured
+	scaledObject *kedav1alpha1.ScaledObject
 	target       Surger
 }
 
@@ -58,27 +58,19 @@ func (k *KEDASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) 
 			"targetMinReplicaCount", surgeReplicas)
 		obj := k.scaledObject.DeepCopy()
 		// When minReplicaCount is not set, KEDA defaults it to 0 (scale-to-zero).
-		// If someone intentionally has minReplicaCount unset for scale-to-zero,
-		// creating a PDB/EvictionAutoScaler may not be appropriate — but that
-		// decision belongs in the PDB creation logic, not here. If we get here,
-		// we have an EA and should surge.
 		// TODO: Consider skipping PDB/EA creation for ScaledObjects with
 		// minReplicaCount=0 (scale-to-zero workloads) in the deployment-to-pdb controller.
-		originalMin := int64(0) // KEDA default when minReplicaCount is not set
-		if val, found, _ := unstructured.NestedInt64(obj.Object, "spec", "minReplicaCount"); found {
-			originalMin = val
+		originalMin := int32(0) // KEDA default when minReplicaCount is not set
+		if obj.Spec.MinReplicaCount != nil {
+			originalMin = *obj.Spec.MinReplicaCount
 		}
 
-		if err := unstructured.SetNestedField(obj.Object, int64(surgeReplicas), "spec", "minReplicaCount"); err != nil {
-			return fmt.Errorf("setting minReplicaCount: %w", err)
+		obj.Spec.MinReplicaCount = &surgeReplicas
+		if obj.Annotations == nil {
+			obj.Annotations = make(map[string]string)
 		}
-		ann := obj.GetAnnotations()
-		if ann == nil {
-			ann = make(map[string]string)
-		}
-		ann[EvictionSurgeReplicasAnnotationKey] = surgeVal
-		ann[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(originalMin, 10)
-		obj.SetAnnotations(ann)
+		obj.Annotations[EvictionSurgeReplicasAnnotationKey] = surgeVal
+		obj.Annotations[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(int64(originalMin), 10)
 
 		k.scaledObject = obj
 		if err := k.client.Update(ctx, obj); err != nil {
@@ -118,25 +110,21 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	//   3. EA.Status.MinReplicas could be stale if the controller restarted
 	// Falls back to the passed-in originalMinReplicas (from EA.Status) if
 	// the annotation is missing (e.g., manual annotation removal).
-	revertTo := int64(originalMinReplicas)
+	revertTo := int32(originalMinReplicas)
 	annotations := k.scaledObject.GetAnnotations()
 	if annotations != nil {
 		if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-			if parsed, err := strconv.ParseInt(val, 10, 64); err == nil {
-				revertTo = parsed
+			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil {
+				revertTo = int32(parsed)
 			}
 		}
 	}
 
 	// Revert ScaledObject minReplicaCount and remove both surge annotations in a single write.
 	obj := k.scaledObject.DeepCopy()
-	if err := unstructured.SetNestedField(obj.Object, revertTo, "spec", "minReplicaCount"); err != nil {
-		return fmt.Errorf("restoring minReplicaCount: %w", err)
-	}
-	ann := obj.GetAnnotations()
-	delete(ann, EvictionSurgeReplicasAnnotationKey)
-	delete(ann, OriginalMinReplicasAnnotationKey)
-	obj.SetAnnotations(ann)
+	obj.Spec.MinReplicaCount = &revertTo
+	delete(obj.Annotations, EvictionSurgeReplicasAnnotationKey)
+	delete(obj.Annotations, OriginalMinReplicasAnnotationKey)
 
 	k.scaledObject = obj
 	if err := k.client.Update(ctx, obj); err != nil {

@@ -95,7 +95,15 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
-	// Fetch the Deployment or Statefulset
+	// StatefulSets are intentionally skipped — their ordered pod management
+	// semantics conflict with the eviction surge strategy.
+	if strings.EqualFold(EvictionAutoScaler.Spec.TargetKind, statefulSetKind) {
+		logger.V(1).Info("skipping StatefulSet target, not supported for eviction surge",
+			"targetname", EvictionAutoScaler.Spec.TargetName)
+		return ctrl.Result{}, nil
+	}
+
+	// Fetch the Deployment target
 	// TODO enum validation https://book.kubebuilder.io/reference/generating-crd#validation
 	target, err := GetSurger(EvictionAutoScaler.Spec.TargetKind)
 	if err != nil {

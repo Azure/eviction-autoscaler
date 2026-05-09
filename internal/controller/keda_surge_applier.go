@@ -110,7 +110,7 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	//   3. EA.Status.MinReplicas could be stale if the controller restarted
 	// Falls back to the passed-in originalMinReplicas (from EA.Status) if
 	// the annotation is missing (e.g., manual annotation removal).
-	revertTo := int32(originalMinReplicas)
+	revertTo := originalMinReplicas
 	annotations := k.scaledObject.GetAnnotations()
 	if annotations != nil {
 		if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
@@ -139,7 +139,7 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	// on their next sync. The eviction has already completed so there is no urgency.
 	// If KEDA/HPA cannot compute metrics, the deployment will stay at the surged
 	// replica count, which is safe (just over-provisioned).
-	if k.target.GetReplicas() > int32(revertTo) {
+	if k.target.GetReplicas() > revertTo {
 		logger.Info("Deployment replicas still above baseline after KEDA revert, "+
 			"waiting for KEDA/HPA to scale down on next sync",
 			"currentReplicas", k.target.GetReplicas(),

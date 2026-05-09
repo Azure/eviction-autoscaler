@@ -15,6 +15,8 @@ import (
 )
 
 // createScaledObject creates a typed KEDA ScaledObject for testing.
+//
+//nolint:unparam // test helper — namespace may vary in future tests
 func createScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int32) *kedav1alpha1.ScaledObject {
 	return &kedav1alpha1.ScaledObject{
 		ObjectMeta: metav1.ObjectMeta{

@@ -3,14 +3,14 @@ module github.com/azure/eviction-autoscaler
 go 1.25.6
 
 require (
-	github.com/kedacore/keda/v2 v2.19.0
+	github.com/kedacore/keda/v2 v2.18.3
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
-	k8s.io/client-go v1.5.2
+	k8s.io/client-go v0.35.0
 	k8s.io/utils v0.0.0-20260108192941-914a6e750570
-	sigs.k8s.io/controller-runtime v0.23.1
+	sigs.k8s.io/controller-runtime v0.22.4
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
@@ -40,7 +40,6 @@ require (
 	github.com/go-openapi/swag/typeutils v0.25.4 // indirect
 	github.com/go-openapi/swag/yamlutils v0.25.4 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
-	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
@@ -88,13 +87,4 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/lo v1.52.0
 	go.uber.org/zap v1.27.1
-)
-
-replace (
-	k8s.io/api => k8s.io/api v0.34.3
-	k8s.io/apiextensions-apiserver => k8s.io/apiextensions-apiserver v0.34.3
-	k8s.io/apimachinery => k8s.io/apimachinery v0.34.3
-	k8s.io/client-go => k8s.io/client-go v0.34.3
-	k8s.io/component-base => k8s.io/component-base v0.34.3
-	sigs.k8s.io/controller-runtime => sigs.k8s.io/controller-runtime v0.22.4
 )

@@ -17,7 +17,9 @@ limitations under the License.
 package controllers
 
 import (
+	"bufio"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -65,9 +67,14 @@ var _ = BeforeSuite(func() {
 	By("bootstrapping test environment")
 
 	// Resolve the KEDA module directory so envtest can install ScaledObject CRDs.
+	// Built entirely offline: GOMODCACHE from go env, version parsed from go.mod.
 	kedaCRDPath := ""
-	if out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/kedacore/keda/v2").Output(); err == nil {
-		kedaCRDPath = filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases")
+	if modCache, err := exec.Command("go", "env", "GOMODCACHE").Output(); err == nil {
+		if ver := kedaVersionFromGoMod(filepath.Join("..", "..", "go.mod")); ver != "" {
+			kedaCRDPath = filepath.Join(strings.TrimSpace(string(modCache)),
+				"github.com", "kedacore", "keda", "v2@"+ver,
+				"config", "crd", "bases")
+		}
 	}
 	crdPaths := []string{filepath.Join("..", "..", "config", "crd", "bases")}
 	if kedaCRDPath != "" {
@@ -112,3 +119,23 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// kedaVersionFromGoMod parses go.mod and returns the version of github.com/kedacore/keda/v2.
+func kedaVersionFromGoMod(goModPath string) string {
+	f, err := os.Open(goModPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "github.com/kedacore/keda/v2") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return fields[1]
+			}
+		}
+	}
+	return ""
+}

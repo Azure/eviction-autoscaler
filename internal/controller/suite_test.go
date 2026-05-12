@@ -126,7 +126,7 @@ func kedaVersionFromGoMod(goModPath string) string {
 	if err != nil {
 		return ""
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // best-effort close in test helper
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

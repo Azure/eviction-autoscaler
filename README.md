@@ -28,6 +28,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
+- **KEDA-aware surge**: When a KEDA ScaledObject targets the deployment, the controller surges by temporarily raising the ScaledObject's `minReplicaCount`. The same pattern applies — annotations on the ScaledObject track the surge state and original value for safe revert.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
 - **Autoscaler-to-PDB Controller** (Optional): Watches HPA and KEDA ScaledObject changes and updates PDB `minAvailable` to track the autoscaler's min replicas floor, even when deployment replicas don't change.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler). Defers to the Autoscaler-to-PDB controller when an HPA or KEDA ScaledObject is present.
@@ -620,6 +621,31 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 ```
 
 ## Usage
+
+### Surge Annotations
+
+During a surge, the eviction autoscaler places annotations on the **autoscaler object** (HPA or KEDA ScaledObject) — not on the deployment. This avoids modifying the deployment's metadata and the generation-tracking complexity that comes with it.
+
+| Annotation | Placed On | Value | Purpose |
+|---|---|---|---|
+| `evictionSurgeReplicas` | HPA or ScaledObject | Surged replica count (e.g., `"3"`) | Marks that a surge is active |
+| `eviction-autoscaler.azure.com/original-min-replicas` | HPA or ScaledObject | Pre-surge min replicas (e.g., `"1"`) | Stores the original value for safe revert |
+| `evictionSurgeReplicas` | Deployment | Surged replica count | Only used when **no** HPA/KEDA is present |
+
+These annotations are managed automatically by the controller. They are set atomically with the `minReplicas`/`minReplicaCount` change during surge and removed during revert. You should not modify them manually.
+
+**Inspecting surge state:**
+
+```bash
+# Check if a surge is active on an HPA
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations}'
+
+# Check if a surge is active on a KEDA ScaledObject
+kubectl get scaledobject <name> -n <namespace> -o jsonpath='{.metadata.annotations}'
+
+# Check the original minReplicas that will be restored on revert
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations.eviction-autoscaler\.azure\.com/original-min-replicas}'
+```
 
 ### Build and Push Multi-Arch Image
 

@@ -17,15 +17,20 @@ limitations under the License.
 package controllers
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/zap/zapcore"
 
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -60,8 +65,24 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.UseFlagOptions(&opts), zap.WriteTo(GinkgoWriter)))
 
 	By("bootstrapping test environment")
+
+	// Resolve the KEDA module directory so envtest can install ScaledObject CRDs.
+	// Built entirely offline: GOMODCACHE from go env, version parsed from go.mod.
+	kedaCRDPath := ""
+	if modCache, err := exec.Command("go", "env", "GOMODCACHE").Output(); err == nil {
+		if ver := kedaVersionFromGoMod(filepath.Join("..", "..", "go.mod")); ver != "" {
+			kedaCRDPath = filepath.Join(strings.TrimSpace(string(modCache)),
+				"github.com", "kedacore", "keda", "v2@"+ver,
+				"config", "crd", "bases")
+		}
+	}
+	crdPaths := []string{filepath.Join("..", "..", "config", "crd", "bases")}
+	if kedaCRDPath != "" {
+		crdPaths = append(crdPaths, kedaCRDPath)
+	}
+
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     crdPaths,
 		ErrorIfCRDPathMissing: true,
 
 		// The BinaryAssetsDirectory is only required if you want to run the tests directly
@@ -70,7 +91,7 @@ var _ = BeforeSuite(func() {
 		// Note that you must have the required binaries setup under the bin directory to perform
 		// the tests directly. When we run make test it will be setup and used automatically.
 		BinaryAssetsDirectory: filepath.Join("..", "..", "bin", "k8s",
-			fmt.Sprintf("1.30.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
+			fmt.Sprintf("1.32.0-%s-%s", runtime.GOOS, runtime.GOARCH)),
 	}
 
 	var err error
@@ -80,6 +101,9 @@ var _ = BeforeSuite(func() {
 	Expect(cfg).NotTo(BeNil())
 
 	err = appsv1.AddToScheme(scheme.Scheme)
+	Expect(err).NotTo(HaveOccurred())
+
+	err = kedav1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:scheme
@@ -95,3 +119,23 @@ var _ = AfterSuite(func() {
 	err := testEnv.Stop()
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// kedaVersionFromGoMod parses go.mod and returns the version of github.com/kedacore/keda/v2.
+func kedaVersionFromGoMod(goModPath string) string {
+	f, err := os.Open(goModPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close() //nolint:errcheck // best-effort close in test helper
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "github.com/kedacore/keda/v2") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 {
+				return fields[1]
+			}
+		}
+	}
+	return ""
+}

@@ -19,7 +19,9 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"text/template"
@@ -337,4 +339,232 @@ func verifyHPANoAnnotation(ctx context.Context, clientset client.Client, ns, nam
 		return fmt.Errorf("annotation %q should not be present on HPA %s", annotationKey, name)
 	}
 	return nil
+}
+
+// --- KEDA helpers ---
+
+// createKEDAScaledObject creates a KEDA ScaledObject targeting a deployment
+func createKEDAScaledObject(name, namespace, targetDeployment string, minReplicaCount, maxReplicaCount int32) error {
+	scaledObjectYaml := fmt.Sprintf(`apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  scaleTargetRef:
+    name: %s
+    kind: Deployment
+  minReplicaCount: %d
+  maxReplicaCount: %d
+  triggers:
+  - type: cron
+    metadata:
+      timezone: Etc/UTC
+      start: "0 0 * * *"
+      end: "59 23 * * *"
+      desiredReplicas: "%d"
+`, name, namespace, targetDeployment, minReplicaCount, maxReplicaCount, minReplicaCount)
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(scaledObjectYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// deleteKEDAScaledObject deletes a KEDA ScaledObject
+func deleteKEDAScaledObject(name, namespace string) {
+	cmd := exec.Command("kubectl", "delete", "scaledobject", name, "--namespace", namespace)
+	_, _ = utils.Run(cmd)
+}
+
+// verifyKEDAScaledObjectMinReplicas checks the minReplicaCount on a ScaledObject using kubectl
+func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32) error {
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace,
+		"-o", "jsonpath={.spec.minReplicaCount}")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	actual := strings.TrimSpace(string(output))
+	expected := fmt.Sprintf("%d", expectedMin)
+	if actual != expected {
+		return fmt.Errorf("expected ScaledObject minReplicaCount=%s, got %s", expected, actual)
+	}
+	return nil
+}
+
+// verifyKEDAScaledObjectAnnotation checks if a ScaledObject has the expected annotation value
+func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedValue string) error {
+	// Use -o json and parse in Go because kubectl jsonpath doesn't handle
+	// annotation keys with dots/slashes (e.g. eviction-autoscaler.azure.com/original-min-replicas).
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	annotations, err := extractAnnotations(output)
+	if err != nil {
+		return err
+	}
+	actual, exists := annotations[annotationKey]
+	if !exists {
+		return fmt.Errorf("expected ScaledObject annotation %s=%s, got ", annotationKey, expectedValue)
+	}
+	if actual != expectedValue {
+		return fmt.Errorf("expected ScaledObject annotation %s=%s, got %s", annotationKey, expectedValue, actual)
+	}
+	return nil
+}
+
+// verifyKEDAScaledObjectNoAnnotation checks that a ScaledObject does NOT have a specific annotation
+func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) error {
+	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+		"--namespace", namespace, "-o", "json")
+	output, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	annotations, err := extractAnnotations(output)
+	if err != nil {
+		return err
+	}
+	if val, exists := annotations[annotationKey]; exists {
+		return fmt.Errorf("annotation %s should not be present on ScaledObject %s, got %s", annotationKey, name, val)
+	}
+	return nil
+}
+
+// extractAnnotations parses kubectl JSON output and returns the annotations map.
+func extractAnnotations(jsonOutput []byte) (map[string]string, error) {
+	var obj struct {
+		Metadata struct {
+			Annotations map[string]string `json:"annotations"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(jsonOutput, &obj); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+	if obj.Metadata.Annotations == nil {
+		return map[string]string{}, nil
+	}
+	return obj.Metadata.Annotations, nil
+}
+
+// installKEDA installs KEDA using Helm
+// installKEDACRDs registers only the KEDA CRDs on the cluster (without installing the full operator).
+// This must be called before the controller starts so its informer cache discovers the ScaledObject GVK.
+func installKEDACRDs() error {
+	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
+	_, _ = utils.Run(cmd) // ignore error if repo already exists
+	cmd = exec.Command("helm", "repo", "update")
+	if _, err := utils.Run(cmd); err != nil {
+		return err
+	}
+	// Render only CRD templates from the chart (they live under templates/crds/, not a top-level crds/ dir).
+	tmpFile, err := os.CreateTemp("", "keda-crds-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmpFile.Name()) }()
+	_ = tmpFile.Close()
+
+	cmd = exec.Command("helm", "template", "keda-crds", "kedacore/keda",
+		"--show-only", "templates/crds/crd-scaledobjects.yaml",
+		"--show-only", "templates/crds/crd-scaledjobs.yaml",
+		"--show-only", "templates/crds/crd-triggerauthentications.yaml",
+		"--show-only", "templates/crds/crd-clustertriggerauthentications.yaml")
+	crdYAML, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	if err = os.WriteFile(tmpFile.Name(), crdYAML, 0600); err != nil {
+		return err
+	}
+	cmd = exec.Command("kubectl", "apply", "--server-side", "-f", tmpFile.Name())
+	if _, err = utils.Run(cmd); err != nil {
+		return err
+	}
+
+	// Add Helm ownership metadata so `helm install keda` can adopt these CRDs.
+	// KEDA puts CRDs in templates/crds/ (not the standard crds/ dir), so --skip-crds
+	// doesn't help and Helm refuses to install if CRDs lack its ownership labels.
+	kedaCRDs := []string{
+		"scaledobjects.keda.sh",
+		"scaledjobs.keda.sh",
+		"triggerauthentications.keda.sh",
+		"clustertriggerauthentications.keda.sh",
+	}
+	for _, crd := range kedaCRDs {
+		cmd = exec.Command("kubectl", "label", "crd", crd,
+			"app.kubernetes.io/managed-by=Helm", "--overwrite")
+		if _, err = utils.Run(cmd); err != nil {
+			return err
+		}
+		cmd = exec.Command("kubectl", "annotate", "crd", crd,
+			"meta.helm.sh/release-name=keda",
+			"meta.helm.sh/release-namespace=keda", "--overwrite")
+		if _, err = utils.Run(cmd); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func installKEDA() error {
+	cmd := exec.Command("helm", "repo", "add", "kedacore", "https://kedacore.github.io/charts")
+	_, _ = utils.Run(cmd) // ignore error if repo already exists
+	cmd = exec.Command("helm", "repo", "update")
+	_, err := utils.Run(cmd)
+	if err != nil {
+		return err
+	}
+	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
+		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
+	_, err = utils.Run(cmd)
+	return err
+}
+
+// uninstallKEDA removes KEDA
+func uninstallKEDA() {
+	cmd := exec.Command("helm", "uninstall", "keda", "--namespace", "keda")
+	_, _ = utils.Run(cmd)
+	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
+	_, _ = utils.Run(cmd)
+}
+
+const e2eLogsDir = "/tmp/e2e-logs"
+
+// dumpClusterState writes controller logs and cluster resource state to e2eLogsDir
+// so CI can upload them as artifacts for post-mortem debugging.
+func dumpClusterState() {
+	if err := os.MkdirAll(e2eLogsDir, 0750); err != nil {
+		fmt.Printf("failed to create log dir: %v\n", err)
+		return
+	}
+
+	dumps := []struct {
+		file string
+		args []string
+	}{
+		{"controller.log", []string{"logs", "-n", "eviction-autoscaler",
+			"-l", "app.kubernetes.io/name=eviction-autoscaler", "--tail=2000"}},
+		{"pods.txt", []string{"get", "pods", "-A", "-o", "wide"}},
+		{"nodes.txt", []string{"get", "nodes", "-o", "wide"}},
+		{"deployments.txt", []string{"get", "deployments", "-A", "-o", "wide"}},
+		{"pdb.yaml", []string{"get", "pdb", "-A", "-o", "yaml"}},
+		{"hpa.yaml", []string{"get", "hpa", "-A", "-o", "yaml"}},
+		{"scaledobjects.yaml", []string{"get", "scaledobjects.keda.sh", "-A", "-o", "yaml"}},
+		{"events.txt", []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
+	}
+
+	for _, d := range dumps {
+		out, err := exec.Command("kubectl", d.args...).CombinedOutput()
+		if err != nil {
+			out = append(out, []byte(fmt.Sprintf("\nerror: %v\n", err))...)
+		}
+		_ = os.WriteFile(e2eLogsDir+"/"+d.file, out, 0600)
+	}
+	fmt.Printf("cluster state dumped to %s\n", e2eLogsDir)
 }

@@ -94,13 +94,12 @@ var _ = Describe("controller", Ordered, func() {
 	})
 
 	AfterAll(func() {
-		//By("uninstalling the Prometheus manager bundle")
-		//utils.UninstallPrometheusOperator()
+		By("dumping cluster state for CI artifacts")
+		dumpClusterState()
 
 		if cleanEnv {
-
 			By("removing kind cluster")
-			cmd := exec.Command("kind", "delete", "cluster", "-n", kindClusterName)
+			cmd := exec.Command("kind", "delete", "cluster", "--name", kindClusterName)
 			_, _ = utils.Run(cmd)
 		}
 	})
@@ -143,6 +142,11 @@ var _ = Describe("controller", Ordered, func() {
 				MaxUnavailable: 0,
 			})
 			ExpectWithOffset(1, err).NotTo(HaveOccurred()) // Deploy the controller using the Helm chart
+
+			By("registering KEDA CRDs so the controller cache discovers ScaledObject GVK at startup")
+			err = installKEDACRDs()
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
 			By("deploying the controller-manager with Helm")
 
 			// Split the image into repository and tag so we can
@@ -1243,6 +1247,273 @@ var _ = Describe("controller", Ordered, func() {
 			deleteDeployment("nginx-hpa-pdb", testNs)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
+		})
+
+		// Test 4: KEDA surge strategy - when a ScaledObject exists, surge by updating minReplicaCount
+		It("should surge via KEDA ScaledObject minReplicaCount when a ScaledObject targets the deployment", func() {
+			ctx := context.Background()
+			testNs := "test-keda-surge"
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+			}
+
+			By("installing KEDA on the cluster")
+			err = installKEDA()
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying KEDA operator is running")
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				config, cErr := clientcmd.BuildConfigFromFlags("",
+					filepath.Join(homedir.HomeDir(), ".kube", "config"))
+				if cErr != nil {
+					return cErr
+				}
+				cs, cErr := client.New(config, client.Options{Scheme: scheme})
+				if cErr != nil {
+					return cErr
+				}
+				if err := cs.List(ctx, &pods, client.InNamespace("keda"),
+					client.MatchingLabels{"app": "keda-operator"}); err != nil {
+					return err
+				}
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning {
+						fmt.Printf("KEDA operator pod %s running on %s\n", p.Name, p.Spec.NodeName)
+						return nil
+					}
+				}
+				return fmt.Errorf("no running KEDA operator pod found")
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("creating test namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica and maxUnavailable=0")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-keda",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-keda", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a KEDA ScaledObject targeting the deployment")
+			err = createKEDAScaledObject("nginx-keda", testNs, "nginx-keda", 1, 5)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying KEDA ScaledObject is ready")
+			EventuallyWithOffset(1, func() error {
+				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					"-n", testNs, "-o",
+					"jsonpath={.status.conditions[?(@.type=='Ready')].status}")
+				soOut, err := utils.Run(soCmd)
+				if err != nil {
+					return err
+				}
+				status := strings.TrimSpace(string(soOut))
+				if status != "True" {
+					// Dump full status for debugging
+					dCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+						"-n", testNs, "-o", "jsonpath={.status}")
+					dOut, _ := utils.Run(dCmd)
+					return fmt.Errorf("ScaledObject not ready (status=%s), full: %s", status, string(dOut))
+				}
+				fmt.Println("KEDA ScaledObject is Ready")
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying controller pod location")
+			var ctrlPods corev1.PodList
+			err = clientset.List(ctx, &ctrlPods, client.InNamespace(namespace),
+				client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"})
+			Expect(err).NotTo(HaveOccurred())
+			for _, p := range ctrlPods.Items {
+				fmt.Printf("controller pod %s running on node %s\n", p.Name, p.Spec.NodeName)
+			}
+
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-keda")
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, "nginx-keda")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding the node the pod runs on")
+			var nodeName string
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+				if err != nil {
+					return err
+				}
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning && p.Spec.NodeName != "" {
+						nodeName = p.Spec.NodeName
+						return nil
+					}
+				}
+				return fmt.Errorf("no running pod found in namespace %s", testNs)
+			}, time.Minute, time.Second).Should(Succeed())
+			fmt.Printf("nginx-keda pod running on node %s\n", nodeName)
+
+			By("ensuring controller pod is NOT on the same node as nginx-keda pod")
+			for _, p := range ctrlPods.Items {
+				if p.Spec.NodeName == nodeName {
+					fmt.Printf("WARNING: controller pod %s is on same node %s as nginx-keda pod\n",
+						p.Name, nodeName)
+				}
+			}
+
+			By("cordoning the node to trigger eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the ScaledObject gets the evictionSurgeReplicas annotation (surge marker)")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
+					"evictionSurgeReplicas", "2")
+			}, 2*time.Minute, time.Second).Should(Succeed(), func() string {
+				// On failure, dump controller logs and ScaledObject state for diagnosis
+				logCmd := exec.Command("kubectl", "logs", "-n", namespace,
+					"-l", "app.kubernetes.io/name=eviction-autoscaler",
+					"--tail=50")
+				logOut, _ := utils.Run(logCmd)
+				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					"-n", testNs, "-o", "yaml")
+				soOut, _ := utils.Run(soCmd)
+				depCmd := exec.Command("kubectl", "get", "deployment", "nginx-keda",
+					"-n", testNs, "-o", "jsonpath={.metadata.annotations}")
+				depOut, _ := utils.Run(depCmd)
+				return fmt.Sprintf(
+					"=== Controller logs (last 50) ===\n%s\n"+
+						"=== ScaledObject ===\n%s\n"+
+						"=== Deployment annotations ===\n%s",
+					string(logOut), string(soOut), string(depOut))
+			})
+
+			By("verifying the ScaledObject minReplicaCount is surged to 2")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 2)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying original-min-replicas annotation is set on ScaledObject during surge")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
+					"eviction-autoscaler.azure.com/original-min-replicas", "1")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying deployment does NOT have evictionSurgeReplicas annotation (should be on ScaledObject only)")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("deployment should NOT have evictionSurgeReplicas annotation during KEDA surge")
+				}
+				if _, ok := dep.Annotations["eviction-autoscaler.azure.com/original-min-replicas"]; ok {
+					return fmt.Errorf("deployment should NOT have original-min-replicas annotation during KEDA surge")
+				}
+				return nil
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("waiting for deployment to scale to 2 available replicas")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 2 {
+					return fmt.Errorf("expected 2 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("draining the node to trigger evictions")
+			drain := func() error {
+				var podList corev1.PodList
+				err := clientset.List(ctx, &podList, client.InNamespace(testNs),
+					client.MatchingFields{"spec.nodeName": nodeName})
+				if err != nil {
+					return err
+				}
+				for _, p := range podList.Items {
+					err = evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: p.ObjectMeta,
+					})
+					if err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying ScaledObject minReplicaCount reverts to 1 after cooldown")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 1)
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the evictionSurgeReplicas annotation is removed from ScaledObject")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
+					"evictionSurgeReplicas")
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying original-min-replicas annotation is removed from ScaledObject after revert")
+			EventuallyWithOffset(1, func() error {
+				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
+					"eviction-autoscaler.azure.com/original-min-replicas")
+			}, 30*time.Second, time.Second).Should(Succeed())
+
+			By("verifying PDB minAvailable tracks ScaledObject minReplicaCount (back to 1)")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-keda", 1)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning the node")
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("cleaning up KEDA test resources")
+			deleteKEDAScaledObject("nginx-keda", testNs)
+			deleteDeployment("nginx-keda", testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+			uninstallKEDA()
 		})
 	})
 })

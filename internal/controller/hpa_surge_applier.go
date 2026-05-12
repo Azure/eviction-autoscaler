@@ -55,7 +55,15 @@ func (h *HPASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) e
 	// deployment's metadata, avoiding unnecessary generation tracking complexity.
 	if h.hpa.Annotations == nil || h.hpa.Annotations[EvictionSurgeReplicasAnnotationKey] != surgeVal {
 		hpa := h.hpa.DeepCopy()
-		originalMin := int32(1) // default
+		// When minReplicas is nil, Kubernetes defaults it to 1 for standard HPAs.
+		// With KEDA, nil minReplicas can mean scale-to-zero is enabled, indicating
+		// the user doesn't require minimum availability. In that case, creating a
+		// PDB/EvictionAutoScaler may not be appropriate — but that decision belongs
+		// in the PDB creation logic, not here. If we get here, we have an EA and
+		// should surge.
+		// TODO: Consider skipping PDB/EA creation for HPAs with nil minReplicas
+		// (scale-to-zero workloads) in the deployment-to-pdb controller.
+		originalMin := int32(1) // Kubernetes default when minReplicas is nil
 		if hpa.Spec.MinReplicas != nil {
 			originalMin = *hpa.Spec.MinReplicas
 		}
@@ -74,7 +82,11 @@ func (h *HPASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) e
 	}
 
 	// Step 2: Set deployment replicas directly for immediate scale-up.
-	// See type-level comment for why this is needed alongside the HPA update.
+	// This is a time-saving optimization — the HPA would eventually enforce
+	// minReplicas on its next sync (~15s), but setting replicas directly
+	// triggers pod creation immediately. This also handles the edge case
+	// where the HPA cannot compute metrics (e.g., no metrics-server).
+	// See type-level comment for full rationale.
 	// On 409 Conflict (stale resourceVersion), the error propagates to the
 	// reconcile loop which requeues. On retry, step 1 is skipped (idempotent)
 	// and step 2 retries with a fresh object from the informer cache.
@@ -93,8 +105,12 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	logger := log.FromContext(ctx)
 
 	// Read the original minReplicas from the HPA annotation if available.
-	// This is the pre-surge value stored during ApplySurge, making the HPA
-	// self-describing for revert without depending on EA.Status.MinReplicas.
+	// The annotation takes priority over EA.Status.MinReplicas because:
+	//   1. It's self-describing — the HPA carries its own revert value
+	//   2. It was set atomically with the surge in ApplySurge
+	//   3. EA.Status.MinReplicas could be stale if the controller restarted
+	// Falls back to the passed-in originalMinReplicas (from EA.Status) if
+	// the annotation is missing (e.g., manual annotation removal).
 	revertTo := originalMinReplicas
 	if h.hpa.Annotations != nil {
 		if val, exists := h.hpa.Annotations[OriginalMinReplicasAnnotationKey]; exists {

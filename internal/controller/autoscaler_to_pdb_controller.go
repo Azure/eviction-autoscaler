@@ -179,10 +179,13 @@ func (r *AutoscalerToPDBReconciler) resolveDeploymentName(ctx context.Context, r
 // isSurgeActiveOnAutoscaler checks whether the HPA or ScaledObject identified by req
 // has the evictionSurgeReplicas annotation, indicating an active surge.
 func (r *AutoscalerToPDBReconciler) isSurgeActiveOnAutoscaler(ctx context.Context, req ctrl.Request) bool {
+	logger := log.FromContext(ctx)
+
 	// Check HPA
 	var hpa autoscalingv2.HorizontalPodAutoscaler
 	if err := r.Get(ctx, req.NamespacedName, &hpa); err == nil {
 		if _, exists := hpa.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+			logger.V(1).Info("Surge active on HPA", "hpa", hpa.Name, "namespace", hpa.Namespace)
 			return true
 		}
 	}
@@ -195,6 +198,7 @@ func (r *AutoscalerToPDBReconciler) isSurgeActiveOnAutoscaler(ctx context.Contex
 	if err := r.Get(ctx, req.NamespacedName, scaledObj); err == nil {
 		annotations := scaledObj.GetAnnotations()
 		if _, exists := annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+			logger.V(1).Info("Surge active on ScaledObject", "scaledObject", scaledObj.GetName(), "namespace", scaledObj.GetNamespace())
 			return true
 		}
 	}

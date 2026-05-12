@@ -162,11 +162,12 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		WithEventFilter(predicate.Funcs{
-			// ignore status updates as we only care about cordon.
+			// Only reconcile when Unschedulable changes (cordon/uncordon), not on
+			// status-only updates like node heartbeats or condition changes.
 			UpdateFunc: func(ue event.UpdateEvent) bool {
 				oldNode := ue.ObjectOld.(*corev1.Node)
 				newNode := ue.ObjectNew.(*corev1.Node)
-				return oldNode.Spec.Unschedulable == newNode.Spec.Unschedulable
+				return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable
 			},
 		}).
 		Complete(r)

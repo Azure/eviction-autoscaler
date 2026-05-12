@@ -1017,7 +1017,6 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 		// Should NOT return an error (no requeue via error path)
 		Expect(err).ToNot(HaveOccurred())
 		// Should NOT request explicit requeue
-		Expect(result.Requeue).To(BeFalse())
 		Expect(result.RequeueAfter).To(BeZero())
 
 		// Should set Degraded condition

@@ -18,8 +18,10 @@ package controllers
 
 import (
 	"fmt"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -61,8 +63,19 @@ var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.UseFlagOptions(&opts), zap.WriteTo(GinkgoWriter)))
 
 	By("bootstrapping test environment")
+
+	// Resolve the KEDA module directory so envtest can install ScaledObject CRDs.
+	kedaCRDPath := ""
+	if out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/kedacore/keda/v2").Output(); err == nil {
+		kedaCRDPath = filepath.Join(strings.TrimSpace(string(out)), "config", "crd", "bases")
+	}
+	crdPaths := []string{filepath.Join("..", "..", "config", "crd", "bases")}
+	if kedaCRDPath != "" {
+		crdPaths = append(crdPaths, kedaCRDPath)
+	}
+
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{filepath.Join("..", "..", "config", "crd", "bases")},
+		CRDDirectoryPaths:     crdPaths,
 		ErrorIfCRDPathMissing: true,
 
 		// The BinaryAssetsDirectory is only required if you want to run the tests directly

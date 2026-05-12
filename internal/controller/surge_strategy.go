@@ -35,6 +35,11 @@ type SurgeApplier interface {
 	Name() string
 }
 
+// errUnsupportedAutoscalerConfig is returned when KEDA + standalone HPA both target
+// the same deployment. This is a permanent misconfiguration that cannot be resolved
+// by retrying — the reconciler should surface it on status and stop requeueing.
+var errUnsupportedAutoscalerConfig = errors.New("unsupported autoscaler configuration")
+
 // detectSurgeApplier determines which surge strategy to use based on the
 // autoscaler resources targeting this workload. The strategies are mutually
 // exclusive — exactly one applier is returned:
@@ -66,10 +71,10 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 			// that the eviction autoscaler cannot resolve safely.
 			standaloneHPA, hpaErr := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
 			if hpaErr == nil && standaloneHPA != nil {
-				return nil, fmt.Errorf("unsupported configuration: both KEDA ScaledObject %q and "+
+				return nil, fmt.Errorf("%w: both KEDA ScaledObject %q and "+
 					"standalone HPA %q target deployment %q in namespace %q — "+
 					"eviction autoscaler cannot safely surge with multiple autoscaler writers",
-					scaledObj.GetName(), standaloneHPA.Name, targetName, namespace)
+					errUnsupportedAutoscalerConfig, scaledObj.GetName(), standaloneHPA.Name, targetName, namespace)
 			}
 
 			logger.Info("Found KEDA ScaledObject for target, using KEDA surge strategy",
@@ -115,18 +120,6 @@ func hasTargetAnnotation(target Surger) bool {
 	return exists
 }
 
-// --- NoOpSurgeApplier ---
-// Used when surge should be skipped entirely (e.g., unsupported target kind).
-
-type NoOpSurgeApplier struct{}
-
-var _ SurgeApplier = &NoOpSurgeApplier{}
-
-func (n *NoOpSurgeApplier) ApplySurge(_ context.Context, _ int32) error  { return nil }
-func (n *NoOpSurgeApplier) RevertSurge(_ context.Context, _ int32) error { return nil }
-func (n *NoOpSurgeApplier) IsSurgeActive() bool                          { return false }
-func (n *NoOpSurgeApplier) Name() string                                 { return "noop" }
-
 // --- DeploymentSurgeApplier ---
 // Surges by modifying the deployment/statefulset spec.replicas directly.
 // This is the default strategy when no KEDA or HPA is present.
@@ -156,51 +149,4 @@ func (d *DeploymentSurgeApplier) Name() string {
 
 func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 	return hasTargetAnnotation(d.target)
-}
-
-// --- CompositeSurgeApplier ---
-// Wraps a single surge applier. Strategies are mutually exclusive — detectSurgeApplier
-// returns exactly one applier, so the appliers slice always has exactly one element.
-// Kept for structural compatibility; may be removed in a future cleanup.
-
-type CompositeSurgeApplier struct {
-	appliers []SurgeApplier
-	target   Surger
-}
-
-var _ SurgeApplier = &CompositeSurgeApplier{}
-
-func (comp *CompositeSurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) error {
-	for _, applier := range comp.appliers {
-		if err := applier.ApplySurge(ctx, surgeReplicas); err != nil {
-			return fmt.Errorf("composite surge (%s): %w", applier.Name(), err)
-		}
-	}
-	return nil
-}
-
-func (comp *CompositeSurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas int32) error {
-	for _, applier := range comp.appliers {
-		if err := applier.RevertSurge(ctx, originalMinReplicas); err != nil {
-			return fmt.Errorf("composite revert (%s): %w", applier.Name(), err)
-		}
-	}
-	return nil
-}
-
-func (comp *CompositeSurgeApplier) Name() string {
-	names := make([]string, len(comp.appliers))
-	for i, a := range comp.appliers {
-		names[i] = a.Name()
-	}
-	return "composite(" + strings.Join(names, "+") + ")"
-}
-
-func (comp *CompositeSurgeApplier) IsSurgeActive() bool {
-	for _, applier := range comp.appliers {
-		if applier.IsSurgeActive() {
-			return true
-		}
-	}
-	return false
 }

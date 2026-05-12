@@ -55,23 +55,29 @@ func (h *HPASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) e
 	// deployment's metadata, avoiding unnecessary generation tracking complexity.
 	if h.hpa.Annotations == nil || h.hpa.Annotations[EvictionSurgeReplicasAnnotationKey] != surgeVal {
 		hpa := h.hpa.DeepCopy()
-		originalMin := int32(1) // default
-		if hpa.Spec.MinReplicas != nil {
-			originalMin = *hpa.Spec.MinReplicas
-		}
 
 		hpa.Spec.MinReplicas = &surgeReplicas
 		if hpa.Annotations == nil {
 			hpa.Annotations = make(map[string]string)
 		}
 		hpa.Annotations[EvictionSurgeReplicasAnnotationKey] = surgeVal
-		hpa.Annotations[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(int64(originalMin), 10)
-		h.hpa = hpa
+
+		// Only initialize the original-min annotation when absent. Preserves the
+		// true pre-surge value if ApplySurge is ever called with a different surge
+		// value while a surge is already active.
+		if _, alreadySet := hpa.Annotations[OriginalMinReplicasAnnotationKey]; !alreadySet {
+			originalMin := int32(1) // HPA default when minReplicas is not set
+			if h.hpa.Spec.MinReplicas != nil {
+				originalMin = *h.hpa.Spec.MinReplicas
+			}
+			hpa.Annotations[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(int64(originalMin), 10)
+		}
 		if err := h.client.Update(ctx, hpa); err != nil {
 			return fmt.Errorf("updating HPA minReplicas and annotations: %w", err)
 		}
+		h.hpa = hpa
 		logger.V(1).Info("Updated HPA minReplicas and annotated with surge intent",
-			"minReplicas", surgeReplicas, "originalMin", originalMin)
+			"minReplicas", surgeReplicas, "originalMin", hpa.Annotations[OriginalMinReplicasAnnotationKey])
 	}
 
 	// Step 2: Set deployment replicas directly for immediate scale-up.
@@ -110,10 +116,10 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	hpa.Spec.MinReplicas = &revertTo
 	delete(hpa.Annotations, EvictionSurgeReplicasAnnotationKey)
 	delete(hpa.Annotations, OriginalMinReplicasAnnotationKey)
-	h.hpa = hpa
 	if err := h.client.Update(ctx, hpa); err != nil {
 		return fmt.Errorf("reverting HPA minReplicas and removing annotations: %w", err)
 	}
+	h.hpa = hpa
 	logger.V(1).Info("Reverted HPA minReplicas and removed surge annotations", "revertTo", revertTo)
 
 	// Don't set deployment replicas directly — let HPA handle the scale-down

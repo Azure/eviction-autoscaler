@@ -129,11 +129,14 @@ func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetN
 		return 0, false, err
 	}
 	if err == nil && scaledObj != nil {
+		// KEDA defaults an omitted minReplicaCount to 0 (scale-to-zero).
+		minReplicaCount := int32(0)
 		if scaledObj.Spec.MinReplicaCount != nil {
-			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
-				"target", targetName, "minReplicaCount", *scaledObj.Spec.MinReplicaCount)
-			return *scaledObj.Spec.MinReplicaCount, true, nil
+			minReplicaCount = *scaledObj.Spec.MinReplicaCount
 		}
+		logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
+			"target", targetName, "minReplicaCount", minReplicaCount)
+		return minReplicaCount, true, nil
 	}
 
 	// 2. Check standalone HPA

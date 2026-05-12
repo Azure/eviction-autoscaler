@@ -131,6 +131,52 @@ var _ = Describe("KEDASurgeApplier", func() {
 
 			Expect(applier.ApplySurge(ctx, 2)).To(Succeed()) // should not error
 		})
+
+		It("should preserve original-min annotation when re-surging with a different value", func() {
+			// First surge: 1 -> 2
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
+
+			var afterFirst kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &afterFirst)).To(Succeed())
+			Expect(afterFirst.Annotations).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
+			Expect(afterFirst.Annotations).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "2"))
+
+			// Simulate re-surge with a different value (e.g., if controller logic
+			// changes in the future to allow re-surging while a surge is active).
+			applier.scaledObject = &afterFirst
+			Expect(applier.ApplySurge(ctx, 3)).To(Succeed())
+
+			var afterSecond kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &afterSecond)).To(Succeed())
+			// The surge annotation should reflect the new surge value
+			Expect(afterSecond.Annotations).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "3"))
+			Expect(*afterSecond.Spec.MinReplicaCount).To(Equal(int32(3)))
+			// But original-min must still be 1, NOT the intermediate surged value of 2
+			Expect(afterSecond.Annotations).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "1"))
+		})
+
+		It("should revert to the true original after re-surging with a different value", func() {
+			// First surge: 1 -> 2
+			Expect(applier.ApplySurge(ctx, 2)).To(Succeed())
+
+			// Re-surge: 2 -> 3
+			var afterFirst kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &afterFirst)).To(Succeed())
+			applier.scaledObject = &afterFirst
+			Expect(applier.ApplySurge(ctx, 3)).To(Succeed())
+
+			// Revert — should restore to 1 (the true original), not 2
+			var afterSecond kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &afterSecond)).To(Succeed())
+			applier.scaledObject = &afterSecond
+			Expect(applier.RevertSurge(ctx, 99)).To(Succeed()) // 99 should be overridden by annotation
+
+			var reverted kedav1alpha1.ScaledObject
+			Expect(applier.client.Get(ctx, keyFor(so), &reverted)).To(Succeed())
+			Expect(*reverted.Spec.MinReplicaCount).To(Equal(int32(1)))
+			Expect(reverted.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+			Expect(reverted.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+		})
 	})
 
 	Describe("RevertSurge with fake client", func() {

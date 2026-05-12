@@ -57,27 +57,32 @@ func (k *KEDASurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) 
 			"namespace", k.scaledObject.GetNamespace(),
 			"targetMinReplicaCount", surgeReplicas)
 		obj := k.scaledObject.DeepCopy()
-		// When minReplicaCount is not set, KEDA defaults it to 0 (scale-to-zero).
-		// TODO: Consider skipping PDB/EA creation for ScaledObjects with
-		// minReplicaCount=0 (scale-to-zero workloads) in the deployment-to-pdb controller.
-		originalMin := int32(0) // KEDA default when minReplicaCount is not set
-		if obj.Spec.MinReplicaCount != nil {
-			originalMin = *obj.Spec.MinReplicaCount
-		}
 
 		obj.Spec.MinReplicaCount = &surgeReplicas
 		if obj.Annotations == nil {
 			obj.Annotations = make(map[string]string)
 		}
 		obj.Annotations[EvictionSurgeReplicasAnnotationKey] = surgeVal
-		obj.Annotations[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(int64(originalMin), 10)
 
-		k.scaledObject = obj
+		// Only initialize the original-min annotation when absent. If a surge is
+		// already active (e.g., the controller logic changes in the future to allow
+		// re-surging), the pre-surge value must be preserved so RevertSurge restores
+		// the true original, not an intermediate surged value.
+		if _, alreadySet := obj.Annotations[OriginalMinReplicasAnnotationKey]; !alreadySet {
+			// When minReplicaCount is not set, KEDA defaults it to 0 (scale-to-zero).
+			originalMin := int32(0)
+			if k.scaledObject.Spec.MinReplicaCount != nil {
+				originalMin = *k.scaledObject.Spec.MinReplicaCount
+			}
+			obj.Annotations[OriginalMinReplicasAnnotationKey] = strconv.FormatInt(int64(originalMin), 10)
+		}
+
 		if err := k.client.Update(ctx, obj); err != nil {
 			return fmt.Errorf("updating ScaledObject minReplicaCount and annotations: %w", err)
 		}
+		k.scaledObject = obj
 		logger.V(1).Info("Updated ScaledObject minReplicaCount and annotated with surge intent",
-			"minReplicaCount", surgeReplicas, "originalMin", originalMin)
+			"minReplicaCount", surgeReplicas, "originalMin", obj.Annotations[OriginalMinReplicasAnnotationKey])
 	}
 
 	// Step 2: Set deployment replicas directly for immediate scale-up.
@@ -126,10 +131,10 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	delete(obj.Annotations, EvictionSurgeReplicasAnnotationKey)
 	delete(obj.Annotations, OriginalMinReplicasAnnotationKey)
 
-	k.scaledObject = obj
 	if err := k.client.Update(ctx, obj); err != nil {
 		return fmt.Errorf("reverting ScaledObject minReplicaCount and removing annotations: %w", err)
 	}
+	k.scaledObject = obj
 	logger.Info("Reverted KEDA ScaledObject surge",
 		"scaledObject", k.scaledObject.GetName(),
 		"namespace", k.scaledObject.GetNamespace(),

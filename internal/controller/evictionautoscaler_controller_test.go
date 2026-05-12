@@ -6,15 +6,18 @@ import (
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1" // Import corev1 package
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -910,3 +913,120 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 func int32Ptr(i int32) *int32 {
 	return &i
 }
+
+var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config", func() {
+	ctx := context.Background()
+
+	It("should set Degraded status and not requeue when KEDA + standalone HPA target the same deployment", func() {
+		// Create namespace with EA annotation
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-unsupported-",
+				Annotations: map[string]string{
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace := ns.Name
+
+		// Create deployment
+		surge := intstr.FromInt(1)
+		deploy := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "dual-target", Namespace: namespace},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "dual"}},
+				Strategy: appsv1.DeploymentStrategy{
+					RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "dual"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, deploy)).To(Succeed())
+
+		// Create PDB (same name as EA)
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: "dual-ea", Namespace: namespace},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 1},
+				Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "dual"}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+		// Create KEDA ScaledObject targeting the deployment
+		so := &kedav1alpha1.ScaledObject{
+			ObjectMeta: metav1.ObjectMeta{Name: "dual-so", Namespace: namespace},
+			Spec: kedav1alpha1.ScaledObjectSpec{
+				ScaleTargetRef:  &kedav1alpha1.ScaleTarget{Name: "dual-target", Kind: "Deployment"},
+				MinReplicaCount: ptr.To(int32(1)),
+				MaxReplicaCount: ptr.To(int32(5)),
+			},
+		}
+		Expect(k8sClient.Create(ctx, so)).To(Succeed())
+
+		// Create standalone HPA also targeting the same deployment
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "dual-hpa", Namespace: namespace},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+					Kind: "Deployment",
+					Name: "dual-target",
+				},
+				MinReplicas: ptr.To(int32(1)),
+				MaxReplicas: 5,
+			},
+		}
+		Expect(k8sClient.Create(ctx, hpa)).To(Succeed())
+
+		// Create EvictionAutoScaler
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "dual-ea", Namespace: namespace},
+			Spec: v1.EvictionAutoScalerSpec{
+				TargetName: "dual-target",
+				TargetKind: "deployment",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+		// Reconcile
+		reconciler := &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &evictionTestFilter{},
+		}
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: "dual-ea", Namespace: namespace},
+		})
+
+		// Should NOT return an error (no requeue via error path)
+		Expect(err).ToNot(HaveOccurred())
+		// Should NOT request explicit requeue
+		Expect(result.Requeue).To(BeFalse())
+		Expect(result.RequeueAfter).To(BeZero())
+
+		// Should set Degraded condition
+		var updated v1.EvictionAutoScaler
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "dual-ea", Namespace: namespace}, &updated)).To(Succeed())
+
+		var degradedCondition *metav1.Condition
+		for i := range updated.Status.Conditions {
+			if updated.Status.Conditions[i].Type == "Degraded" {
+				degradedCondition = &updated.Status.Conditions[i]
+				break
+			}
+		}
+		Expect(degradedCondition).ToNot(BeNil(), "expected Degraded condition to be set")
+		Expect(degradedCondition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(degradedCondition.Reason).To(Equal("UnsupportedAutoscalerConfiguration"))
+		Expect(degradedCondition.Message).To(ContainSubstring("KEDA ScaledObject"))
+		Expect(degradedCondition.Message).To(ContainSubstring("standalone HPA"))
+	})
+})

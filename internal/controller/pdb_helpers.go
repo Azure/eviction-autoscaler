@@ -3,7 +3,9 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
+	"strings"
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/apps/v1"
@@ -180,6 +182,63 @@ func tryGet(m map[string]string, key string) string {
 		return ""
 	}
 	return m[key]
+}
+
+// resolveMinAvailableInt returns the absolute (integer) minAvailable count for the PDB.
+// For integer-type specs the value is used directly. For percentage-type specs it is
+// computed against baselineReplicas (the pre-surge replica count) using ceiling division,
+// matching how the PDB controller computes desiredHealthy.
+func resolveMinAvailableInt(pdb *policyv1.PodDisruptionBudget, baselineReplicas int32) int32 {
+	if pdb.Spec.MinAvailable == nil {
+		return 0
+	}
+	ma := pdb.Spec.MinAvailable
+	if ma.Type == intstr.Int {
+		return ma.IntVal
+	}
+	// Percentage: e.g. "50%" → ceil(0.5 × baselineReplicas)
+	pct, err := strconv.Atoi(strings.TrimSuffix(ma.StrVal, "%"))
+	if err != nil || pct < 0 {
+		return 0
+	}
+	return int32(math.Ceil(float64(baselineReplicas) * float64(pct) / 100.0))
+}
+
+// countUnschedulablePodsForTarget counts pods matched by the PDB's selector that are
+// Pending AND have a PodScheduled condition with Status=False and Reason=Unschedulable.
+// This precisely identifies capacity-bound surge pods (scheduler tried but could not
+// place them) rather than pods that are transiently Pending for other reasons such as
+// image pulls, init containers, or volume binding.
+func countUnschedulablePodsForTarget(ctx context.Context, c client.Client, namespace string, pdb *policyv1.PodDisruptionBudget) (int, error) {
+	if pdb.Spec.Selector == nil {
+		return 0, nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PDB selector: %w", err)
+	}
+	var podList corev1.PodList
+	if err := c.List(ctx, &podList,
+		client.InNamespace(namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return 0, fmt.Errorf("listing pods for unschedulable check: %w", err)
+	}
+	count := 0
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodPending {
+			continue
+		}
+		for _, cond := range pod.Status.Conditions {
+			if cond.Type == corev1.PodScheduled &&
+				cond.Status == corev1.ConditionFalse &&
+				cond.Reason == corev1.PodReasonUnschedulable {
+				count++
+				break
+			}
+		}
+	}
+	return count, nil
 }
 
 // triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation

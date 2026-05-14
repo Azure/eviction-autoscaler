@@ -1065,7 +1065,7 @@ func buildSurgedState(ctx context.Context, namespace string, surgedReplicas int3
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": appLabel}},
-				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:latest"}}},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:latest"}}},
 			},
 		},
 	}
@@ -1082,7 +1082,7 @@ func buildSurgedState(ctx context.Context, namespace string, surgedReplicas int3
 
 	ea := &v1.EvictionAutoScaler{
 		ObjectMeta: metav1.ObjectMeta{Name: pdbEAName, Namespace: namespace},
-		Spec: v1.EvictionAutoScalerSpec{TargetName: depName, TargetKind: "deployment"},
+		Spec:       v1.EvictionAutoScalerSpec{TargetName: depName, TargetKind: "deployment"},
 	}
 	Expect(k8sClient.Create(ctx, ea)).To(Succeed())
 

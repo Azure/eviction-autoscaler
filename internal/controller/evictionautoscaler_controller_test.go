@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
@@ -1023,5 +1024,212 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 		Expect(degradedCondition.Reason).To(Equal("UnsupportedAutoscalerConfiguration"))
 		Expect(degradedCondition.Message).To(ContainSubstring("KEDA ScaledObject"))
 		Expect(degradedCondition.Message).To(ContainSubstring("standalone HPA"))
+	})
+})
+
+// --- helpers ---
+
+func makePartialRevertNamespace(ctx context.Context) string {
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "partial-revert-",
+			Annotations: map[string]string{
+				namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+	return ns.Name
+}
+
+// buildSurgedState creates and wires up a deployment+PDB+EA in the given namespace,
+// sets the deployment to surgedReplicas, creates pendingPodCount Pending pods matching
+// the PDB selector, and positions the EA so the next reconcile enters the scale-down
+// block (past cooldown, Spec.LastEviction != Status.LastEviction).
+// Returns the EvictionAutoScalerReconciler and the NamespacedName of the EA.
+func buildSurgedState(ctx context.Context, namespace string, surgedReplicas int32, pendingPodCount int) (
+	*EvictionAutoScalerReconciler, types.NamespacedName,
+) {
+	const depName = "surged-deploy"
+	const pdbEAName = "surged-pdb"
+	appLabel := pdbEAName
+
+	surge := intstr.FromInt32(3)
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: depName, Namespace: namespace},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": appLabel}},
+			Strategy: appsv1.DeploymentStrategy{
+				RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": appLabel}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:latest"}}},
+			},
+		},
+	}
+	Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+	pdb := &policyv1.PodDisruptionBudget{
+		ObjectMeta: metav1.ObjectMeta{Name: pdbEAName, Namespace: namespace},
+		Spec: policyv1.PodDisruptionBudgetSpec{
+			MinAvailable: &intstr.IntOrString{IntVal: 1},
+			Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": appLabel}},
+		},
+	}
+	Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+	ea := &v1.EvictionAutoScaler{
+		ObjectMeta: metav1.ObjectMeta{Name: pdbEAName, Namespace: namespace},
+		Spec: v1.EvictionAutoScalerSpec{TargetName: depName, TargetKind: "deployment"},
+	}
+	Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+	reconciler := &EvictionAutoScalerReconciler{
+		Client: k8sClient,
+		Scheme: k8sClient.Scheme(),
+		Filter: &evictionTestFilter{},
+	}
+	nn := types.NamespacedName{Name: pdbEAName, Namespace: namespace}
+
+	// First reconcile initialises TargetGeneration and MinReplicas.
+	_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+	Expect(err).NotTo(HaveOccurred())
+
+	// Simulate a surge: bump deployment replicas to surgedReplicas.
+	Expect(k8sClient.Get(ctx, types.NamespacedName{Name: depName, Namespace: namespace}, dep)).To(Succeed())
+	dep.Spec.Replicas = &surgedReplicas
+	Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+	// Wire EA: old eviction (past cooldown), MinReplicas=1, TargetGeneration matches
+	// the post-surge deployment generation so the reconciler skips the generation block.
+	Expect(k8sClient.Get(ctx, nn, ea)).To(Succeed())
+	ea.Spec.LastEviction = v1.Eviction{
+		PodName:      "drained-pod",
+		EvictionTime: metav1.NewTime(time.Now().Add(-2 * cooldown)),
+	}
+	Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+	ea.Status.MinReplicas = 1
+	ea.Status.TargetGeneration = dep.Generation
+	Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+	// PDB: DisruptionsAllowed=0 (blocks drain, consistent with a tight PDB).
+	Expect(k8sClient.Get(ctx, nn, pdb)).To(Succeed())
+	pdb.Status.DisruptionsAllowed = 0
+	Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+	// Create pendingPodCount pods in Pending phase matching the PDB selector.
+	// Set the PodScheduled condition to Unschedulable so countUnschedulablePodsForTarget
+	// counts them (Phase==Pending alone is not sufficient).
+	for i := range pendingPodCount {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("surge-pod-%d", i),
+				Namespace: namespace,
+				Labels:    map[string]string{"app": appLabel},
+			},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "c", Image: "nginx:latest"}}},
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+		pod.Status.Phase = corev1.PodPending
+		pod.Status.Conditions = []corev1.PodCondition{{
+			Type:    corev1.PodScheduled,
+			Status:  corev1.ConditionFalse,
+			Reason:  corev1.PodReasonUnschedulable,
+			Message: "0/2 nodes are available: 2 nodes are cordoned",
+		}}
+		Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+	}
+
+	return reconciler, nn
+}
+
+var _ = Describe("EvictionAutoScaler partial revert", func() {
+	ctx := context.Background()
+
+	It("should trim surge to partialTarget when surge pods are Pending", func() {
+		// minAvailable=1, MinReplicas=1 → partialTarget = max(2, 2) = 2
+		// surgedReplicas=4 > partialTarget=2 → trim fires
+		namespace := makePartialRevertNamespace(ctx)
+		reconciler, nn := buildSurgedState(ctx, namespace, 4, 3)
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		// Requeued for another cooldown — eviction not yet marked handled.
+		Expect(result.RequeueAfter).To(Equal(cooldown))
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "surged-deploy", Namespace: namespace}, &dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(2)), "should trim to partialTarget=2, not full revert to 1")
+
+		// Surge annotation must still be present — we're still in a surged state.
+		Expect(dep.Annotations).To(HaveKey(EvictionSurgeReplicasAnnotationKey))
+
+		// Eviction must NOT be marked handled yet.
+		var ea v1.EvictionAutoScaler
+		Expect(k8sClient.Get(ctx, nn, &ea)).To(Succeed())
+		Expect(ea.Status.LastEviction.PodName).To(BeEmpty())
+	})
+
+	It("should do full revert when already at partialTarget (one-shot trim)", func() {
+		// surgedReplicas=2 == partialTarget=2 → trim condition false → full revert
+		namespace := makePartialRevertNamespace(ctx)
+		reconciler, nn := buildSurgedState(ctx, namespace, 2, 1)
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero(), "full revert should not requeue")
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "surged-deploy", Namespace: namespace}, &dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(1)), "should fully revert to MinReplicas=1")
+
+		// Eviction marked handled.
+		var ea v1.EvictionAutoScaler
+		Expect(k8sClient.Get(ctx, nn, &ea)).To(Succeed())
+		Expect(ea.Status.LastEviction.PodName).To(Equal("drained-pod"))
+	})
+
+	It("should do full revert immediately when no Pending pods exist", func() {
+		// surgedReplicas=4, but no pending pods → skip trim, full revert
+		namespace := makePartialRevertNamespace(ctx)
+		reconciler, nn := buildSurgedState(ctx, namespace, 4, 0)
+
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero(), "full revert should not requeue")
+
+		var dep appsv1.Deployment
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "surged-deploy", Namespace: namespace}, &dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(1)), "should fully revert to MinReplicas=1")
+	})
+})
+
+var _ = Describe("resolveMinAvailableInt", func() {
+	It("returns IntVal directly for integer-type spec", func() {
+		pdb := &policyv1.PodDisruptionBudget{
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{Type: intstr.Int, IntVal: 3},
+			},
+		}
+		Expect(resolveMinAvailableInt(pdb, 10)).To(Equal(int32(3)))
+	})
+
+	It("computes ceiling percentage of baseline replicas", func() {
+		pdb := &policyv1.PodDisruptionBudget{
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{Type: intstr.String, StrVal: "50%"},
+			},
+		}
+		// ceil(0.5 * 3) = 2
+		Expect(resolveMinAvailableInt(pdb, 3)).To(Equal(int32(2)))
+		// ceil(0.5 * 4) = 2
+		Expect(resolveMinAvailableInt(pdb, 4)).To(Equal(int32(2)))
+	})
+
+	It("returns 0 for nil MinAvailable", func() {
+		pdb := &policyv1.PodDisruptionBudget{}
+		Expect(resolveMinAvailableInt(pdb, 5)).To(Equal(int32(0)))
 	})
 })

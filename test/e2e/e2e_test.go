@@ -1515,5 +1515,149 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 			uninstallKEDA()
 		})
+
+		// Test 3: Partial revert — when surge pods are Pending due to capacity pressure
+		// the controller should trim to minAvailable+1 rather than holding the full
+		// surge batch in Pending state.
+		It("should trim surge to minAvailable+1 when surge pods cannot be scheduled", func() {
+			ctx := context.Background()
+			const partialRevertNs = "partial-revert-e2e"
+			const depName = "nginx-partial-revert"
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating test namespace with eviction autoscaler enabled")
+			cmd := exec.Command("kubectl", "create", "namespace", partialRevertNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "annotate", "namespace", partialRevertNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Cleanup deferred so nodes are always uncordoned even on test failure.
+			var cordonedNodes []string
+			defer func() {
+				for _, n := range cordonedNodes {
+					cmd = exec.Command("kubectl", "uncordon", n)
+					_, _ = utils.Run(cmd)
+				}
+				cmd = exec.Command("kubectl", "delete", "namespace", partialRevertNs, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			}()
+
+			By("creating deployment with maxSurge=3 so surge goes to 4 replicas")
+			err = createDeployment(deploymentConfig{
+				Name:           depName,
+				Namespace:      partialRevertNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+				MaxSurge:       3,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the deployment pod to be running and noting its node")
+			var podNodeName string
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				if err := clientset.List(ctx, &pods, client.InNamespace(partialRevertNs)); err != nil {
+					return err
+				}
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning && p.Spec.NodeName != "" {
+						podNodeName = p.Spec.NodeName
+						return nil
+					}
+				}
+				return fmt.Errorf("no running pod found yet")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("waiting for PDB and EvictionAutoScaler to be created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, partialRevertNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, partialRevertNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("cordoning all worker nodes so surge pods cannot be scheduled")
+			var allNodes corev1.NodeList
+			Expect(clientset.List(ctx, &allNodes)).To(Succeed())
+			for _, n := range allNodes.Items {
+				if _, isCP := n.Labels["node-role.kubernetes.io/control-plane"]; isCP {
+					continue // leave control-plane alone
+				}
+				if n.Name == podNodeName {
+					continue // cordon pod's node last (it triggers the surge)
+				}
+				cmd = exec.Command("kubectl", "cordon", n.Name)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+				cordonedNodes = append(cordonedNodes, n.Name)
+			}
+
+			By(fmt.Sprintf("cordoning pod's node %s to trigger node reconciler", podNodeName))
+			cmd = exec.Command("kubectl", "cordon", podNodeName)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cordonedNodes = append(cordonedNodes, podNodeName)
+
+			By("waiting for surge: deployment should scale to 4 replicas")
+			var dep appsv1.Deployment
+			EventuallyWithOffset(1, func() error {
+				if err := clientset.Get(ctx, client.ObjectKey{Name: depName, Namespace: partialRevertNs}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 4 {
+					return fmt.Errorf("expected 4 replicas, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not yet set")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("waiting for partial trim: deployment should drop to 2 (minAvailable+1) after cooldown")
+			// The controller waits one cooldown period (~1 min) then checks pending pods.
+			// With all workers cordoned, the 3 surge pods remain Pending → partial trim fires.
+			EventuallyWithOffset(1, func() error {
+				if err := clientset.Get(ctx, client.ObjectKey{Name: depName, Namespace: partialRevertNs}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
+					return fmt.Errorf("expected 2 replicas after partial trim, got %v", dep.Spec.Replicas)
+				}
+				// Surge annotation must still be present — not yet fully reverted.
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation should still be present after partial trim")
+				}
+				return nil
+			}, 3*time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning all nodes so the remaining surge pod can schedule")
+			for _, n := range cordonedNodes {
+				cmd = exec.Command("kubectl", "uncordon", n)
+				_, err = utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			cordonedNodes = nil
+
+			By("waiting for full revert to 1 after second cooldown")
+			EventuallyWithOffset(1, func() error {
+				if err := clientset.Get(ctx, client.ObjectKey{Name: depName, Namespace: partialRevertNs}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
+					return fmt.Errorf("expected 1 replica after full revert, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation should be gone after full revert")
+				}
+				return nil
+			}, 3*time.Minute, time.Second).Should(Succeed())
+		})
 	})
 })

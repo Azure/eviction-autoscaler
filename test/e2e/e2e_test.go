@@ -1528,6 +1528,8 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			clientset, err := client.New(config, client.Options{Scheme: scheme})
 			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
 
 			By("creating test namespace with eviction autoscaler enabled")
 			cmd := exec.Command("kubectl", "create", "namespace", partialRevertNs)
@@ -1612,7 +1614,7 @@ var _ = Describe("controller", Ordered, func() {
 					return err
 				}
 				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 4 {
-					return fmt.Errorf("expected 4 replicas, got %v", dep.Spec.Replicas)
+					return fmt.Errorf("expected 4 replicas, got %d", *dep.Spec.Replicas)
 				}
 				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
 					return fmt.Errorf("evictionSurgeReplicas annotation not yet set")
@@ -1628,7 +1630,7 @@ var _ = Describe("controller", Ordered, func() {
 					return err
 				}
 				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 2 {
-					return fmt.Errorf("expected 2 replicas after partial trim, got %v", dep.Spec.Replicas)
+					return fmt.Errorf("expected 2 replicas after partial trim, got %d", *dep.Spec.Replicas)
 				}
 				// Surge annotation must still be present — not yet fully reverted.
 				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
@@ -1645,13 +1647,57 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			cordonedNodes = nil
 
+			// Wait for the surge pod to schedule and become Running so DA >= 1 before
+			// attempting the eviction (PDB blocks eviction when DA == 0).
+			By("waiting for surge pod to be running so eviction is allowed (DA >= 1)")
+			EventuallyWithOffset(1, func() error {
+				var pods corev1.PodList
+				if err := clientset.List(ctx, &pods, client.InNamespace(partialRevertNs)); err != nil {
+					return err
+				}
+				running := 0
+				for _, p := range pods.Items {
+					if p.Status.Phase == corev1.PodRunning {
+						running++
+					}
+				}
+				if running < 2 {
+					return fmt.Errorf("waiting for 2 running pods, got %d", running)
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
+			// Evicting the pod stops the node reconciler from continuously resetting
+			// Spec.LastEviction.EvictionTime, which would otherwise prevent the EA
+			// cooldown from elapsing and the full revert from firing.
+			By("draining pod from podNodeName so the node reconciler stops resetting EvictionTime")
+			EventuallyWithOffset(1, func() error {
+				var podList corev1.PodList
+				if err := clientset.List(ctx, &podList, client.InNamespace(partialRevertNs),
+					client.MatchingFields{"spec.nodeName": podNodeName}); err != nil {
+					return err
+				}
+				for _, p := range podList.Items {
+					err := evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: p.ObjectMeta,
+					})
+					if errors.IsTooManyRequests(err) {
+						return fmt.Errorf("eviction blocked by PDB, retrying: %w", err)
+					}
+					if err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
+					}
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
 			By("waiting for full revert to 1 after second cooldown")
 			EventuallyWithOffset(1, func() error {
 				if err := clientset.Get(ctx, client.ObjectKey{Name: depName, Namespace: partialRevertNs}, &dep); err != nil {
 					return err
 				}
 				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
-					return fmt.Errorf("expected 1 replica after full revert, got %v", dep.Spec.Replicas)
+					return fmt.Errorf("expected 1 replica after full revert, got %d", *dep.Spec.Replicas)
 				}
 				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
 					return fmt.Errorf("evictionSurgeReplicas annotation should be gone after full revert")

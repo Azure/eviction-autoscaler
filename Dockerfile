@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.6
 
 # Build the manager binary
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+# Use Microsoft's FIPS-validated Go distribution (uses OpenSSL backend for FIPS)
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
 
 WORKDIR /workspace
 
@@ -19,14 +20,17 @@ COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY internal/ internal/
 
-# Build for the target architecture
-RUN CGO_ENABLED=0 \
+# Build for the target architecture.
+# Microsoft Go routes crypto through OpenSSL (FIPS-validated) when CGO_ENABLED=1 on Linux.
+# GOEXPERIMENT=boringcrypto is upstream-only and not used here.
+RUN CGO_ENABLED=1 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -a -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
-FROM --platform=$TARGETPLATFORM gcr.io/distroless/static:nonroot
+# Use Azure Linux distroless base as FIPS-compliant runtime image.
+# 'base' variant includes glibc and libssl required by the CGO/OpenSSL-linked binary.
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/azurelinux/distroless/base:3.0
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532

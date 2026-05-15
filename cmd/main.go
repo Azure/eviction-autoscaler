@@ -93,7 +93,14 @@ func main() {
 		c.NextProtos = []string{"http/1.1"}
 	}
 
-	tlsOpts := []func(*tls.Config){}
+	// enforceFIPS sets FIPS-required TLS minimum version.
+	// BoringCrypto (via Microsoft Go + GOEXPERIMENT=boringcrypto) enforces
+	// approved cipher suites automatically at the crypto layer.
+	enforceFIPS := func(c *tls.Config) {
+		c.MinVersion = tls.VersionTLS12
+	}
+
+	tlsOpts := []func(*tls.Config){enforceFIPS}
 	if !enableHTTP2 {
 		tlsOpts = append(tlsOpts, disableHTTP2)
 	}

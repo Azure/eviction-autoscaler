@@ -225,6 +225,52 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
+		// Before doing a full revert, check whether surge pods are still Pending due to
+		// capacity pressure (new node pool warming up, cluster autoscaler still ramping).
+		// If so, trim to partialTarget — the minimum replicas that keep the PDB open by 1
+		// disruption — rather than holding the full surge batch in Pending state. This
+		// releases scheduler slots and CA pressure. The trim fires at most once per surge
+		// cycle: on the next reconcile target.GetReplicas() == partialTarget, so the
+		// condition target.GetReplicas() > partialTarget is false and we fall through to a
+		// normal full revert.
+		pendingCount, pendingErr := countUnschedulablePodsForTarget(ctx, r.Client, EvictionAutoScaler.Namespace, pdb)
+		if pendingErr != nil {
+			logger.Error(pendingErr, "failed to count pending pods, proceeding with full revert")
+		}
+
+		// resolveMinAvailableInt computes against MinReplicas (pre-surge baseline), NOT the
+		// current surged replica count. For percentage PDBs this gives the smallest valid
+		// partialTarget: the percentage is evaluated at the pre-surge level, so after
+		// trimming, Kubernetes recomputes DesiredHealthy against the smaller count and the
+		// result is equal or smaller — keeping DisruptionsAllowed >= 1. Using the surged
+		// count (or pdb.Status.DesiredHealthy, which is the same thing) would overshoot and
+		// trim less aggressively than needed, leaving more pods Pending unnecessarily.
+		minAvailable := resolveMinAvailableInt(pdb, EvictionAutoScaler.Status.MinReplicas)
+		// partialTarget satisfies both constraints:
+		//   minAvailable+1    — minimum replicas to open the PDB by exactly 1 disruption
+		//   MinReplicas+1     — stay at least 1 above the pre-surge baseline so we remain
+		//                       in surge state and never accidentally drop to or below baseline
+		partialTarget := max(minAvailable+1, EvictionAutoScaler.Status.MinReplicas+1)
+
+		if pendingErr == nil && pendingCount > 0 && target.GetReplicas() > partialTarget {
+			// Trim excess surge pods to partialTarget. ApplySurge is used (not RevertSurge)
+			// so the HPA/KEDA floor is lowered atomically before the replica count drops,
+			// preventing the autoscaler from fighting back to the original surge level.
+			logger.Info("Unschedulable surge pods detected, trimming to minimum needed to reduce capacity pressure",
+				"unschedulableCount", pendingCount,
+				"currentReplicas", target.GetReplicas(),
+				"partialTarget", partialTarget,
+				"strategy", surgeApplier.Name())
+			if err = surgeApplier.ApplySurge(ctx, partialTarget); err != nil {
+				logger.Error(err, "failed to trim surge to partial target")
+				return ctrl.Result{}, err
+			}
+			metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
+			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", fmt.Sprintf("trimmed surge to %d (unschedulable pods detected)", partialTarget))
+			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
+
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {

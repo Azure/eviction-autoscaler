@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.6
 
 # Build the manager binary
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+# Use Microsoft's FIPS-validated Go distribution (includes BoringCrypto)
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
 
 WORKDIR /workspace
 
@@ -19,14 +20,15 @@ COPY cmd/main.go cmd/main.go
 COPY api/ api/
 COPY internal/ internal/
 
-# Build for the target architecture
-RUN CGO_ENABLED=0 \
+# Build for the target architecture with FIPS-validated BoringCrypto (requires CGO)
+RUN CGO_ENABLED=1 \
+    GOEXPERIMENT=boringcrypto \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -a -o manager cmd/main.go
 
-# Use distroless as minimal base image to package the manager binary
-FROM --platform=$TARGETPLATFORM gcr.io/distroless/static:nonroot
+# Use Azure Linux distroless as FIPS-compliant minimal base image
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/azurelinux/distroless/minimal:3.0
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532

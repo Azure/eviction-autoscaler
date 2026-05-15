@@ -10,6 +10,7 @@
 - [Introduction](#introduction)
 - [Features](#features)
 - [Installation](#installation)
+- [Networking](#networking)
 - [Usage](#usage)
 
 ## Introduction
@@ -482,6 +483,33 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 # The controller will re-establish the owner reference on the next reconciliation
 # The PDB will now be deleted when the deployment is deleted
 ```
+
+## Networking
+
+### ARM Endpoint Usage
+
+Eviction-Autoscaler is a **pure Kubernetes operator**. It makes no calls to Azure Resource Manager (ARM) or any other Azure control-plane API. All communication is with the in-cluster Kubernetes API server via `controller-runtime`. Consequently, **no ARM Private Link private endpoint is required** for this extension.
+
+### Required Outbound Network Rules (Private / Restricted Clusters)
+
+The only external network dependency is pulling the extension container image from Microsoft Container Registry (MCR) at install/upgrade time. For clusters with restricted egress (e.g., private AKS clusters with `--outbound-type userDefinedRouting`), allow the following outbound FQDNs:
+
+| FQDN | Port | Purpose |
+|---|---|---|
+| `mcr.microsoft.com` | 443 | MCR redirect endpoint |
+| `*.data.mcr.microsoft.com` | 443 | MCR blob storage (layer download) |
+
+These are already included in the AKS-required FQDN list. Verify your cluster's rules against the official reference:
+
+> **[AKS outbound network and FQDN rules for AKS clusters](https://learn.microsoft.com/azure/aks/outbound-rules-control-egress)**
+
+No additional FQDNs are needed beyond what a standard AKS cluster already requires.
+
+### Private AKS Clusters
+
+Eviction-Autoscaler runs as an in-cluster pod and communicates with the Kubernetes API server through the in-cluster endpoint (`kubernetes.default.svc`). On a [private AKS cluster](https://learn.microsoft.com/azure/aks/private-cluster), this path is already fully private — no extra Private Endpoint configuration is needed for the extension itself.
+
+If you use the `az k8s-extension create` CLI to install or upgrade the extension, that command calls ARM from your **local machine** (not from the cluster). Ensure your local machine or CI agent can reach `management.azure.com`, or use [Azure Private Link for ARM](https://learn.microsoft.com/azure/azure-resource-manager/management/create-private-link-access-portal) if your management plane is also locked down.
 
 ## Usage
 

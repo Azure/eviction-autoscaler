@@ -28,6 +28,8 @@ spec:
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: eviction-autoscaler
         image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
@@ -68,5 +70,6 @@ spec:
           {{- toYaml .Values.resources | nindent 10 }}
         securityContext:
           allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
           capabilities:
             drop: ["ALL"]

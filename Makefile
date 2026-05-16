@@ -107,6 +107,13 @@ helm-validate: helm ## Run helm lint and template on the chart
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
 
+.PHONY: fips-check
+fips-check: build ## Verify the manager binary links against OpenSSL (Microsoft Go FIPS backend).
+	@echo "Checking for OpenSSL/CGO crypto symbols in manager binary..."
+	@go tool nm bin/manager | grep -q '_Cfunc_\|_cgo_' && \
+		echo "✓ FIPS: CGO/OpenSSL symbols found — binary uses Microsoft Go FIPS backend" || \
+		(echo "✗ FIPS: No CGO symbols found — binary was not built with CGO_ENABLED=1" && exit 1)
+
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd/main.go

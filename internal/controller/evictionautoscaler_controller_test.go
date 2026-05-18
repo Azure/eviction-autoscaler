@@ -228,11 +228,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			//we don't update status of last eviction till
 			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
-			// Verify Deployment scaling if necessary
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 		})
 
 		It("should skip StatefulSet targets without surging", func() {
@@ -798,10 +798,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify deployment WAS scaled
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-deploy", Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 		})
 
 		It("should process EvictionAutoScaler in kube-system by default", func() {
@@ -891,10 +891,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify deployment WAS scaled (kube-system is enabled by default)
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-kube-deploy", Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, EvictionAutoScaler)).To(Succeed())

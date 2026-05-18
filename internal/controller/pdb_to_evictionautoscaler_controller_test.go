@@ -88,7 +88,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Namespace: namespace,
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(3),
+				Replicas: new(int32(3)),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
 						"app": deploymentName,
@@ -139,7 +139,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				},
 			},
 			Spec: appsv1.ReplicaSetSpec{
-				Replicas: int32Ptr(3), // Define the number of replicas you want
+				Replicas: new(int32(3)), // Define the number of replicas you want
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
 						"app": deploymentName,
@@ -326,7 +326,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				Namespace: namespace,
 			},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: int32Ptr(3),
+				Replicas: new(int32(3)),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{"app": "ownership-test"},
 				},
@@ -527,7 +527,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					Namespace: namespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": deploymentName},
 					},
@@ -649,7 +649,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					Namespace: namespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": deploymentName},
 					},

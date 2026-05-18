@@ -90,7 +90,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(1),
+					Replicas: new(int32(1)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"app": "example",
@@ -243,7 +243,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Namespace: namespace,
 				},
 				Spec: appsv1.StatefulSetSpec{
-					Replicas: int32Ptr(1),
+					Replicas: new(int32(1)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
 							"app": "example",
@@ -318,7 +318,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			deployment := &appsv1.Deployment{}
 			err := k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			deployment.Spec.Replicas = int32Ptr(2)
+			deployment.Spec.Replicas = new(int32(2))
 			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
 
 			// Log an eviction
@@ -415,7 +415,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			deployment.Spec.Replicas = int32Ptr(5)
+			deployment.Spec.Replicas = new(int32(5))
 			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
 
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
@@ -642,7 +642,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": "test"},
 					},
@@ -727,7 +727,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": "test"},
 					},
@@ -814,7 +814,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
-					Replicas: int32Ptr(2),
+					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": "test-kube"},
 					},

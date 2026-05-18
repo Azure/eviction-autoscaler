@@ -194,11 +194,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
 		// Cap surgeTarget at maxSurge when displaced exceeds it.
 		// If customer set MaxSurge=0 explicitly, surgeTarget==minReplicas → no surge (they opted out).
-		if displaced == 0 {
-			logger.Info("No pods on cordoned nodes, skipping surge", "pdb", pdb.Name)
-			return ctrl.Result{RequeueAfter: cooldown}, nil
-		}
-
 		if surgeTarget > maxSurgeTarget {
 			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
 			surgeTarget = maxSurgeTarget

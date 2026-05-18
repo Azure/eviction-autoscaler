@@ -197,7 +197,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if displaced == 0 {
 			logger.Info("No pods on cordoned nodes, skipping surge", "pdb", pdb.Name)
 			return ctrl.Result{RequeueAfter: cooldown}, nil
-		} 
+		}
 
 		if surgeTarget > maxSurgeTarget {
 			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)

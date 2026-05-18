@@ -9,7 +9,12 @@ on:
       tag:
         description: 'Production tag to build (e.g., 0.0.17, 1.0.0). Must match X.Y.Z format, no dev tags allowed.'
         required: true
-        type: string    
+        type: string
+      force_override:
+        description: 'Override an existing version in ACR/MCR (use with caution — the existing image will be replaced).'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -112,7 +117,7 @@ jobs:
         az login --identity
         az acr login -n $RELEASE_ACR
         if [ -n "$TAG_VERSION" ]; then
-          ./hack/release.sh "$TAG_VERSION"
+          FORCE_OVERRIDE="${{ inputs.force_override || 'false' }}" ./hack/release.sh "$TAG_VERSION"
         else
           ./hack/release.sh
         fi

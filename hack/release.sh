@@ -142,11 +142,17 @@ existing_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo
 set -e
 
 if [[ -n "$existing_tag" ]]; then
-  echo "Version $version already exists in ACR - skipping release"
-  echo "To release a new version, create a new tag:"
-  echo "  git tag <new-version>  (e.g., 1.0.1)"
-  echo "  git push origin <new-version>"
-  exit 1
+  if [[ "${FORCE_OVERRIDE:-false}" == "true" ]]; then
+    echo "WARNING: Version $version already exists in ACR. FORCE_OVERRIDE=true — proceeding with override."
+    echo "The existing image and Helm chart will be replaced in ACR and replicated to MCR."
+  else
+    echo "Version $version already exists in ACR - skipping release"
+    echo "To release a new version, create a new tag:"
+    echo "  git tag <new-version>  (e.g., 1.0.1)"
+    echo "  git push origin <new-version>"
+    echo "To override the existing version, re-run the workflow with force_override=true."
+    exit 1
+  fi
 fi
 
 echo "Releasing eviction-autoscaler"

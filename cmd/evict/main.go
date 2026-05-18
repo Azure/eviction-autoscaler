@@ -111,9 +111,7 @@ func main() {
 		}
 
 		log.Printf("evicting %s/%s", meta.Namespace, meta.Name)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 
 			for ctx.Err() == nil {
 				err = clientset.PolicyV1().Evictions(meta.Namespace).Evict(ctx, &policy.Eviction{
@@ -132,7 +130,7 @@ func main() {
 				case <-ctx.Done():
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 

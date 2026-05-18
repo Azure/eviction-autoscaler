@@ -9,7 +9,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -28,7 +27,7 @@ var _ = Describe("ResolveMinReplicas", func() {
 					Kind: "Deployment",
 				},
 				// MinReplicaCount intentionally omitted (nil) — KEDA defaults to 0
-				MaxReplicaCount: ptr.To(int32(10)),
+				MaxReplicaCount: new(int32(10)),
 			},
 		}
 
@@ -59,8 +58,8 @@ var _ = Describe("ResolveMinReplicas", func() {
 					Name: "my-deploy",
 					Kind: "Deployment",
 				},
-				MinReplicaCount: ptr.To(int32(2)),
-				MaxReplicaCount: ptr.To(int32(10)),
+				MinReplicaCount: new(int32(2)),
+				MaxReplicaCount: new(int32(10)),
 			},
 		}
 

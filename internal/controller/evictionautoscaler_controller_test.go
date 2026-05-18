@@ -17,7 +17,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -898,8 +897,9 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 	})
 })
 
+//go:fix inline
 func int32Ptr(i int32) *int32 {
-	return &i
+	return new(i)
 }
 
 var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config", func() {
@@ -924,7 +924,7 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 		deploy := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: "dual-target", Namespace: namespace},
 			Spec: appsv1.DeploymentSpec{
-				Replicas: ptr.To(int32(1)),
+				Replicas: new(int32(1)),
 				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "dual"}},
 				Strategy: appsv1.DeploymentStrategy{
 					RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
@@ -959,7 +959,7 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 					Kind: "Deployment",
 					Name: "dual-target",
 				},
-				MinReplicas: ptr.To(int32(1)),
+				MinReplicas: new(int32(1)),
 				MaxReplicas: 5,
 			},
 		}
@@ -971,8 +971,8 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 			ObjectMeta: metav1.ObjectMeta{Name: "dual-so", Namespace: namespace},
 			Spec: kedav1alpha1.ScaledObjectSpec{
 				ScaleTargetRef:  &kedav1alpha1.ScaleTarget{Name: "dual-target", Kind: "Deployment"},
-				MinReplicaCount: ptr.To(int32(1)),
-				MaxReplicaCount: ptr.To(int32(5)),
+				MinReplicaCount: new(int32(1)),
+				MaxReplicaCount: new(int32(5)),
 				Triggers: []kedav1alpha1.ScaleTriggers{{
 					Type:     "cpu",
 					Metadata: map[string]string{"type": "Utilization", "value": "50"},

@@ -9,7 +9,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -28,8 +27,8 @@ func createScaledObject(name, namespace, targetDeployment string, minReplicaCoun
 				Name: targetDeployment,
 				Kind: "Deployment",
 			},
-			MinReplicaCount: ptr.To(minReplicaCount),
-			MaxReplicaCount: ptr.To(maxReplicaCount),
+			MinReplicaCount: new(minReplicaCount),
+			MaxReplicaCount: new(maxReplicaCount),
 		},
 	}
 }
@@ -75,7 +74,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 			so = createScaledObject("test-so", "default", "test-deploy", 1, 5)
 			deploy = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			}
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
@@ -197,7 +196,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 			}
 			deploy = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(2))},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(2))},
 			}
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())

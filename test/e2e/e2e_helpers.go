@@ -562,7 +562,7 @@ func dumpClusterState() {
 	for _, d := range dumps {
 		out, err := exec.Command("kubectl", d.args...).CombinedOutput()
 		if err != nil {
-			out = append(out, []byte(fmt.Sprintf("\nerror: %v\n", err))...)
+			out = append(out, fmt.Appendf(nil, "\nerror: %v\n", err)...)
 		}
 		_ = os.WriteFile(e2eLogsDir+"/"+d.file, out, 0600)
 	}

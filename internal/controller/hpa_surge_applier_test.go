@@ -9,7 +9,6 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -27,7 +26,7 @@ var _ = Describe("HPASurgeApplier", func() {
 			hpa = &autoscalingv2.HorizontalPodAutoscaler{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-hpa", Namespace: "default"},
 				Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
-					MinReplicas: ptr.To(int32(1)),
+					MinReplicas: new(int32(1)),
 					MaxReplicas: 5,
 					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 						Kind: "Deployment",
@@ -37,7 +36,7 @@ var _ = Describe("HPASurgeApplier", func() {
 			}
 			deploy = &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
-				Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))},
+				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			}
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())

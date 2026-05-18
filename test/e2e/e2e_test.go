@@ -42,7 +42,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -379,7 +378,7 @@ var _ = Describe("controller", Ordered, func() {
 			scaleNginxReplicas := func() error {
 				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				deployment.Spec.Replicas = ptr.To(int32(2))
+				deployment.Spec.Replicas = new(int32(2))
 				err = clientset.Update(ctx, deployment, &client.UpdateOptions{})
 				Expect(err).NotTo(HaveOccurred())
 				return nil
@@ -1005,8 +1004,8 @@ var _ = Describe("controller", Ordered, func() {
 
 				// Print a subset of interesting metrics for visibility
 				fmt.Println("===== Eviction Autoscaler Metrics =====")
-				metricsLines := strings.Split(string(metricsOutput), "\n")
-				for _, line := range metricsLines {
+				metricsLines := strings.SplitSeq(string(metricsOutput), "\n")
+				for line := range metricsLines {
 					// Only show our eviction autoscaler and controller runtime metrics, skip comments and empty lines
 					if strings.HasPrefix(line, "eviction_autoscaler_") || strings.HasPrefix(line, "controller_runtime_") {
 						fmt.Println(line)
@@ -1028,7 +1027,7 @@ var _ = Describe("controller", Ordered, func() {
 			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			for _, nodeName := range strings.Fields(string(output)) {
+			for nodeName := range strings.FieldsSeq(string(output)) {
 				cmd = exec.Command("kubectl", "uncordon", nodeName)
 				_, _ = utils.Run(cmd) // ignore error if already uncordoned
 			}
@@ -1258,7 +1257,7 @@ var _ = Describe("controller", Ordered, func() {
 			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			for _, nodeName := range strings.Fields(string(output)) {
+			for nodeName := range strings.FieldsSeq(string(output)) {
 				cmd = exec.Command("kubectl", "uncordon", nodeName)
 				_, _ = utils.Run(cmd)
 			}

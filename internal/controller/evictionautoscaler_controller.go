@@ -196,39 +196,41 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// If customer set MaxSurge=0 explicitly, surgeTarget==minReplicas → no surge (they opted out).
 		if displaced == 0 {
 			logger.Info("No pods on cordoned nodes, skipping surge", "pdb", pdb.Name)
-		} else {
-			if surgeTarget > maxSurgeTarget {
-				surgeTarget = maxSurgeTarget
+			return ctrl.Result{RequeueAfter: cooldown}, nil
+		} 
+
+		if surgeTarget > maxSurgeTarget {
+			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
+			surgeTarget = maxSurgeTarget
+		}
+
+		if target.GetReplicas() < surgeTarget {
+			logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+
+			// Track blocked eviction if the PDB is blocking the eviction
+			metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
+
+			// Track scaling opportunity with signal label
+			signalLabel := metrics.GetScalingSignal(pdb)
+			metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
+
+			err = surgeApplier.ApplySurge(ctx, surgeTarget)
+			if err != nil {
+				logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
+				return ctrl.Result{}, err
 			}
 
-			if target.GetReplicas() < surgeTarget {
-				logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+			// Track actual scaling action
+			metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
 
-				// Track blocked eviction if the PDB is blocking the eviction
-				metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
-
-				// Track scaling opportunity with signal label
-				signalLabel := metrics.GetScalingSignal(pdb)
-				metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
-
-				err = surgeApplier.ApplySurge(ctx, surgeTarget)
-				if err != nil {
-					logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
-					return ctrl.Result{}, err
-				}
-
-				// Track actual scaling action
-				metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
-
-				// Log the scaling action
-				logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
-				logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
-				// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
-				EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-				//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
-				ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
-				return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-			}
+			// Log the scaling action
+			logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
+			logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
+			// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
+			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+			//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
+			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	}
 

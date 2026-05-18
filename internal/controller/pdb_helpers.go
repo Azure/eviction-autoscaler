@@ -214,26 +214,18 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
 	}
 
-	// Deduplicate node names to minimise Get calls.
-	nodeNames := make(map[string]struct{})
-	for _, pod := range podList.Items {
-		if pod.Spec.NodeName != "" {
-			nodeNames[pod.Spec.NodeName] = struct{}{}
-		}
+	// We use node cordon (Spec.Unschedulable) as the signal for "pods need to move".
+	// This is the best signal available today via the controller-runtime cache (no API server round-trip).
+	// In the future this may be replaced by a more direct pod-eviction signal — e.g. via an
+	// admission webhook interceptor or pod conditions — which would let us right-size the surge
+	// without needing to inspect nodes at all.
+	var nodeList corev1.NodeList
+	if err := c.List(ctx, &nodeList); err != nil {
+		return 0, fmt.Errorf("failed to list nodes: %w", err)
 	}
-
-	// Fetch each unique node and record whether it is cordoned.
-	cordoned := make(map[string]bool, len(nodeNames))
-	for nodeName := range nodeNames {
-		node := &corev1.Node{}
-		if err := c.Get(ctx, k8s_types.NamespacedName{Name: nodeName}, node); err != nil {
-			if client.IgnoreNotFound(err) != nil {
-				return 0, fmt.Errorf("failed to get node %s: %w", nodeName, err)
-			}
-			// Node not found: pod is being terminated already, don't count it.
-			continue
-		}
-		cordoned[nodeName] = node.Spec.Unschedulable
+	cordoned := make(map[string]bool, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		cordoned[node.Name] = node.Spec.Unschedulable
 	}
 
 	var count int32

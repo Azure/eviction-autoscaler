@@ -809,6 +809,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			testNamespace := metav1.NamespaceSystem
 
 			// Create deployment
+			kubeSurge := intstr.FromInt(1)
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-kube-deploy",
@@ -818,6 +819,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Replicas: int32Ptr(2),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": "test-kube"},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge: &kubeSurge,
+						},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{

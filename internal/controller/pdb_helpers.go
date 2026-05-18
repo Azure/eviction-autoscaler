@@ -199,3 +199,48 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 	}
 	return false
 }
+
+// countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned
+// (Unschedulable) nodes. It aggregates across all cordoned nodes, so simultaneous drains
+// are counted correctly.
+func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (int32, error) {
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PDB selector: %w", err)
+	}
+
+	var podList corev1.PodList
+	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
+	}
+
+	// Deduplicate node names to minimise Get calls.
+	nodeNames := make(map[string]struct{})
+	for _, pod := range podList.Items {
+		if pod.Spec.NodeName != "" {
+			nodeNames[pod.Spec.NodeName] = struct{}{}
+		}
+	}
+
+	// Fetch each unique node and record whether it is cordoned.
+	cordoned := make(map[string]bool, len(nodeNames))
+	for nodeName := range nodeNames {
+		node := &corev1.Node{}
+		if err := c.Get(ctx, k8s_types.NamespacedName{Name: nodeName}, node); err != nil {
+			if client.IgnoreNotFound(err) != nil {
+				return 0, fmt.Errorf("failed to get node %s: %w", nodeName, err)
+			}
+			// Node not found: pod is being terminated already, don't count it.
+			continue
+		}
+		cordoned[nodeName] = node.Spec.Unschedulable
+	}
+
+	var count int32
+	for _, pod := range podList.Items {
+		if cordoned[pod.Spec.NodeName] {
+			count++
+		}
+	}
+	return count, nil
+}

@@ -70,20 +70,20 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 		dep := createDeployment("surge-name", namespace, "surge-name", 1, &maxUnavailable)
 		target := &DeploymentWrapper{obj: dep}
 		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
-		Expect(applier.Name()).To(Equal("deployment"))
+		Expect(applier.Name()).To(Equal(deploymentKind))
 	})
 })
 
 var _ = Describe("hasTargetAnnotation", func() {
 	It("should return false when annotations are nil", func() {
-		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: testGenerateName}}
 		target := &DeploymentWrapper{obj: dep}
 		Expect(hasTargetAnnotation(target)).To(BeFalse())
 	})
 
 	It("should return false when annotation is not present", func() {
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-			Name:        "test",
+			Name:        testGenerateName,
 			Annotations: map[string]string{"other": "value"},
 		}}
 		target := &DeploymentWrapper{obj: dep}
@@ -92,7 +92,7 @@ var _ = Describe("hasTargetAnnotation", func() {
 
 	It("should return true when annotation is present", func() {
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-			Name:        "test",
+			Name:        testGenerateName,
 			Annotations: map[string]string{EvictionSurgeReplicasAnnotationKey: "3"},
 		}}
 		target := &DeploymentWrapper{obj: dep}
@@ -102,14 +102,14 @@ var _ = Describe("hasTargetAnnotation", func() {
 
 var _ = Describe("hasTargetAnnotationWithValue", func() {
 	It("should return false when annotations are nil", func() {
-		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "test"}}
+		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: testGenerateName}}
 		target := &DeploymentWrapper{obj: dep}
 		Expect(hasTargetAnnotationWithValue(target, "3")).To(BeFalse())
 	})
 
 	It("should return false when value does not match", func() {
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-			Name:        "test",
+			Name:        testGenerateName,
 			Annotations: map[string]string{EvictionSurgeReplicasAnnotationKey: "2"},
 		}}
 		target := &DeploymentWrapper{obj: dep}
@@ -118,7 +118,7 @@ var _ = Describe("hasTargetAnnotationWithValue", func() {
 
 	It("should return true when value matches", func() {
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-			Name:        "test",
+			Name:        testGenerateName,
 			Annotations: map[string]string{EvictionSurgeReplicasAnnotationKey: "3"},
 		}}
 		target := &DeploymentWrapper{obj: dep}

@@ -22,6 +22,12 @@ import (
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 )
 
+const (
+	namespaceLabel      = "namespace"
+	pdbNameLabel        = "pdb_name"
+	deploymentNameLabel = "deployment_name"
+)
+
 var (
 	// DeploymentGauge tracks the number of deployments seen by the controller
 	// Labels: namespace, can_create_pdb (true/false)
@@ -30,7 +36,7 @@ var (
 			Name: "eviction_autoscaler_deployments_total",
 			Help: "Total number of deployments seen by the eviction autoscaler",
 		},
-		[]string{"namespace", "can_create_pdb"},
+		[]string{namespaceLabel, "can_create_pdb"},
 	)
 
 	// PDBGauge tracks the number of PDBs seen by the controller
@@ -40,7 +46,7 @@ var (
 			Name: "eviction_autoscaler_pdbs_total",
 			Help: "Total number of PDBs seen by the eviction autoscaler",
 		},
-		[]string{"namespace", "created_by_us", "max_unavailable_zero", "min_available_equals_replicas"},
+		[]string{namespaceLabel, "created_by_us", "max_unavailable_zero", "min_available_equals_replicas"},
 	)
 
 	// EvictionCounter tracks how often the eviction-autoscaler notices an eviction
@@ -50,7 +56,7 @@ var (
 			Name: "eviction_autoscaler_evictions_total",
 			Help: "Total number of evictions noticed by the eviction autoscaler",
 		},
-		[]string{"namespace"},
+		[]string{namespaceLabel},
 	)
 
 	// BlockedEvictionCounter tracks how often evictions are blocked by PDBs
@@ -60,7 +66,7 @@ var (
 			Name: "eviction_autoscaler_blocked_evictions_total",
 			Help: "Total number of evictions blocked by PDBs",
 		},
-		[]string{"namespace", "pdb_name"},
+		[]string{namespaceLabel, pdbNameLabel},
 	)
 
 	// ScalingOpportunityCounter tracks how often the controller thinks it could have scaled a deployment
@@ -70,7 +76,7 @@ var (
 			Name: "eviction_autoscaler_scaling_opportunities_total",
 			Help: "Total number of times the controller identified scaling opportunities",
 		},
-		[]string{"namespace", "deployment_name", "action", "signal"},
+		[]string{namespaceLabel, deploymentNameLabel, "action", "signal"},
 	)
 
 	// ActualScalingCounter tracks actual scaling actions performed
@@ -80,7 +86,7 @@ var (
 			Name: "eviction_autoscaler_scaling_actions_total",
 			Help: "Total number of actual scaling actions performed by the controller",
 		},
-		[]string{"namespace", "deployment_name", "action"},
+		[]string{namespaceLabel, deploymentNameLabel, "action"},
 	)
 
 	// PDBCreationCounter tracks PDB creation events
@@ -90,7 +96,7 @@ var (
 			Name: "eviction_autoscaler_pdb_creations_total",
 			Help: "Total number of PDBs created by the eviction autoscaler",
 		},
-		[]string{"namespace", "deployment_name"},
+		[]string{namespaceLabel, deploymentNameLabel},
 	)
 
 	// EvictionAutoScalerCreationCounter tracks EvictionAutoScaler creation events
@@ -100,7 +106,7 @@ var (
 			Name: "eviction_autoscaler_creation_total",
 			Help: "Total number of EvictionAutoScaler resources created",
 		},
-		[]string{"namespace", "pdb_name", "target_deployment"},
+		[]string{namespaceLabel, pdbNameLabel, "target_deployment"},
 	)
 
 	// NodeCordoningCounter tracks node cordoning events detected
@@ -120,7 +126,7 @@ var (
 			Name: "eviction_autoscaler_pdb_info",
 			Help: "PDB configuration and status information",
 		},
-		[]string{"namespace", "pdb_name", "target_name", "metric_type"},
+		[]string{namespaceLabel, pdbNameLabel, "target_name", "metric_type"},
 	)
 
 	// PDBCounter tracks the number of PDBs with an increment interface
@@ -130,7 +136,7 @@ var (
 			Name: "eviction_autoscaler_pdb_count_total",
 			Help: "Total count of PDBs processed by the eviction autoscaler",
 		},
-		[]string{"namespace", "created_by_us"},
+		[]string{namespaceLabel, "created_by_us"},
 	)
 )
 

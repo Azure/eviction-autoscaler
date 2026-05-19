@@ -28,10 +28,15 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega" //nolint:staticcheck
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	kubectlGetCmd  = "get"
+	outputYamlFlag = "yaml"
 )
 
 // deploymentConfig holds deployment configuration
@@ -123,7 +128,7 @@ spec:
 func createPDB(name, namespace string, minAvailable int32, matchLabels map[string]string) error {
 	var labelsYaml strings.Builder
 	for k, v := range matchLabels {
-		labelsYaml.WriteString(fmt.Sprintf("      %s: %s\n", k, v))
+		fmt.Fprintf(&labelsYaml, "      %s: %s\n", k, v)
 	}
 
 	pdbYaml := fmt.Sprintf(`apiVersion: policy/v1
@@ -379,7 +384,7 @@ func deleteKEDAScaledObject(name, namespace string) {
 
 // verifyKEDAScaledObjectMinReplicas checks the minReplicaCount on a ScaledObject using kubectl
 func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32) error {
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
 		"--namespace", namespace,
 		"-o", "jsonpath={.spec.minReplicaCount}")
 	output, err := utils.Run(cmd)
@@ -398,7 +403,7 @@ func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32
 func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedValue string) error {
 	// Use -o json and parse in Go because kubectl jsonpath doesn't handle
 	// annotation keys with dots/slashes (e.g. eviction-autoscaler.azure.com/original-min-replicas).
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
 		"--namespace", namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
@@ -420,7 +425,7 @@ func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedVa
 
 // verifyKEDAScaledObjectNoAnnotation checks that a ScaledObject does NOT have a specific annotation
 func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) error {
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
 		"--namespace", namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
@@ -548,15 +553,15 @@ func dumpClusterState() {
 		file string
 		args []string
 	}{
-		{"controller.log", []string{"logs", "-n", "eviction-autoscaler",
+		{"controller.log", []string{"logs", "-n", namespace,
 			"-l", "app.kubernetes.io/name=eviction-autoscaler", "--tail=2000"}},
-		{"pods.txt", []string{"get", "pods", "-A", "-o", "wide"}},
-		{"nodes.txt", []string{"get", "nodes", "-o", "wide"}},
-		{"deployments.txt", []string{"get", "deployments", "-A", "-o", "wide"}},
-		{"pdb.yaml", []string{"get", "pdb", "-A", "-o", "yaml"}},
-		{"hpa.yaml", []string{"get", "hpa", "-A", "-o", "yaml"}},
-		{"scaledobjects.yaml", []string{"get", "scaledobjects.keda.sh", "-A", "-o", "yaml"}},
-		{"events.txt", []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
+		{"pods.txt", []string{kubectlGetCmd, "pods", "-A", "-o", "wide"}},
+		{"nodes.txt", []string{kubectlGetCmd, "nodes", "-o", "wide"}},
+		{"deployments.txt", []string{kubectlGetCmd, "deployments", "-A", "-o", "wide"}},
+		{"pdb.yaml", []string{kubectlGetCmd, "pdb", "-A", "-o", outputYamlFlag}},
+		{"hpa.yaml", []string{kubectlGetCmd, "hpa", "-A", "-o", outputYamlFlag}},
+		{"scaledobjects.yaml", []string{kubectlGetCmd, "scaledobjects.keda.sh", "-A", "-o", outputYamlFlag}},
+		{"events.txt", []string{kubectlGetCmd, "events", "-A", "--sort-by=.lastTimestamp"}},
 	}
 
 	for _, d := range dumps {

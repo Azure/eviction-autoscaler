@@ -59,7 +59,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		// Create the Namespace object (from corev1)
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test",
+				GenerateName: testGenerateName,
 				Annotations: map[string]string{
 					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
 				},
@@ -91,7 +91,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Replicas: new(int32(3)),
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
-						"app": deploymentName,
+						appLabelKey: deploymentName,
 					},
 				},
 				Strategy: appsv1.DeploymentStrategy{
@@ -102,14 +102,14 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Template: corev1.PodTemplateSpec{ // Use corev1.PodTemplateSpec
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
-							"app": deploymentName,
+							appLabelKey: deploymentName,
 						},
 					},
 					Spec: corev1.PodSpec{ // Use corev1.PodSpec
 						Containers: []corev1.Container{ // Use corev1.Container
 							{
-								Name:  "nginx",
-								Image: "nginx:latest",
+								Name:  nginxContainerName,
+								Image: nginxImage,
 							},
 						},
 					},
@@ -118,7 +118,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		}
 
 		// Create the deployment
-		err := reconciler.Client.Create(ctx, deployment)
+		err := reconciler.Create(ctx, deployment)
 		Expect(err).ToNot(HaveOccurred())
 
 		// Define the ReplicaSet
@@ -127,12 +127,12 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Name:      deploymentName, // ReplicaSet name should match the deployment name or whatever identifier you'd like
 				Namespace: namespace,
 				Labels: map[string]string{
-					"app": deploymentName,
+					appLabelKey: deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: "apps/v1",    // API version of the owner (e.g., Deployment)
-						Kind:       "Deployment", // The kind of the owner (usually Deployment for replicas)
+						APIVersion: appsV1APIVersion,    // API version of the owner (e.g., Deployment)
+						Kind: ResourceTypeDeployment, // The kind of the owner (usually Deployment for replicas)
 						Name:       deploymentName,
 						UID:        machinery_types.UID("some-uid"),
 					},
@@ -142,20 +142,20 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Replicas: new(int32(3)), // Define the number of replicas you want
 				Selector: &metav1.LabelSelector{
 					MatchLabels: map[string]string{
-						"app": deploymentName,
+						appLabelKey: deploymentName,
 					},
 				},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
-							"app": deploymentName,
+							appLabelKey: deploymentName,
 						},
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{
 							{
-								Name:  "nginx",
-								Image: "nginx:latest",
+								Name:  nginxContainerName,
+								Image: nginxImage,
 							},
 						},
 					},
@@ -169,12 +169,12 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				Name:      podName,
 				Namespace: namespace,
 				Labels: map[string]string{
-					"app": deploymentName,
+					appLabelKey: deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: "apps/v1",      // API version of the owner (ReplicaSet)
-						Kind:       "ReplicaSet",   // The kind of the owner (ReplicaSet)
+						APIVersion: appsV1APIVersion,      // API version of the owner (ReplicaSet)
+						Kind: replicaSetKind,   // The kind of the owner (ReplicaSet)
 						Name:       deploymentName, // Indicating that this Pod is controlled by ReplicaSet
 						UID:        machinery_types.UID("some-uid"),
 					},
@@ -183,8 +183,8 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 			Spec: corev1.PodSpec{ // Use corev1.PodSpec
 				Containers: []corev1.Container{ // Use corev1.Container
 					{
-						Name:  "nginx",
-						Image: "nginx:latest",
+						Name:  nginxContainerName,
+						Image: nginxImage,
 					},
 				},
 			},
@@ -214,7 +214,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-						"app": deploymentName,
+						appLabelKey: deploymentName,
 					},
 					},
 				},
@@ -328,15 +328,15 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			Spec: appsv1.DeploymentSpec{
 				Replicas: new(int32(3)),
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "ownership-test"},
+					MatchLabels: map[string]string{appLabelKey: ownershipTestLabel},
 				},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
-						Labels: map[string]string{"app": "ownership-test"},
+						Labels: map[string]string{appLabelKey: ownershipTestLabel},
 					},
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{
-							{Name: "nginx", Image: "nginx:latest"},
+							{Name: nginxContainerName, Image: nginxImage},
 						},
 					},
 				},
@@ -351,8 +351,8 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				Namespace: namespace,
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: "apps/v1",
-						Kind:       "Deployment",
+						APIVersion: appsV1APIVersion,
+						Kind: ResourceTypeDeployment,
 						Name:       deploymentName,
 						UID:        deployment.UID,
 					},
@@ -360,7 +360,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			},
 			Spec: appsv1.ReplicaSetSpec{
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "ownership-test"},
+					MatchLabels: map[string]string{appLabelKey: ownershipTestLabel},
 				},
 				Template: deployment.Spec.Template,
 			},
@@ -372,11 +372,11 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-pod",
 				Namespace: namespace,
-				Labels:    map[string]string{"app": "ownership-test"},
+				Labels:    map[string]string{appLabelKey: ownershipTestLabel},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: "apps/v1",
-						Kind:       "ReplicaSet",
+						APIVersion: appsV1APIVersion,
+						Kind: replicaSetKind,
 						Name:       rs.Name,
 						UID:        rs.UID,
 					},
@@ -384,7 +384,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			},
 			Spec: corev1.PodSpec{
 				Containers: []corev1.Container{
-					{Name: "nginx", Image: "nginx:latest"},
+					{Name: nginxContainerName, Image: nginxImage},
 				},
 			},
 		}
@@ -404,7 +404,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion:         "apps/v1",
+						APIVersion: appsV1APIVersion,
 						Kind:               ResourceTypeDeployment,
 						Name:               deploymentName,
 						UID:                deployment.UID,
@@ -416,7 +416,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			Spec: policyv1.PodDisruptionBudgetSpec{
 				MinAvailable: &intstr.IntOrString{IntVal: 3},
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "ownership-test"},
+					MatchLabels: map[string]string{appLabelKey: ownershipTestLabel},
 				},
 			},
 		}
@@ -462,7 +462,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 			Spec: policyv1.PodDisruptionBudgetSpec{
 				MinAvailable: &intstr.IntOrString{IntVal: 3},
 				Selector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"app": "ownership-test"},
+					MatchLabels: map[string]string{appLabelKey: ownershipTestLabel},
 				},
 			},
 		}
@@ -529,15 +529,15 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				Spec: appsv1.DeploymentSpec{
 					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": deploymentName},
+							Labels: map[string]string{appLabelKey: deploymentName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
-								{Name: "nginx", Image: "nginx:latest"},
+								{Name: nginxContainerName, Image: nginxImage},
 							},
 						},
 					},
@@ -552,8 +552,8 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					Namespace: namespace,
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "apps/v1",
-							Kind:       "Deployment",
+							APIVersion: appsV1APIVersion,
+							Kind: ResourceTypeDeployment,
 							Name:       deploymentName,
 							UID:        deployment.UID,
 						},
@@ -561,15 +561,15 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: appsv1.ReplicaSetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": deploymentName},
+							Labels: map[string]string{appLabelKey: deploymentName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
-								{Name: "nginx", Image: "nginx:latest"},
+								{Name: nginxContainerName, Image: nginxImage},
 							},
 						},
 					},
@@ -582,11 +582,11 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deploymentName + "-pod",
 					Namespace: namespace,
-					Labels:    map[string]string{"app": deploymentName},
+					Labels:    map[string]string{appLabelKey: deploymentName},
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "apps/v1",
-							Kind:       "ReplicaSet",
+							APIVersion: appsV1APIVersion,
+							Kind: replicaSetKind,
 							Name:       rs.Name,
 							UID:        rs.UID,
 						},
@@ -594,7 +594,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
-						{Name: "nginx", Image: "nginx:latest"},
+						{Name: nginxContainerName, Image: nginxImage},
 					},
 				},
 			}
@@ -609,7 +609,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 				},
 			}
@@ -651,15 +651,15 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				Spec: appsv1.DeploymentSpec{
 					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": deploymentName},
+							Labels: map[string]string{appLabelKey: deploymentName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
-								{Name: "nginx", Image: "nginx:latest"},
+								{Name: nginxContainerName, Image: nginxImage},
 							},
 						},
 					},
@@ -674,8 +674,8 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					Namespace: namespace,
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "apps/v1",
-							Kind:       "Deployment",
+							APIVersion: appsV1APIVersion,
+							Kind: ResourceTypeDeployment,
 							Name:       deploymentName,
 							UID:        deployment.UID,
 						},
@@ -683,15 +683,15 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: appsv1.ReplicaSetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{"app": deploymentName},
+							Labels: map[string]string{appLabelKey: deploymentName},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
-								{Name: "nginx", Image: "nginx:latest"},
+								{Name: nginxContainerName, Image: nginxImage},
 							},
 						},
 					},
@@ -704,11 +704,11 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      deploymentName + "-pod",
 					Namespace: namespace,
-					Labels:    map[string]string{"app": deploymentName},
+					Labels:    map[string]string{appLabelKey: deploymentName},
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "apps/v1",
-							Kind:       "ReplicaSet",
+							APIVersion: appsV1APIVersion,
+							Kind: replicaSetKind,
 							Name:       rs.Name,
 							UID:        rs.UID,
 						},
@@ -716,7 +716,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
-						{Name: "nginx", Image: "nginx:latest"},
+						{Name: nginxContainerName, Image: nginxImage},
 					},
 				},
 			}
@@ -733,7 +733,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 				},
 			}
@@ -766,7 +766,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 				},
 			}
@@ -799,7 +799,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
+						MatchLabels: map[string]string{appLabelKey: deploymentName},
 					},
 				},
 			}

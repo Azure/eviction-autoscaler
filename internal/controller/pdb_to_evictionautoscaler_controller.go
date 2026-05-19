@@ -203,7 +203,7 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		blockOwnerDeletion := true
 
 		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         "apps/v1",
+			APIVersion:         appsV1APIVersion,
 			Kind:               ResourceTypeDeployment,
 			Name:               deploymentName,
 			UID:                deploymentUID,
@@ -270,7 +270,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	for _, pod := range podList.Items {
 		// Check the OwnerReferences of each pod
 		for _, ownerRef := range pod.OwnerReferences {
-			if ownerRef.Kind == "ReplicaSet" {
+			if ownerRef.Kind == replicaSetKind {
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
 				if apierrors.IsNotFound(err) {
@@ -282,7 +282,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 
 				// Look for the Deployment owner of the ReplicaSet
 				for _, rsOwnerRef := range replicaSet.OwnerReferences {
-					if rsOwnerRef.Kind == "Deployment" {
+					if rsOwnerRef.Kind == ResourceTypeDeployment {
 						logger.Info("Found Deployment owner", "deployment", rsOwnerRef.Name)
 						return rsOwnerRef.Name, rsOwnerRef.UID, nil
 					}

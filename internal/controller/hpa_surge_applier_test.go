@@ -24,18 +24,18 @@ var _ = Describe("HPASurgeApplier", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			hpa = &autoscalingv2.HorizontalPodAutoscaler{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-hpa", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test-hpa", Namespace: defaultNamespace},
 				Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 					MinReplicas: new(int32(1)),
 					MaxReplicas: 5,
 					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-						Kind: "Deployment",
+						Kind: ResourceTypeDeployment,
 						Name: "test-deploy",
 					},
 				},
 			}
 			deploy = &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: "default"},
+				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: defaultNamespace},
 				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			}
 			scheme := runtime.NewScheme()

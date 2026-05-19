@@ -17,6 +17,14 @@ func init() {
 	logf.SetLogger(zap.New(zap.UseDevMode(true)))
 }
 
+const (
+	testNamespaceName   = testNamespaceName
+	annotationEnabled   = "true"
+	annotationDisabled  = "false"
+	kubeSystemNamespace = "kube-system"
+	specialNamespace    = specialNamespace
+)
+
 // Mode 1: Namespaces disabled by default (disabledByDefault=true, ENABLED_BY_DEFAULT=false)
 // Default: disabled, hardcoded list enables specific namespaces
 
@@ -29,14 +37,14 @@ func TestFilter_OptIn_NoAnnotation_NotHardcoded(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -55,9 +63,9 @@ func TestFilter_OptIn_AnnotationTrue(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "true",
+				EnableEvictionAutoscalerAnnotationKey: annotationEnabled,
 			},
 		},
 	}
@@ -65,7 +73,7 @@ func TestFilter_OptIn_AnnotationTrue(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,9 +92,9 @@ func TestFilter_OptIn_AnnotationFalse(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "false",
+				EnableEvictionAutoscalerAnnotationKey: annotationDisabled,
 			},
 		},
 	}
@@ -94,7 +102,7 @@ func TestFilter_OptIn_AnnotationFalse(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,21 +115,21 @@ func TestFilter_OptIn_AnnotationFalse(t *testing.T) {
 func TestFilter_OptIn_HardcodedNamespace(t *testing.T) {
 	// opt-in mode with hardcoded list: hardcoded namespaces are enabled
 	// optin=true, hardcoded=["kube-system"] -> kube-system returns true
-	filter := New([]string{"kube-system"}, true)
+	filter := New([]string{kubeSystemNamespace}, true)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "kube-system",
+			Name: kubeSystemNamespace,
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "kube-system")
+	result, err := filter.Filter(ctx, fakeClient, kubeSystemNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,16 +141,16 @@ func TestFilter_OptIn_HardcodedNamespace(t *testing.T) {
 
 func TestFilter_OptIn_HardcodedWithAnnotationFalse(t *testing.T) {
 	// annotation takes precedence over hardcoded list
-	filter := New([]string{"kube-system"}, true)
+	filter := New([]string{kubeSystemNamespace}, true)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "kube-system",
+			Name: kubeSystemNamespace,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "false",
+				EnableEvictionAutoscalerAnnotationKey: annotationDisabled,
 			},
 		},
 	}
@@ -150,7 +158,7 @@ func TestFilter_OptIn_HardcodedWithAnnotationFalse(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "kube-system")
+	result, err := filter.Filter(ctx, fakeClient, kubeSystemNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,14 +180,14 @@ func TestFilter_OptOut_NoAnnotation(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,9 +206,9 @@ func TestFilter_OptOut_AnnotationTrue(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "true",
+				EnableEvictionAutoscalerAnnotationKey: annotationEnabled,
 			},
 		},
 	}
@@ -208,7 +216,7 @@ func TestFilter_OptOut_AnnotationTrue(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -227,9 +235,9 @@ func TestFilter_OptOut_AnnotationFalse(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "false",
+				EnableEvictionAutoscalerAnnotationKey: annotationDisabled,
 			},
 		},
 	}
@@ -237,7 +245,7 @@ func TestFilter_OptOut_AnnotationFalse(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	result, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,22 +257,22 @@ func TestFilter_OptOut_AnnotationFalse(t *testing.T) {
 
 func TestFilter_OptOut_HardcodedNamespace_Ignored(t *testing.T) {
 	// opt-out mode: hardcoded list is ignored, namespace still enabled by default
-	// optin=false, hardcoded=["special"] -> special returns true (hardcoded ignored in opt-out)
-	filter := New([]string{"special"}, false)
+	// optin=false, hardcoded=[specialNamespace] -> special returns true (hardcoded ignored in opt-out)
+	filter := New([]string{specialNamespace}, false)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "special",
+			Name: specialNamespace,
 		},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "special")
+	result, err := filter.Filter(ctx, fakeClient, specialNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -276,16 +284,16 @@ func TestFilter_OptOut_HardcodedNamespace_Ignored(t *testing.T) {
 
 func TestFilter_OptOut_HardcodedWithAnnotation(t *testing.T) {
 	// opt-out mode: annotation takes precedence (hardcoded list ignored anyway)
-	filter := New([]string{"special"}, false)
+	filter := New([]string{specialNamespace}, false)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "special",
+			Name: specialNamespace,
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "false",
+				EnableEvictionAutoscalerAnnotationKey: annotationDisabled,
 			},
 		},
 	}
@@ -293,7 +301,7 @@ func TestFilter_OptOut_HardcodedWithAnnotation(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "special")
+	result, err := filter.Filter(ctx, fakeClient, specialNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -313,7 +321,7 @@ func TestFilter_InvalidAnnotationValue(t *testing.T) {
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "test-namespace",
+			Name: testNamespaceName,
 			Annotations: map[string]string{
 				EnableEvictionAutoscalerAnnotationKey: "invalid",
 			},
@@ -323,7 +331,7 @@ func TestFilter_InvalidAnnotationValue(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	_, err := filter.Filter(ctx, fakeClient, "test-namespace")
+	_, err := filter.Filter(ctx, fakeClient, testNamespaceName)
 	if err == nil {
 		t.Error("expected error for invalid annotation value, got nil")
 	}
@@ -349,7 +357,7 @@ func TestFilter_NamespaceNotFound(t *testing.T) {
 func TestFilter_RealWorldScenario_OptInWithKubeSystem(t *testing.T) {
 	// Real scenario: opt-in mode with kube-system in hardcoded list
 	// ENABLED_BY_DEFAULT=false, ACTIONED_NAMESPACES=kube-system
-	filter := New([]string{"kube-system"}, true)
+	filter := New([]string{kubeSystemNamespace}, true)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -357,7 +365,7 @@ func TestFilter_RealWorldScenario_OptInWithKubeSystem(t *testing.T) {
 	// kube-system should be enabled (in hardcoded list)
 	kubeSystemNs := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "kube-system",
+			Name: kubeSystemNamespace,
 		},
 	}
 
@@ -373,7 +381,7 @@ func TestFilter_RealWorldScenario_OptInWithKubeSystem(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "production",
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "true",
+				EnableEvictionAutoscalerAnnotationKey: annotationEnabled,
 			},
 		},
 	}
@@ -383,7 +391,7 @@ func TestFilter_RealWorldScenario_OptInWithKubeSystem(t *testing.T) {
 	ctx := context.Background()
 
 	// Test kube-system (should be enabled)
-	result, err := filter.Filter(ctx, fakeClient, "kube-system")
+	result, err := filter.Filter(ctx, fakeClient, kubeSystemNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error for kube-system: %v", err)
 	}
@@ -427,7 +435,7 @@ func TestFilter_RealWorldScenario_OptOut(t *testing.T) {
 
 	ns2 := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "kube-system",
+			Name: kubeSystemNamespace,
 		},
 	}
 
@@ -436,7 +444,7 @@ func TestFilter_RealWorldScenario_OptOut(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "disabled",
 			Annotations: map[string]string{
-				EnableEvictionAutoscalerAnnotationKey: "false",
+				EnableEvictionAutoscalerAnnotationKey: annotationDisabled,
 			},
 		},
 	}
@@ -455,7 +463,7 @@ func TestFilter_RealWorldScenario_OptOut(t *testing.T) {
 	}
 
 	// Test kube-system (should be enabled)
-	result, err = filter.Filter(ctx, fakeClient, "kube-system")
+	result, err = filter.Filter(ctx, fakeClient, kubeSystemNamespace)
 	if err != nil {
 		t.Fatalf("unexpected error for kube-system: %v", err)
 	}

@@ -74,7 +74,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		//}
 
 		EvictionAutoScalerList := &pdbautoscaler.EvictionAutoScalerList{}
-		err = r.Client.List(ctx, EvictionAutoScalerList, &client.ListOptions{Namespace: pod.Namespace})
+		err = r.List(ctx, EvictionAutoScalerList, &client.ListOptions{Namespace: pod.Namespace})
 		if err != nil {
 			logger.Error(err, "Error: Unable to list EvictionAutoScalers")
 			return ctrl.Result{}, err
@@ -120,7 +120,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			Message: "eviction attempt anticipated by node cordon",
 		})
 		if updatedpod {
-			if err := r.Client.Status().Update(ctx, pod); err != nil {
+			if err := r.Status().Update(ctx, pod); err != nil {
 				logger.Error(err, "Error: Unable to update Pod status")
 				return ctrl.Result{}, err
 			}

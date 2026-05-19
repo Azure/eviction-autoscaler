@@ -61,7 +61,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: testGenerateName,
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -370,7 +370,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 		// Create Pod owned by ReplicaSet
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-pod",
+				Name:      testPodName,
 				Namespace: namespace,
 				Labels:    map[string]string{appLabelKey: ownershipTestLabel},
 				OwnerReferences: []metav1.OwnerReference{
@@ -754,7 +754,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 			// Update namespace with annotation
 			ns := &corev1.Namespace{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true"}
+			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue}
 			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
 
 			setupDeployment()

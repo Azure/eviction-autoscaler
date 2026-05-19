@@ -41,20 +41,20 @@ var _ = Describe("KEDASurgeApplier", func() {
 
 	Describe("IsSurgeActive", func() {
 		It("should return false when no annotations", func() {
-			obj := createScaledObject("test-so", defaultNamespace, "test-deploy", 1, 5)
+			obj := createScaledObject("test-so", defaultNamespace, testDeployName, 1, 5)
 			applier := &KEDASurgeApplier{scaledObject: obj}
 			Expect(applier.IsSurgeActive()).To(BeFalse())
 		})
 
 		It("should return false when annotation is absent", func() {
-			obj := createScaledObject("test-so", defaultNamespace, "test-deploy", 1, 5)
-			obj.SetAnnotations(map[string]string{"other": "value"})
+			obj := createScaledObject("test-so", defaultNamespace, testDeployName, 1, 5)
+			obj.SetAnnotations(map[string]string{"other": testAnnotationValue})
 			applier := &KEDASurgeApplier{scaledObject: obj}
 			Expect(applier.IsSurgeActive()).To(BeFalse())
 		})
 
 		It("should return true when evictionSurgeReplicas annotation is present", func() {
-			obj := createScaledObject("test-so", defaultNamespace, "test-deploy", 1, 5)
+			obj := createScaledObject("test-so", defaultNamespace, testDeployName, 1, 5)
 			obj.SetAnnotations(map[string]string{EvictionSurgeReplicasAnnotationKey: "3"})
 			applier := &KEDASurgeApplier{scaledObject: obj}
 			Expect(applier.IsSurgeActive()).To(BeTrue())
@@ -71,9 +71,9 @@ var _ = Describe("KEDASurgeApplier", func() {
 
 		BeforeEach(func() {
 			ctx = context.Background()
-			so = createScaledObject("test-so", defaultNamespace, "test-deploy", 1, 5)
+			so = createScaledObject("test-so", defaultNamespace, testDeployName, 1, 5)
 			deploy = &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: testDeployName, Namespace: defaultNamespace},
 				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			}
 			scheme := runtime.NewScheme()
@@ -189,13 +189,13 @@ var _ = Describe("KEDASurgeApplier", func() {
 		BeforeEach(func() {
 			ctx = context.Background()
 			// Start with a surged ScaledObject
-			so = createScaledObject("test-so", defaultNamespace, "test-deploy", 2, 5)
+			so = createScaledObject("test-so", defaultNamespace, testDeployName, 2, 5)
 			so.Annotations = map[string]string{
 				EvictionSurgeReplicasAnnotationKey: "2",
 				OriginalMinReplicasAnnotationKey:   "1",
 			}
 			deploy = &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: testDeployName, Namespace: defaultNamespace},
 				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(2))},
 			}
 			scheme := runtime.NewScheme()
@@ -229,7 +229,7 @@ var _ = Describe("KEDASurgeApplier", func() {
 		})
 
 		It("should fall back to passed-in value when annotation is missing", func() {
-			noAnnSO := createScaledObject("no-ann-so", defaultNamespace, "test-deploy", 3, 5)
+			noAnnSO := createScaledObject("no-ann-so", defaultNamespace, testDeployName, 3, 5)
 			scheme := runtime.NewScheme()
 			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
 			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())

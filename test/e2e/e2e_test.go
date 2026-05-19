@@ -174,8 +174,8 @@ var _ = Describe("controller", Ordered, func() {
 			// the image tag doesn't exist in any remote registry
 			// if pullPolicy=Always would fail trying to pull from remote registry
 			helmArgs := []string{
-				"upgrade", helmInstallFlag, "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, helmCreateNamespaceFlag,
+				"upgrade", helmInstallFlag, namespace, "helm/eviction-autoscaler",
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
 				helmSetFlag, imagePullPolicyIfNotPresent,
@@ -195,7 +195,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
@@ -478,7 +478,7 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("removing pdb-create annotation from the deployment and verifying PDB is created")
-			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", kubectlNamespaceFlag, testNs,
 				"eviction-autoscaler.azure.com/pdb-create-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -487,7 +487,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the test deployment and verifying PDB is deleted")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, func() error {
@@ -509,13 +509,13 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-annotation-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-annotation-test", kubectlNamespaceFlag, testNs,
 				"ownedBy-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling deployment to 5 replicas and verifying PDB minAvailable is NOT updated")
-			cmd = exec.Command("kubectl", "scale", "deployment/nginx-annotation-test", "--namespace", testNs, "--replicas=5")
+			cmd = exec.Command("kubectl", "scale", "deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs, "--replicas=5")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -533,7 +533,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is NOT deleted (user has taken ownership)")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -546,7 +546,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("cleaning up the orphaned PDB")
-			cmd = exec.Command("kubectl", "delete", "pdb/nginx-annotation-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "pdb/nginx-annotation-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -571,7 +571,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB (user takes ownership)")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", kubectlNamespaceFlag, testNs,
 				"ownedBy-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -582,7 +582,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("adding ownedBy annotation back to PDB (user returns control)")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", kubectlNamespaceFlag, testNs,
 				"ownedBy=EvictionAutoScaler", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -593,7 +593,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is now deleted (controller has control again)")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-ownership-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-ownership-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -679,7 +679,7 @@ var _ = Describe("controller", Ordered, func() {
 			ctx := context.Background()
 
 			By("uninstalling the existing eviction-autoscaler to reconfigure")
-			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", kubectlNamespaceFlag, namespace)
 			_, _ = utils.Run(cmd)
 
 			// Wait for resources to be cleaned up
@@ -695,7 +695,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			helmArgs := []string{
 				"upgrade", helmInstallFlag, "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, helmCreateNamespaceFlag,
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
 				helmSetFlag, imagePullPolicyIfNotPresent,
@@ -709,7 +709,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -785,13 +785,13 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Test 4: Switch to enabled_by_default=false and verify behavior
 			By("reinstalling eviction-autoscaler with enabled_by_default=false (enabledByDefault=false)")
-			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", kubectlNamespaceFlag, namespace)
 			_, _ = utils.Run(cmd)
 			time.Sleep(10 * time.Second)
 
 			helmArgsOptIn := []string{
 				"upgrade", helmInstallFlag, "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, helmCreateNamespaceFlag,
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
 				helmSetFlag, imagePullPolicyIfNotPresent,
@@ -807,7 +807,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -903,7 +903,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment to trigger reconciliation")
 			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in", "--replicas=3",
-				"--namespace", testNsOptIn)
+				kubectlNamespaceFlag, testNsOptIn)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -943,7 +943,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment to trigger reconciliation")
 			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in-anno", "--replicas=3",
-				"--namespace", testNsOptInWithAnnotation)
+				kubectlNamespaceFlag, testNsOptInWithAnnotation)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -983,7 +983,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNsOptInWithAnnotation)
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-opt", "--namespace", "kube-system")
+			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-opt", kubectlNamespaceFlag, "kube-system")
 			_, _ = utils.Run(cmd)
 
 			By("Scraping controller metrics at the end of the e2e test")
@@ -1218,7 +1218,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment replicas to 5 manually (simulating HPA scale-up)")
 			cmd = exec.Command("kubectl", "scale", "deployment", "nginx-hpa-pdb",
-				"--replicas=5", "--namespace", testNs)
+				"--replicas=5", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1243,7 +1243,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("updating HPA minReplicas from 2 to 3 to test AutoscalerToPDBReconciler")
 			cmd = exec.Command("kubectl", "patch", "hpa", "nginx-hpa-pdb",
-				"--namespace", testNs,
+				kubectlNamespaceFlag, testNs,
 				"--type=merge", "-p", `{"spec":{"minReplicas":3}}`)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())

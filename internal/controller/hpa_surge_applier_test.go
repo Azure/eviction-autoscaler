@@ -30,12 +30,12 @@ var _ = Describe("HPASurgeApplier", func() {
 					MaxReplicas: 5,
 					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 						Kind: ResourceTypeDeployment,
-						Name: "test-deploy",
+						Name: testDeployName,
 					},
 				},
 			}
 			deploy = &appsv1.Deployment{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-deploy", Namespace: defaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: testDeployName, Namespace: defaultNamespace},
 				Spec:       appsv1.DeploymentSpec{Replicas: new(int32(1))},
 			}
 			scheme := runtime.NewScheme()

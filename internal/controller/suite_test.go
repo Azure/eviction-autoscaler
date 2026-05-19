@@ -47,17 +47,25 @@ import (
 
 // Shared string constants for the controllers test package.
 const (
-	defaultNamespace   = "default"
-	appLabelKey        = "app"
-	nginxContainerName = "nginx"
-	nginxImage         = "nginx:latest"
-	testGenerateName   = "test"
-	exampleLabelValue  = "example"
-	somePodName        = "somepod"
-	dualTargetName     = "dual-target"
-	dualLabelValue     = "dual"
-	dualEAName         = "dual-ea"
-	ownershipTestLabel = "ownership-test"
+	defaultNamespace    = "default"
+	appLabelKey         = "app"
+	nginxContainerName  = "nginx"
+	nginxImage          = "nginx:latest"
+	testGenerateName    = "test"
+	exampleLabelValue   = "example"
+	somePodName         = "somepod"
+	dualTargetName      = "dual-target"
+	dualLabelValue      = "dual"
+	dualEAName          = "dual-ea"
+	ownershipTestLabel  = "ownership-test"
+	annotationTrue      = "true"
+	testDeployName      = "test-deploy"
+	testPDBName         = "test-pdb"
+	testPodName         = "test-pod"
+	testKubeDeployName  = "test-kube-deploy"
+	testKubeLabelValue  = "test-kube"
+	testKubePDBName     = "test-kube-pdb"
+	testAnnotationValue = "value"
 )
 
 var cfg *rest.Config

@@ -55,7 +55,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: testGenerateName,
 					Annotations: map[string]string{
-						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 					},
 				},
 			}
@@ -448,7 +448,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: testGenerateName,
 					Annotations: map[string]string{
-						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 					},
 				},
 			}
@@ -638,7 +638,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create deployment
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-deploy",
+					Name:      testDeployName,
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
@@ -663,7 +663,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create PDB
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pdb",
+					Name:      testPDBName,
 					Namespace: testNamespace,
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
@@ -681,14 +681,14 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create EvictionAutoScaler
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pdb",
+					Name:      testPDBName,
 					Namespace: testNamespace,
 				},
 				Spec: v1.EvictionAutoScalerSpec{
-					TargetName: "test-deploy",
+					TargetName: testDeployName,
 					TargetKind: deploymentKind,
 					LastEviction: v1.Eviction{
-						PodName:      "test-pod",
+						PodName:      testPodName,
 						EvictionTime: metav1.Now(),
 					},
 				},
@@ -697,12 +697,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 			// Reconcile should skip processing
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "test-pdb", Namespace: testNamespace},
+				NamespacedName: types.NamespacedName{Name: testPDBName, Namespace: testNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify deployment was NOT scaled (should still be 2)
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-deploy", Namespace: testNamespace}, deployment)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testDeployName, Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 		})
@@ -713,7 +713,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: "test-with-anno-",
 					Annotations: map[string]string{
-						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 					},
 				},
 			}
@@ -723,7 +723,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create deployment
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-deploy",
+					Name:      testDeployName,
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
@@ -748,7 +748,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create PDB
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pdb",
+					Name:      testPDBName,
 					Namespace: testNamespace,
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
@@ -766,11 +766,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create EvictionAutoScaler
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-pdb",
+					Name:      testPDBName,
 					Namespace: testNamespace,
 				},
 				Spec: v1.EvictionAutoScalerSpec{
-					TargetName: "test-deploy",
+					TargetName: testDeployName,
 					TargetKind: deploymentKind,
 				},
 			}
@@ -778,27 +778,27 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 			// First reconcile to set up
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "test-pdb", Namespace: testNamespace},
+				NamespacedName: types.NamespacedName{Name: testPDBName, Namespace: testNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Add eviction
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-pdb", Namespace: testNamespace}, EvictionAutoScaler)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testPDBName, Namespace: testNamespace}, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
 			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
-				PodName:      "test-pod",
+				PodName:      testPodName,
 				EvictionTime: metav1.Now(),
 			}
 			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 
 			// Second reconcile should scale up
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "test-pdb", Namespace: testNamespace},
+				NamespacedName: types.NamespacedName{Name: testPDBName, Namespace: testNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify deployment WAS scaled
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-deploy", Namespace: testNamespace}, deployment)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testDeployName, Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
 		})
@@ -810,17 +810,17 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create deployment
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-kube-deploy",
+					Name:      testKubeDeployName,
 					Namespace: testNamespace,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Replicas: new(int32(2)),
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{appLabelKey: "test-kube"},
+						MatchLabels: map[string]string{appLabelKey: testKubeLabelValue},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
-							Labels: map[string]string{appLabelKey: "test-kube"},
+							Labels: map[string]string{appLabelKey: testKubeLabelValue},
 						},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{
@@ -835,13 +835,13 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create PDB
 			pdb := &policyv1.PodDisruptionBudget{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-kube-pdb",
+					Name:      testKubePDBName,
 					Namespace: testNamespace,
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					MinAvailable: &intstr.IntOrString{IntVal: 2},
 					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{appLabelKey: "test-kube"},
+						MatchLabels: map[string]string{appLabelKey: testKubeLabelValue},
 					},
 				},
 				Status: policyv1.PodDisruptionBudgetStatus{
@@ -853,11 +853,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			// Create EvictionAutoScaler
 			EvictionAutoScaler := &v1.EvictionAutoScaler{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-kube-pdb",
+					Name:      testKubePDBName,
 					Namespace: testNamespace,
 				},
 				Spec: v1.EvictionAutoScalerSpec{
-					TargetName: "test-kube-deploy",
+					TargetName: testKubeDeployName,
 					TargetKind: deploymentKind,
 				},
 			}
@@ -865,12 +865,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 			// First reconcile to set up
 			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "test-kube-pdb", Namespace: testNamespace},
+				NamespacedName: types.NamespacedName{Name: testKubePDBName, Namespace: testNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Add eviction
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-kube-pdb", Namespace: testNamespace}, EvictionAutoScaler)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testKubePDBName, Namespace: testNamespace}, EvictionAutoScaler)
 			Expect(err).NotTo(HaveOccurred())
 			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
 				PodName:      "test-kube-pod",
@@ -880,12 +880,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 			// Second reconcile should scale up
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: types.NamespacedName{Name: "test-kube-pdb", Namespace: testNamespace},
+				NamespacedName: types.NamespacedName{Name: testKubePDBName, Namespace: testNamespace},
 			})
 			Expect(err).NotTo(HaveOccurred())
 
 			// Verify deployment WAS scaled (kube-system is enabled by default)
-			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-kube-deploy", Namespace: testNamespace}, deployment)
+			err = k8sClient.Get(ctx, types.NamespacedName{Name: testKubeDeployName, Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
 
@@ -908,7 +908,7 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 			ObjectMeta: metav1.ObjectMeta{
 				Name: namespace,
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -970,7 +970,7 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 				MaxReplicaCount: new(int32(5)),
 				Triggers: []kedav1alpha1.ScaleTriggers{{
 					Type:     "cpu",
-					Metadata: map[string]string{"type": "Utilization", "value": "50"},
+					Metadata: map[string]string{"type": "Utilization", testAnnotationValue: "50"},
 				}},
 			},
 		}

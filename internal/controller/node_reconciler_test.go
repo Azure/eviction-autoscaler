@@ -35,7 +35,7 @@ var _ = Describe("Node Controller", func() {
 				ObjectMeta: metav1.ObjectMeta{
 					GenerateName: testGenerateName,
 					Annotations: map[string]string{
-						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 					},
 				},
 			}

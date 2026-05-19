@@ -95,7 +95,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: testGenerateName,
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -380,7 +380,7 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-skip-",
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -437,7 +437,7 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-hpa-",
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}

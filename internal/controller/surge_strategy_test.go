@@ -84,7 +84,7 @@ var _ = Describe("hasTargetAnnotation", func() {
 	It("should return false when annotation is not present", func() {
 		dep := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 			Name:        testGenerateName,
-			Annotations: map[string]string{"other": "value"},
+			Annotations: map[string]string{"other": testAnnotationValue},
 		}}
 		target := &DeploymentWrapper{obj: dep}
 		Expect(hasTargetAnnotation(target)).To(BeFalse())

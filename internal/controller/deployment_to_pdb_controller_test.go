@@ -472,7 +472,7 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
 					APIVersion: appsV1APIVersion,
-					Kind: ResourceTypeDeployment,
+					Kind:       ResourceTypeDeployment,
 					Name:       deploymentName,
 				},
 				MinReplicas: &minReplicas,

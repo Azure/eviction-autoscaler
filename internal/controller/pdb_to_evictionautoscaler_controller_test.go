@@ -131,8 +131,8 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: appsV1APIVersion,    // API version of the owner (e.g., Deployment)
-						Kind: ResourceTypeDeployment, // The kind of the owner (usually Deployment for replicas)
+						APIVersion: appsV1APIVersion,       // API version of the owner (e.g., Deployment)
+						Kind:       ResourceTypeDeployment, // The kind of the owner (usually Deployment for replicas)
 						Name:       deploymentName,
 						UID:        machinery_types.UID("some-uid"),
 					},
@@ -173,9 +173,9 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: appsV1APIVersion,      // API version of the owner (ReplicaSet)
-						Kind: replicaSetKind,   // The kind of the owner (ReplicaSet)
-						Name:       deploymentName, // Indicating that this Pod is controlled by ReplicaSet
+						APIVersion: appsV1APIVersion, // API version of the owner (ReplicaSet)
+						Kind:       replicaSetKind,   // The kind of the owner (ReplicaSet)
+						Name:       deploymentName,   // Indicating that this Pod is controlled by ReplicaSet
 						UID:        machinery_types.UID("some-uid"),
 					},
 				},
@@ -352,7 +352,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion: appsV1APIVersion,
-						Kind: ResourceTypeDeployment,
+						Kind:       ResourceTypeDeployment,
 						Name:       deploymentName,
 						UID:        deployment.UID,
 					},
@@ -376,7 +376,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion: appsV1APIVersion,
-						Kind: replicaSetKind,
+						Kind:       replicaSetKind,
 						Name:       rs.Name,
 						UID:        rs.UID,
 					},
@@ -404,7 +404,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion: appsV1APIVersion,
+						APIVersion:         appsV1APIVersion,
 						Kind:               ResourceTypeDeployment,
 						Name:               deploymentName,
 						UID:                deployment.UID,
@@ -553,7 +553,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: appsV1APIVersion,
-							Kind: ResourceTypeDeployment,
+							Kind:       ResourceTypeDeployment,
 							Name:       deploymentName,
 							UID:        deployment.UID,
 						},
@@ -586,7 +586,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: appsV1APIVersion,
-							Kind: replicaSetKind,
+							Kind:       replicaSetKind,
 							Name:       rs.Name,
 							UID:        rs.UID,
 						},
@@ -675,7 +675,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: appsV1APIVersion,
-							Kind: ResourceTypeDeployment,
+							Kind:       ResourceTypeDeployment,
 							Name:       deploymentName,
 							UID:        deployment.UID,
 						},
@@ -708,7 +708,7 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: appsV1APIVersion,
-							Kind: replicaSetKind,
+							Kind:       replicaSetKind,
 							Name:       rs.Name,
 							UID:        rs.UID,
 						},

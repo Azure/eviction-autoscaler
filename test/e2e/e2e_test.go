@@ -63,14 +63,14 @@ const kindClusterName = "e2e"
 
 const (
 	ingressNginxName            = "ingress-nginx"
-	helmInstallFlag             = helmInstallFlag
-	helmCreateNamespaceFlag     = helmCreateNamespaceFlag
-	helmSetFlag                 = helmSetFlag
-	imagePullPolicyIfNotPresent = imagePullPolicyIfNotPresent
-	appK8sNameLabel             = appK8sNameLabel
-	specNodeNameField           = specNodeNameField
-	nginxExistingPDBName        = nginxExistingPDBName
-	nginxKedaName               = nginxKedaName
+	helmInstallFlag             = "--install"
+	helmCreateNamespaceFlag     = "--create-namespace"
+	helmSetFlag                 = "--set"
+	imagePullPolicyIfNotPresent = "image.pullPolicy=IfNotPresent"
+	appK8sNameLabel             = "app.kubernetes.io/name"
+	specNodeNameField           = "spec.nodeName"
+	nginxExistingPDBName        = "nginx-existing-pdb"
+	nginxKedaName               = "nginx-keda"
 )
 
 var cleanEnv = true

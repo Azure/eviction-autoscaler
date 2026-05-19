@@ -160,13 +160,13 @@ func waitForDeployment(name, namespace string) error {
 
 // deleteDeployment deletes a deployment
 func deleteDeployment(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "deployment", name, kubectlNamespaceFlag, namespace)
+	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "deployment", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
 // deletePDB deletes a PodDisruptionBudget
 func deletePDB(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "pdb", name, kubectlNamespaceFlag, namespace)
+	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "pdb", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
@@ -288,7 +288,7 @@ spec:
         averageUtilization: 80
 `, name, namespace, targetDeployment, minReplicas, maxReplicas)
 
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd := exec.CommandContext(context.Background(), "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(hpaYaml)
 	_, err := utils.Run(cmd)
 	return err

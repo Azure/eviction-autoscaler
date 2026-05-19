@@ -71,6 +71,7 @@ const (
 	specNodeNameField           = "spec.nodeName"
 	nginxExistingPDBName        = "nginx-existing-pdb"
 	nginxKedaName               = "nginx-keda"
+	helmChartPath               = "helm/eviction-autoscaler"
 )
 
 var cleanEnv = true
@@ -174,7 +175,7 @@ var _ = Describe("controller", Ordered, func() {
 			// the image tag doesn't exist in any remote registry
 			// if pullPolicy=Always would fail trying to pull from remote registry
 			helmArgs := []string{
-				"upgrade", helmInstallFlag, namespace, "helm/eviction-autoscaler",
+				"upgrade", helmInstallFlag, namespace, helmChartPath,
 				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
@@ -231,7 +232,7 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			verifyControllerMgrPods := func() error {
 				_, e := verifyRunningPods(namespace, client.MatchingLabels{
-					appK8sNameLabel: "eviction-autoscaler",
+					appK8sNameLabel: namespace,
 				}, 1)
 				return e
 			}
@@ -515,7 +516,8 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling deployment to 5 replicas and verifying PDB minAvailable is NOT updated")
-			cmd = exec.Command("kubectl", "scale", "deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs, "--replicas=5")
+			cmd = exec.Command("kubectl", "scale",
+				"deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs, "--replicas=5")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

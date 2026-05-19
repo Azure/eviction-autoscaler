@@ -38,7 +38,7 @@ const (
 	kubectlGetCmd        = "get"
 	outputYamlFlag       = "yaml"
 	outputWideFlag       = "wide"
-	kubectlNamespaceFlag = kubectlNamespaceFlag
+	kubectlNamespaceFlag = "--namespace"
 )
 
 // deploymentConfig holds deployment configuration

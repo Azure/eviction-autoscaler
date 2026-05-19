@@ -62,7 +62,7 @@ const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 const (
-	ingressNginxName            = ingressNginxName
+	ingressNginxName            = "ingress-nginx"
 	helmInstallFlag             = helmInstallFlag
 	helmCreateNamespaceFlag     = helmCreateNamespaceFlag
 	helmSetFlag                 = helmSetFlag

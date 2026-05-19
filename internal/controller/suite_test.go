@@ -53,11 +53,11 @@ const (
 	nginxImage         = "nginx:latest"
 	testGenerateName   = "test"
 	exampleLabelValue  = "example"
-	somePodName        = somePodName
-	dualTargetName     = dualTargetName
+	somePodName        = "somepod"
+	dualTargetName     = "dual-target"
 	dualLabelValue     = "dual"
-	dualEAName         = dualEAName
-	ownershipTestLabel = ownershipTestLabel
+	dualEAName         = "dual-ea"
+	ownershipTestLabel = "ownership-test"
 )
 
 var cfg *rest.Config

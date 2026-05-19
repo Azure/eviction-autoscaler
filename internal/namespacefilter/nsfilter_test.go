@@ -18,11 +18,11 @@ func init() {
 }
 
 const (
-	testNamespaceName   = testNamespaceName
+	testNamespaceName   = "test-namespace"
 	annotationEnabled   = "true"
 	annotationDisabled  = "false"
 	kubeSystemNamespace = "kube-system"
-	specialNamespace    = specialNamespace
+	specialNamespace    = "special"
 )
 
 // Mode 1: Namespaces disabled by default (disabledByDefault=true, ENABLED_BY_DEFAULT=false)

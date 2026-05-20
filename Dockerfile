@@ -2,19 +2,15 @@
 
 # Build the manager binary
 # Use Microsoft's FIPS-validated Go distribution (uses OpenSSL backend for FIPS)
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
+# Use --platform=$TARGETPLATFORM so CGO compiles natively via QEMU, avoiding
+# cross-compiler issues with CGO_ENABLED=1 on arm64.
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
 
 WORKDIR /workspace
 
 # BuildKit args (populated by docker buildx)
 ARG TARGETOS
 ARG TARGETARCH
-
-# Install cross-compiler for arm64 CGO cross-compilation on amd64 hosts.
-# CGO_ENABLED=1 requires aarch64-linux-gnu-gcc when TARGETARCH=arm64.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc-aarch64-linux-gnu \
-    && rm -rf /var/lib/apt/lists/*
 
 # Copy the Go Modules manifests
 COPY go.mod go.mod
@@ -29,8 +25,7 @@ COPY internal/ internal/
 # Build for the target architecture.
 # Microsoft Go routes crypto through OpenSSL (FIPS-validated) when CGO_ENABLED=1 on Linux.
 # GOEXPERIMENT=boringcrypto is upstream-only and not used here.
-RUN CC=$([ "${TARGETARCH}" = "arm64" ] && echo "aarch64-linux-gnu-gcc" || echo "gcc") \
-    CGO_ENABLED=1 \
+RUN CGO_ENABLED=1 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -a -o manager cmd/main.go

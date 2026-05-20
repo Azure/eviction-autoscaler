@@ -7,6 +7,11 @@ on:
         description: 'Version to release (e.g., 1.0.0). Leave empty to auto-bump minor version.'
         required: false
         type: string
+      force_override:
+        description: 'Force re-tag an existing version (moves the tag to the current HEAD). Use to re-release a version with a fixed Dockerfile.'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   create-tag:
@@ -65,8 +70,14 @@ jobs:
       - name: Check if tag already exists
         run: |
           if git rev-parse "${{ env.new_tag }}" >/dev/null 2>&1; then
-            echo "Error: Tag ${{ env.new_tag }} already exists"
-            exit 1
+            if [ "${{ inputs.force_override }}" = "true" ]; then
+              echo "WARNING: Tag ${{ env.new_tag }} already exists. force_override=true — deleting and re-creating."
+              git push origin --delete "${{ env.new_tag }}" || true
+              git tag -d "${{ env.new_tag }}" || true
+            else
+              echo "Error: Tag ${{ env.new_tag }} already exists"
+              exit 1
+            fi
           fi
 
       - name: Create and push production tag

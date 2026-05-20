@@ -186,14 +186,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, countErr
 		}
 
-		// surgeTarget = minReplicas + min(maxSurge, displaced)
-		// If displaced == 0 (pods not yet visible on cordoned nodes or race condition),
-		// fall back to full maxSurge so we don't block evictions.
-		// If maxSurge is 0 (not configured), surge by exactly displaced with no cap.
+		// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
+		// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
+		// we fall through to the cooldown/scale-down path — which is correct.
+		// If maxSurge is 0 (not configured), surgeTarget == minReplicas → no surge (opted out).
 		maxSurgeTarget := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
-		// Cap surgeTarget at maxSurge when displaced exceeds it.
-		// If customer set MaxSurge=0 explicitly, surgeTarget==minReplicas → no surge (they opted out).
+
 		if surgeTarget > maxSurgeTarget {
 			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
 			surgeTarget = maxSurgeTarget

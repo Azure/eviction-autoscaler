@@ -696,7 +696,7 @@ var _ = Describe("controller", Ordered, func() {
 			tag := imgParts[1]
 
 			helmArgs := []string{
-				"upgrade", helmInstallFlag, "eviction-autoscaler", "helm/eviction-autoscaler",
+				"upgrade", helmInstallFlag, "eviction-autoscaler", helmChartPath,
 				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
@@ -792,7 +792,7 @@ var _ = Describe("controller", Ordered, func() {
 			time.Sleep(10 * time.Second)
 
 			helmArgsOptIn := []string{
-				"upgrade", helmInstallFlag, "eviction-autoscaler", "helm/eviction-autoscaler",
+				"upgrade", helmInstallFlag, "eviction-autoscaler", helmChartPath,
 				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
 				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
 				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
@@ -802,12 +802,12 @@ var _ = Describe("controller", Ordered, func() {
 				helmSetFlag, "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
 				helmSetFlag, "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
 			}
-			cmd = exec.Command("helm", helmArgsOptIn...)
+			cmd = exec.CommandContext(ctx, "helm", helmArgsOptIn...)
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+			cmd = exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
 				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
@@ -816,7 +816,7 @@ var _ = Describe("controller", Ordered, func() {
 			// Test 5: enabled_by_default=false - namespace without annotation should be disabled
 			testNsOptIn := "test-opt-in-mode"
 			By("creating a namespace without annotation (should be disabled in opt-in mode)")
-			cmd = exec.Command("kubectl", "create", "namespace", testNsOptIn)
+			cmd = exec.CommandContext(ctx, "kubectl", "create", "namespace", testNsOptIn)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 

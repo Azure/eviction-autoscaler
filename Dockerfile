@@ -10,6 +10,12 @@ WORKDIR /workspace
 ARG TARGETOS
 ARG TARGETARCH
 
+# Install cross-compiler for arm64 CGO cross-compilation on amd64 hosts.
+# CGO_ENABLED=1 requires aarch64-linux-gnu-gcc when TARGETARCH=arm64.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc-aarch64-linux-gnu \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy the Go Modules manifests
 COPY go.mod go.mod
 COPY go.sum go.sum
@@ -23,7 +29,8 @@ COPY internal/ internal/
 # Build for the target architecture.
 # Microsoft Go routes crypto through OpenSSL (FIPS-validated) when CGO_ENABLED=1 on Linux.
 # GOEXPERIMENT=boringcrypto is upstream-only and not used here.
-RUN CGO_ENABLED=1 \
+RUN CC=$([ "${TARGETARCH}" = "arm64" ] && echo "aarch64-linux-gnu-gcc" || echo "gcc") \
+    CGO_ENABLED=1 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
     go build -trimpath -ldflags="-s -w" -a -o manager cmd/main.go

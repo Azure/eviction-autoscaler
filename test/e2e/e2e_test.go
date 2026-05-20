@@ -42,7 +42,6 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -61,6 +60,19 @@ func init() {
 // Test namespace for eviction-autoscaler
 const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
+
+const (
+	ingressNginxName            = "ingress-nginx"
+	helmInstallFlag             = "--install"
+	helmCreateNamespaceFlag     = "--create-namespace"
+	helmSetFlag                 = "--set"
+	imagePullPolicyIfNotPresent = "image.pullPolicy=IfNotPresent"
+	appK8sNameLabel             = "app.kubernetes.io/name"
+	specNodeNameField           = "spec.nodeName"
+	nginxExistingPDBName        = "nginx-existing-pdb"
+	nginxKedaName               = "nginx-keda"
+	helmChartPath               = "helm/eviction-autoscaler"
+)
 
 var cleanEnv = true
 
@@ -124,20 +136,20 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("creating ingress-nginx namespace with enable annotation")
-			cmd = exec.Command("kubectl", "create", "namespace", "ingress-nginx")
+			cmd = exec.Command("kubectl", "create", "namespace", ingressNginxName)
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("annotating ingress-nginx namespace to enable eviction autoscaler")
-			cmd = exec.Command("kubectl", "annotate", "namespace", "ingress-nginx",
+			cmd = exec.Command("kubectl", "annotate", "namespace", ingressNginxName,
 				"eviction-autoscaler.azure.com/enable=true")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("deploying nginx onto the cluster using template")
 			err = createDeployment(deploymentConfig{
-				Name:           "ingress-nginx",
-				Namespace:      "ingress-nginx",
+				Name:           ingressNginxName,
+				Namespace:      ingressNginxName,
 				Replicas:       1,
 				MaxUnavailable: 0,
 			})
@@ -163,12 +175,12 @@ var _ = Describe("controller", Ordered, func() {
 			// the image tag doesn't exist in any remote registry
 			// if pullPolicy=Always would fail trying to pull from remote registry
 			helmArgs := []string{
-				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, "--create-namespace",
-				"--set", fmt.Sprintf("image.repository=%s", repo),
-				"--set", fmt.Sprintf("image.tag=%s", tag),
-				"--set", "image.pullPolicy=IfNotPresent",
-				"--set", "pdb.create=true",
+				"upgrade", helmInstallFlag, namespace, helmChartPath,
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
+				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
+				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
+				helmSetFlag, imagePullPolicyIfNotPresent,
+				helmSetFlag, "pdb.create=true",
 			}
 
 			cmd = exec.Command("helm", helmArgs...)
@@ -184,7 +196,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
@@ -220,7 +232,7 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			verifyControllerMgrPods := func() error {
 				_, e := verifyRunningPods(namespace, client.MatchingLabels{
-					"app.kubernetes.io/name": "eviction-autoscaler",
+					appK8sNameLabel: namespace,
 				}, 1)
 				return e
 			}
@@ -229,7 +241,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("validating that the nginx pod is running as expected")
 			var nodeName string
 			verifyNginxPods := func() error {
-				nodeName, err = verifyRunningPods("ingress-nginx", client.MatchingLabels{}, 1)
+				nodeName, err = verifyRunningPods(ingressNginxName, client.MatchingLabels{}, 1)
 				return err
 			}
 
@@ -239,7 +251,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			var deployment = &appsv1.Deployment{}
 
-			err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+			err = clientset.Get(ctx, client.ObjectKey{Name: ingressNginxName, Namespace: ingressNginxName}, deployment)
 			Expect(err).NotTo(HaveOccurred())
 			fmt.Printf("Deployment after create '%s' at generation %d\n", deployment.Name, deployment.Generation)
 
@@ -247,12 +259,12 @@ var _ = Describe("controller", Ordered, func() {
 			By("Verify PDB and PDBWatcher exist")
 			verifyPdbExists := func() error {
 				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
+				err := clientset.List(ctx, pdbList, client.InNamespace(ingressNginxName), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
 					//fmt.Printf("found pdb name: %s \n", pdb.Name)
-					if pdb.Name != "ingress-nginx" {
+					if pdb.Name != ingressNginxName {
 						return fmt.Errorf("nginx pdb is not present on cluster")
 					}
 					if pdb.Spec.MinAvailable != nil {
@@ -267,12 +279,12 @@ var _ = Describe("controller", Ordered, func() {
 			verifyEvictionAutoScalerExists := func() error {
 				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
 				err = clientset.List(ctx, evictionAutoScalerList,
-					client.InNamespace("ingress-nginx"), &client.ListOptions{Limit: 1})
+					client.InNamespace(ingressNginxName), &client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
 				for _, resource := range evictionAutoScalerList.Items {
 					fmt.Printf("found evictionautoscaler name: %s \n", resource.GetName())
-					if resource.GetName() != "ingress-nginx" {
+					if resource.GetName() != ingressNginxName {
 						return fmt.Errorf("nginx evictionautoscalers is not present on cluster")
 					}
 					fmt.Printf("custom resource found: %s\n", resource.GetName())
@@ -293,7 +305,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Verifying annotations are added")
 			verifyAnnotationExists := func() error {
-				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+				err = clientset.Get(ctx, client.ObjectKey{Name: ingressNginxName, Namespace: ingressNginxName}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if val, ok := deployment.Annotations["evictionSurgeReplicas"]; !ok {
 					return fmt.Errorf("Annotation: \"evictionSurgeReplicas\" is not  added")
@@ -307,13 +319,13 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("By Draining " + nodeName)
 			drain := func() error {
-				var podsmeta = []v1.ObjectMeta{}
 				var namespaces = &corev1.NamespaceList{}
 				err := clientset.List(ctx, namespaces)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				podsmeta := make([]v1.ObjectMeta, 0, len(namespaces.Items))
 				for _, ns := range namespaces.Items {
 					var pods = &corev1.PodList{}
-					err := clientset.List(ctx, pods, client.InNamespace(ns.Name), client.MatchingFields{"spec.nodeName": nodeName})
+					err := clientset.List(ctx, pods, client.InNamespace(ns.Name), client.MatchingFields{specNodeNameField: nodeName})
 					ExpectWithOffset(1, err).NotTo(HaveOccurred())
 					for _, p := range pods.Items {
 						podsmeta = append(podsmeta, p.ObjectMeta)
@@ -337,7 +349,7 @@ var _ = Describe("controller", Ordered, func() {
 			//check that there are two pods temporarily or does that not matter as long as we successfully evicted?
 			By("Verifying we scale back down")
 			verifyDeploymentReplicas := func() error {
-				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+				err = clientset.Get(ctx, client.ObjectKey{Name: ingressNginxName, Namespace: ingressNginxName}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				if *deployment.Spec.Replicas != 1 {
 					return fmt.Errorf("got %d controller replicas\n", *deployment.Spec.Replicas)
@@ -359,7 +371,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("Verify PDB MinAvailable is Unchanged")
 			verifyMinAvailableUnchanged := func() error {
 				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
+				err := clientset.List(ctx, pdbList, client.InNamespace(ingressNginxName), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
@@ -377,9 +389,9 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("Manually scaling Deployment replicas up")
 			scaleNginxReplicas := func() error {
-				err = clientset.Get(ctx, client.ObjectKey{Name: "ingress-nginx", Namespace: "ingress-nginx"}, deployment)
+				err = clientset.Get(ctx, client.ObjectKey{Name: ingressNginxName, Namespace: ingressNginxName}, deployment)
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
-				deployment.Spec.Replicas = ptr.To(int32(2))
+				deployment.Spec.Replicas = new(int32(2))
 				err = clientset.Update(ctx, deployment, &client.UpdateOptions{})
 				Expect(err).NotTo(HaveOccurred())
 				return nil
@@ -389,7 +401,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("Verify PDB MinAvailable is 2")
 			verifyMinAvailableUpdated := func() error {
 				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
+				err := clientset.List(ctx, pdbList, client.InNamespace(ingressNginxName), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				for _, pdb := range pdbList.Items {
@@ -411,16 +423,16 @@ var _ = Describe("controller", Ordered, func() {
 				err = clientset.Delete(ctx, deployment)
 				if err != nil {
 					return fmt.Errorf("Error deleting Deployment %s in namespace %s: %v",
-						"ingress-nginx", "ingress-nginx", err)
+						ingressNginxName, ingressNginxName, err)
 				}
 
-				fmt.Printf("Deployment '%s' deleted successfully in namespace '%s'.\n", "ingress-nginx", "ingress-nginx")
+				fmt.Printf("Deployment '%s' deleted successfully in namespace '%s'.\n", ingressNginxName, ingressNginxName)
 				return nil
 			}
 			EventuallyWithOffset(1, deleteNginxDeployment, time.Minute, time.Second).Should(Succeed())
 			verifyPdbNotExists := func() error {
 				var pdbList = &policy.PodDisruptionBudgetList{}
-				err := clientset.List(ctx, pdbList, client.InNamespace("ingress-nginx"), client.Limit(1))
+				err := clientset.List(ctx, pdbList, client.InNamespace(ingressNginxName), client.Limit(1))
 				Expect(err).NotTo(HaveOccurred())
 				//fmt.Printf("found %d pdbs in namespace ingress-nginx\n", len(pdbList.Items))
 				if len(pdbList.Items) != 0 {
@@ -430,7 +442,7 @@ var _ = Describe("controller", Ordered, func() {
 			}
 			verifyEvictionAutoScalerNotExists := func() error {
 				var evictionAutoScalerList = &types.EvictionAutoScalerList{}
-				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace("ingress-nginx"),
+				err = clientset.List(ctx, evictionAutoScalerList, client.InNamespace(ingressNginxName),
 					&client.ListOptions{Limit: 1})
 				Expect(err).NotTo(HaveOccurred())
 				fmt.Printf("found %d evictionautoscalers in namespace ingress-nginx \n", len(evictionAutoScalerList.Items))
@@ -467,7 +479,7 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("removing pdb-create annotation from the deployment and verifying PDB is created")
-			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "deployment/nginx-test", kubectlNamespaceFlag, testNs,
 				"eviction-autoscaler.azure.com/pdb-create-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -476,7 +488,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting the test deployment and verifying PDB is deleted")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 			EventuallyWithOffset(1, func() error {
@@ -498,13 +510,14 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-annotation-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-annotation-test", kubectlNamespaceFlag, testNs,
 				"ownedBy-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("scaling deployment to 5 replicas and verifying PDB minAvailable is NOT updated")
-			cmd = exec.Command("kubectl", "scale", "deployment/nginx-annotation-test", "--namespace", testNs, "--replicas=5")
+			cmd = exec.Command("kubectl", "scale",
+				"deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs, "--replicas=5")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -522,7 +535,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is NOT deleted (user has taken ownership)")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-annotation-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -535,7 +548,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("cleaning up the orphaned PDB")
-			cmd = exec.Command("kubectl", "delete", "pdb/nginx-annotation-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "pdb/nginx-annotation-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -560,7 +573,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("removing ownedBy annotation from PDB (user takes ownership)")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", kubectlNamespaceFlag, testNs,
 				"ownedBy-", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -571,7 +584,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("adding ownedBy annotation back to PDB (user returns control)")
-			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", "--namespace", testNs,
+			cmd = exec.Command("kubectl", "annotate", "pdb/nginx-ownership-test", kubectlNamespaceFlag, testNs,
 				"ownedBy=EvictionAutoScaler", "--overwrite")
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -582,7 +595,7 @@ var _ = Describe("controller", Ordered, func() {
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("deleting deployment and verifying PDB is now deleted (controller has control again)")
-			cmd = exec.Command("kubectl", "delete", "deployment/nginx-ownership-test", "--namespace", testNs)
+			cmd = exec.Command("kubectl", "delete", "deployment/nginx-ownership-test", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -616,12 +629,12 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("testing existing PDB detection - should not create duplicate PDBs")
 			By("manually creating a PDB for a deployment")
-			err = createPDB("nginx-existing-pdb", testNs, 2, map[string]string{"app": "nginx-existing-pdb"})
+			err = createPDB(nginxExistingPDBName, testNs, 2, map[string]string{"app": nginxExistingPDBName})
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a deployment that matches the existing PDB")
 			err = createDeployment(deploymentConfig{
-				Name:           "nginx-existing-pdb",
+				Name:           nginxExistingPDBName,
 				Namespace:      testNs,
 				Replicas:       3,
 				MaxUnavailable: 0,
@@ -629,7 +642,7 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			err = waitForDeployment("nginx-existing-pdb", testNs)
+			err = waitForDeployment(nginxExistingPDBName, testNs)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying only ONE PDB exists (the manually created one)")
@@ -640,7 +653,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			matchingPdbs := 0
 			for _, pdb := range pdbList.Items {
-				if pdb.Name == "nginx-existing-pdb" {
+				if pdb.Name == nginxExistingPDBName {
 					matchingPdbs++
 				}
 			}
@@ -648,14 +661,14 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying the PDB was not modified by eviction-autoscaler (no ownedBy annotation)")
 			var existingPdb policy.PodDisruptionBudget
-			err = clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-existing-pdb"}, &existingPdb)
+			err = clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: nginxExistingPDBName}, &existingPdb)
 			Expect(err).NotTo(HaveOccurred())
 			_, hasOwnedBy := existingPdb.Annotations["ownedBy"]
 			Expect(hasOwnedBy).To(BeFalse(), "Existing PDB should not have ownedBy annotation")
 
 			By("cleaning up existing PDB test resources")
-			deleteDeployment("nginx-existing-pdb", testNs)
-			deletePDB("nginx-existing-pdb", testNs)
+			deleteDeployment(nginxExistingPDBName, testNs)
+			deletePDB(nginxExistingPDBName, testNs)
 
 			// Cleanup test resources from first test suite
 			By("cleaning up eviction-autoscaler-test namespace")
@@ -668,7 +681,7 @@ var _ = Describe("controller", Ordered, func() {
 			ctx := context.Background()
 
 			By("uninstalling the existing eviction-autoscaler to reconfigure")
-			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", kubectlNamespaceFlag, namespace)
 			_, _ = utils.Run(cmd)
 
 			// Wait for resources to be cleaned up
@@ -683,13 +696,13 @@ var _ = Describe("controller", Ordered, func() {
 			tag := imgParts[1]
 
 			helmArgs := []string{
-				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, "--create-namespace",
-				"--set", fmt.Sprintf("image.repository=%s", repo),
-				"--set", fmt.Sprintf("image.tag=%s", tag),
-				"--set", "image.pullPolicy=IfNotPresent",
-				"--set", "controllerConfig.pdb.create=true",
-				"--set", "controllerConfig.namespaces.enabledByDefault=true",
+				"upgrade", helmInstallFlag, "eviction-autoscaler", helmChartPath,
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
+				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
+				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
+				helmSetFlag, imagePullPolicyIfNotPresent,
+				helmSetFlag, "controllerConfig.pdb.create=true",
+				helmSetFlag, "controllerConfig.namespaces.enabledByDefault=true",
 			}
 			cmd = exec.Command("helm", helmArgs...)
 			_, err := utils.Run(cmd)
@@ -698,7 +711,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to be ready")
 			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
@@ -774,36 +787,36 @@ var _ = Describe("controller", Ordered, func() {
 
 			// Test 4: Switch to enabled_by_default=false and verify behavior
 			By("reinstalling eviction-autoscaler with enabled_by_default=false (enabledByDefault=false)")
-			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", kubectlNamespaceFlag, namespace)
 			_, _ = utils.Run(cmd)
 			time.Sleep(10 * time.Second)
 
 			helmArgsOptIn := []string{
-				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
-				"--namespace", namespace, "--create-namespace",
-				"--set", fmt.Sprintf("image.repository=%s", repo),
-				"--set", fmt.Sprintf("image.tag=%s", tag),
-				"--set", "image.pullPolicy=IfNotPresent",
-				"--set", "controllerConfig.pdb.create=true",
-				"--set", "controllerConfig.namespaces.enabledByDefault=false",
-				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
-				"--set", "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
+				"upgrade", helmInstallFlag, "eviction-autoscaler", helmChartPath,
+				kubectlNamespaceFlag, namespace, helmCreateNamespaceFlag,
+				helmSetFlag, fmt.Sprintf("image.repository=%s", repo),
+				helmSetFlag, fmt.Sprintf("image.tag=%s", tag),
+				helmSetFlag, imagePullPolicyIfNotPresent,
+				helmSetFlag, "controllerConfig.pdb.create=true",
+				helmSetFlag, "controllerConfig.namespaces.enabledByDefault=false",
+				helmSetFlag, "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
+				helmSetFlag, "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
 			}
-			cmd = exec.Command("helm", helmArgsOptIn...)
+			cmd = exec.CommandContext(ctx, "helm", helmArgsOptIn...)
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+			cmd = exec.CommandContext(ctx, "kubectl", "wait", "--for=condition=available",
 				"deployment/eviction-autoscaler",
-				"--namespace", namespace, "--timeout=300s")
+				kubectlNamespaceFlag, namespace, "--timeout=300s")
 			_, err = utils.Run(cmd)
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			// Test 5: enabled_by_default=false - namespace without annotation should be disabled
 			testNsOptIn := "test-opt-in-mode"
 			By("creating a namespace without annotation (should be disabled in opt-in mode)")
-			cmd = exec.Command("kubectl", "create", "namespace", testNsOptIn)
+			cmd = exec.CommandContext(ctx, "kubectl", "create", "namespace", testNsOptIn)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -892,7 +905,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment to trigger reconciliation")
 			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in", "--replicas=3",
-				"--namespace", testNsOptIn)
+				kubectlNamespaceFlag, testNsOptIn)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -932,7 +945,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment to trigger reconciliation")
 			cmd = exec.Command("kubectl", "scale", "deployment/nginx-opt-in-anno", "--replicas=3",
-				"--namespace", testNsOptInWithAnnotation)
+				kubectlNamespaceFlag, testNsOptInWithAnnotation)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -972,7 +985,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNsOptInWithAnnotation)
 			_, _ = utils.Run(cmd)
-			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-opt", "--namespace", "kube-system")
+			cmd = exec.Command("kubectl", "delete", "deployment", "test-kube-opt", kubectlNamespaceFlag, "kube-system")
 			_, _ = utils.Run(cmd)
 
 			By("Scraping controller metrics at the end of the e2e test")
@@ -981,7 +994,7 @@ var _ = Describe("controller", Ordered, func() {
 				// Fetch controller-manager pod using clientset and label selector
 				var pods = &corev1.PodList{}
 				err := clientset.List(ctx, pods, client.InNamespace(namespace),
-					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"},
+					client.MatchingLabels{appK8sNameLabel: "eviction-autoscaler"},
 					client.Limit(1))
 				if err != nil {
 					return err
@@ -1005,8 +1018,8 @@ var _ = Describe("controller", Ordered, func() {
 
 				// Print a subset of interesting metrics for visibility
 				fmt.Println("===== Eviction Autoscaler Metrics =====")
-				metricsLines := strings.Split(string(metricsOutput), "\n")
-				for _, line := range metricsLines {
+				metricsLines := strings.SplitSeq(string(metricsOutput), "\n")
+				for line := range metricsLines {
 					// Only show our eviction autoscaler and controller runtime metrics, skip comments and empty lines
 					if strings.HasPrefix(line, "eviction_autoscaler_") || strings.HasPrefix(line, "controller_runtime_") {
 						fmt.Println(line)
@@ -1028,7 +1041,7 @@ var _ = Describe("controller", Ordered, func() {
 			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			for _, nodeName := range strings.Fields(string(output)) {
+			for nodeName := range strings.FieldsSeq(string(output)) {
 				cmd = exec.Command("kubectl", "uncordon", nodeName)
 				_, _ = utils.Run(cmd) // ignore error if already uncordoned
 			}
@@ -1118,7 +1131,7 @@ var _ = Describe("controller", Ordered, func() {
 			drain := func() error {
 				var podList corev1.PodList
 				err := clientset.List(ctx, &podList, client.InNamespace(testNs),
-					client.MatchingFields{"spec.nodeName": nodeName})
+					client.MatchingFields{specNodeNameField: nodeName})
 				if err != nil {
 					return err
 				}
@@ -1207,7 +1220,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("scaling deployment replicas to 5 manually (simulating HPA scale-up)")
 			cmd = exec.Command("kubectl", "scale", "deployment", "nginx-hpa-pdb",
-				"--replicas=5", "--namespace", testNs)
+				"--replicas=5", kubectlNamespaceFlag, testNs)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
@@ -1232,7 +1245,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("updating HPA minReplicas from 2 to 3 to test AutoscalerToPDBReconciler")
 			cmd = exec.Command("kubectl", "patch", "hpa", "nginx-hpa-pdb",
-				"--namespace", testNs,
+				kubectlNamespaceFlag, testNs,
 				"--type=merge", "-p", `{"spec":{"minReplicas":3}}`)
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
@@ -1258,7 +1271,7 @@ var _ = Describe("controller", Ordered, func() {
 			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
 			output, err := utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
-			for _, nodeName := range strings.Fields(string(output)) {
+			for nodeName := range strings.FieldsSeq(string(output)) {
 				cmd = exec.Command("kubectl", "uncordon", nodeName)
 				_, _ = utils.Run(cmd)
 			}
@@ -1304,7 +1317,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("creating a deployment with 1 replica and maxUnavailable=0")
 			err = createDeployment(deploymentConfig{
-				Name:           "nginx-keda",
+				Name:           nginxKedaName,
 				Namespace:      testNs,
 				Replicas:       1,
 				MaxUnavailable: 0,
@@ -1312,11 +1325,11 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("waiting for deployment to be ready")
-			err = waitForDeployment("nginx-keda", testNs)
+			err = waitForDeployment(nginxKedaName, testNs)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("creating a KEDA ScaledObject targeting the deployment")
-			err = createKEDAScaledObject("nginx-keda", testNs, "nginx-keda", 1, 5)
+			err = createKEDAScaledObject(nginxKedaName, testNs, nginxKedaName, 1, 5)
 			Expect(err).NotTo(HaveOccurred())
 
 			By("verifying PDB and EvictionAutoScaler are created")
@@ -1329,7 +1342,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying KEDA ScaledObject is ready")
 			EventuallyWithOffset(1, func() error {
-				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+				soCmd := exec.Command("kubectl", "get", "scaledobject", nginxKedaName,
 					"-n", testNs, "-o",
 					"jsonpath={.status.conditions[?(@.type=='Ready')].status}")
 				soOut, err := utils.Run(soCmd)
@@ -1339,7 +1352,7 @@ var _ = Describe("controller", Ordered, func() {
 				status := strings.TrimSpace(string(soOut))
 				if status != "True" {
 					// Dump full status for debugging
-					dCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+					dCmd := exec.Command("kubectl", "get", "scaledobject", nginxKedaName,
 						"-n", testNs, "-o", "jsonpath={.status}")
 					dOut, _ := utils.Run(dCmd)
 					return fmt.Errorf("ScaledObject not ready (status=%s), full: %s", status, string(dOut))
@@ -1351,17 +1364,17 @@ var _ = Describe("controller", Ordered, func() {
 			By("verifying controller pod location")
 			var ctrlPods corev1.PodList
 			err = clientset.List(ctx, &ctrlPods, client.InNamespace(namespace),
-				client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"})
+				client.MatchingLabels{appK8sNameLabel: "eviction-autoscaler"})
 			Expect(err).NotTo(HaveOccurred())
 			for _, p := range ctrlPods.Items {
 				fmt.Printf("controller pod %s running on node %s\n", p.Name, p.Spec.NodeName)
 			}
 
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbCreated(ctx, clientset, testNs, "nginx-keda")
+				return verifyPdbCreated(ctx, clientset, testNs, nginxKedaName)
 			}, time.Minute, time.Second).Should(Succeed())
 			EventuallyWithOffset(1, func() error {
-				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, "nginx-keda")
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, nginxKedaName)
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("finding the node the pod runs on")
@@ -1400,7 +1413,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying the ScaledObject gets the evictionSurgeReplicas annotation (surge marker)")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
+				return verifyKEDAScaledObjectAnnotation(nginxKedaName, testNs,
 					"evictionSurgeReplicas", "2")
 			}, 2*time.Minute, time.Second).Should(Succeed(), func() string {
 				// On failure, dump controller logs and ScaledObject state for diagnosis
@@ -1408,10 +1421,10 @@ var _ = Describe("controller", Ordered, func() {
 					"-l", "app.kubernetes.io/name=eviction-autoscaler",
 					"--tail=50")
 				logOut, _ := utils.Run(logCmd)
-				soCmd := exec.Command("kubectl", "get", "scaledobject", "nginx-keda",
+				soCmd := exec.Command("kubectl", "get", "scaledobject", nginxKedaName,
 					"-n", testNs, "-o", "yaml")
 				soOut, _ := utils.Run(soCmd)
-				depCmd := exec.Command("kubectl", "get", "deployment", "nginx-keda",
+				depCmd := exec.Command("kubectl", "get", "deployment", nginxKedaName,
 					"-n", testNs, "-o", "jsonpath={.metadata.annotations}")
 				depOut, _ := utils.Run(depCmd)
 				return fmt.Sprintf(
@@ -1423,19 +1436,19 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying the ScaledObject minReplicaCount is surged to 2")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 2)
+				return verifyKEDAScaledObjectMinReplicas(nginxKedaName, testNs, 2)
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("verifying original-min-replicas annotation is set on ScaledObject during surge")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectAnnotation("nginx-keda", testNs,
+				return verifyKEDAScaledObjectAnnotation(nginxKedaName, testNs,
 					"eviction-autoscaler.azure.com/original-min-replicas", "1")
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying deployment does NOT have evictionSurgeReplicas annotation (should be on ScaledObject only)")
 			EventuallyWithOffset(1, func() error {
 				var dep appsv1.Deployment
-				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err != nil {
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: nginxKedaName}, &dep); err != nil {
 					return err
 				}
 				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
@@ -1450,7 +1463,7 @@ var _ = Describe("controller", Ordered, func() {
 			By("waiting for deployment to scale to 2 available replicas")
 			EventuallyWithOffset(1, func() error {
 				var dep appsv1.Deployment
-				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-keda"}, &dep); err != nil {
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: nginxKedaName}, &dep); err != nil {
 					return err
 				}
 				if dep.Status.AvailableReplicas < 2 {
@@ -1463,7 +1476,7 @@ var _ = Describe("controller", Ordered, func() {
 			drain := func() error {
 				var podList corev1.PodList
 				err := clientset.List(ctx, &podList, client.InNamespace(testNs),
-					client.MatchingFields{"spec.nodeName": nodeName})
+					client.MatchingFields{specNodeNameField: nodeName})
 				if err != nil {
 					return err
 				}
@@ -1481,24 +1494,24 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("verifying ScaledObject minReplicaCount reverts to 1 after cooldown")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectMinReplicas("nginx-keda", testNs, 1)
+				return verifyKEDAScaledObjectMinReplicas(nginxKedaName, testNs, 1)
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying the evictionSurgeReplicas annotation is removed from ScaledObject")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
+				return verifyKEDAScaledObjectNoAnnotation(nginxKedaName, testNs,
 					"evictionSurgeReplicas")
 			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying original-min-replicas annotation is removed from ScaledObject after revert")
 			EventuallyWithOffset(1, func() error {
-				return verifyKEDAScaledObjectNoAnnotation("nginx-keda", testNs,
+				return verifyKEDAScaledObjectNoAnnotation(nginxKedaName, testNs,
 					"eviction-autoscaler.azure.com/original-min-replicas")
 			}, 30*time.Second, time.Second).Should(Succeed())
 
 			By("verifying PDB minAvailable tracks ScaledObject minReplicaCount (back to 1)")
 			EventuallyWithOffset(1, func() error {
-				return verifyPdbMinAvailable(ctx, clientset, testNs, "nginx-keda", 1)
+				return verifyPdbMinAvailable(ctx, clientset, testNs, nginxKedaName, 1)
 			}, time.Minute, time.Second).Should(Succeed())
 
 			By("uncordoning the node")
@@ -1509,8 +1522,8 @@ var _ = Describe("controller", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 
 			By("cleaning up KEDA test resources")
-			deleteKEDAScaledObject("nginx-keda", testNs)
-			deleteDeployment("nginx-keda", testNs)
+			deleteKEDAScaledObject(nginxKedaName, testNs)
+			deleteDeployment(nginxKedaName, testNs)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
 			uninstallKEDA()

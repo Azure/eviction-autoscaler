@@ -44,20 +44,20 @@ func createDeployment(name, namespace, appLabel string, replicas int32, maxUnava
 			Replicas: &replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
-					"app": appLabel,
+					appLabelKey: appLabel,
 				},
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
-						"app": appLabel,
+						appLabelKey: appLabel,
 					},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  nginxContainerName,
+							Image: nginxImage,
 						},
 					},
 				},
@@ -93,9 +93,9 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 		namespaceObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: "test",
+				GenerateName: testGenerateName,
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -118,10 +118,10 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		}
 
 		// Define a Deployment to test using helper
-		deployment = createDeployment(deploymentName, namespace, "example", 3, &maxUnavailable)
+		deployment = createDeployment(deploymentName, namespace, exampleLabelValue, 3, &maxUnavailable)
 
 		// Create the deployment
-		Expect(r.Client.Create(ctx, deployment)).To(Succeed())
+		Expect(r.Create(ctx, deployment)).To(Succeed())
 	})
 
 	Describe("when a deployment is created", func() {
@@ -140,7 +140,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check if PDB is created
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      deploymentName,
 			}, pdb)
@@ -159,13 +159,13 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-						"app": "example",
+						appLabelKey: exampleLabelValue,
 					},
 					},
 					MinAvailable: &minavailable,
 				},
 			}
-			Expect(r.Client.Create(ctx, existingpdb)).To(Succeed())
+			Expect(r.Create(ctx, existingpdb)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -180,7 +180,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check if PDB is created
 			newpdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      deploymentName,
 			}, newpdb)
@@ -200,7 +200,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			)
 
 			// Create the deployment
-			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailable)).To(Succeed())
+			Expect(r.Create(ctx, deploymentWithMaxUnavailable)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -215,7 +215,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check that PDB was NOT created
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      "deployment-with-max-unavailable",
 			}, pdb)
@@ -234,7 +234,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			)
 
 			// Create the deployment
-			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailableInt)).To(Succeed())
+			Expect(r.Create(ctx, deploymentWithMaxUnavailableInt)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -249,7 +249,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check that PDB was NOT created
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      "deployment-with-max-unavailable-int",
 			}, pdb)
@@ -268,7 +268,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			)
 
 			// Create the deployment
-			Expect(r.Client.Create(ctx, deploymentWithMaxUnavailableZeroPercent)).To(Succeed())
+			Expect(r.Create(ctx, deploymentWithMaxUnavailableZeroPercent)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -283,7 +283,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check that PDB WAS created
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      "deployment-with-max-unavailable-zero-percent",
 			}, pdb)
@@ -307,7 +307,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			}
 
 			// Create the deployment
-			Expect(r.Client.Create(ctx, deploymentWithNilStrategy)).To(Succeed())
+			Expect(r.Create(ctx, deploymentWithNilStrategy)).To(Succeed())
 
 			req := reconcile.Request{
 				NamespacedName: client.ObjectKey{
@@ -322,7 +322,7 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			// Check that PDB WAS created (since there's no maxUnavailable check when RollingUpdate is nil)
 			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Client.Get(ctx, client.ObjectKey{
+			err = r.Get(ctx, client.ObjectKey{
 				Namespace: namespace,
 				Name:      "deployment-with-nil-strategy",
 			}, pdb)
@@ -341,12 +341,12 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 				},
 				Spec: policyv1.PodDisruptionBudgetSpec{
 					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
-						"app": "example",
+						appLabelKey: exampleLabelValue,
 					},
 					},
 				},
 			}
-			err := r.Client.Create(ctx, pdb)
+			err := r.Create(ctx, pdb)
 			Expect(err).ToNot(HaveOccurred())
 
 			// Reconcile should not take any further action since the PDB already exists
@@ -380,7 +380,7 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-skip-",
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -400,7 +400,7 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		// Use helper to create deployment
 		maxUnavailable := intstr.FromInt(0)
 		deployment = createDeployment(deploymentName, namespace, "skip", 2, &maxUnavailable)
-		deployment.Labels = map[string]string{"app": "skip"}
+		deployment.Labels = map[string]string{appLabelKey: "skip"}
 	})
 
 	It("should skip PDB creation if deployment annotation disables it", func() {
@@ -437,7 +437,7 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "test-hpa-",
 				Annotations: map[string]string{
-					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 				},
 			},
 		}
@@ -471,8 +471,8 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 			},
 			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-					APIVersion: "apps/v1",
-					Kind:       "Deployment",
+					APIVersion: appsV1APIVersion,
+					Kind:       ResourceTypeDeployment,
 					Name:       deploymentName,
 				},
 				MinReplicas: &minReplicas,

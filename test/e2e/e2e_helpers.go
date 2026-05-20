@@ -28,10 +28,17 @@ import (
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/test/utils"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/gomega" //nolint:staticcheck
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const (
+	kubectlGetCmd        = "get"
+	outputYamlFlag       = "yaml"
+	outputWideFlag       = "wide"
+	kubectlNamespaceFlag = "--namespace"
 )
 
 // deploymentConfig holds deployment configuration
@@ -113,7 +120,7 @@ spec:
 		return err
 	}
 
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd := exec.CommandContext(context.Background(), "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(buf.String())
 	_, err = utils.Run(cmd)
 	return err
@@ -123,7 +130,7 @@ spec:
 func createPDB(name, namespace string, minAvailable int32, matchLabels map[string]string) error {
 	var labelsYaml strings.Builder
 	for k, v := range matchLabels {
-		labelsYaml.WriteString(fmt.Sprintf("      %s: %s\n", k, v))
+		fmt.Fprintf(&labelsYaml, "      %s: %s\n", k, v)
 	}
 
 	pdbYaml := fmt.Sprintf(`apiVersion: policy/v1
@@ -137,7 +144,7 @@ spec:
     matchLabels:
 %s`, name, namespace, minAvailable, labelsYaml.String())
 
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd := exec.CommandContext(context.Background(), "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(pdbYaml)
 	_, err := utils.Run(cmd)
 	return err
@@ -145,21 +152,21 @@ spec:
 
 // waitForDeployment waits for a deployment to be ready
 func waitForDeployment(name, namespace string) error {
-	cmd := exec.Command("kubectl", "wait", "--for=condition=available",
-		fmt.Sprintf("deployment/%s", name), "--namespace", namespace, "--timeout=60s")
+	cmd := exec.CommandContext(context.Background(), "kubectl", "wait", "--for=condition=available",
+		fmt.Sprintf("deployment/%s", name), kubectlNamespaceFlag, namespace, "--timeout=60s")
 	_, err := utils.Run(cmd)
 	return err
 }
 
 // deleteDeployment deletes a deployment
 func deleteDeployment(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "deployment", name, "--namespace", namespace)
+	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "deployment", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
 // deletePDB deletes a PodDisruptionBudget
 func deletePDB(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "pdb", name, "--namespace", namespace)
+	cmd := exec.CommandContext(context.Background(), "kubectl", "delete", "pdb", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
@@ -281,7 +288,7 @@ spec:
         averageUtilization: 80
 `, name, namespace, targetDeployment, minReplicas, maxReplicas)
 
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd := exec.CommandContext(context.Background(), "kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(hpaYaml)
 	_, err := utils.Run(cmd)
 	return err
@@ -289,7 +296,7 @@ spec:
 
 // deleteHPA deletes a HorizontalPodAutoscaler
 func deleteHPA(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "hpa", name, "--namespace", namespace)
+	cmd := exec.Command("kubectl", "delete", "hpa", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
@@ -373,14 +380,14 @@ spec:
 
 // deleteKEDAScaledObject deletes a KEDA ScaledObject
 func deleteKEDAScaledObject(name, namespace string) {
-	cmd := exec.Command("kubectl", "delete", "scaledobject", name, "--namespace", namespace)
+	cmd := exec.Command("kubectl", "delete", "scaledobject", name, kubectlNamespaceFlag, namespace)
 	_, _ = utils.Run(cmd)
 }
 
 // verifyKEDAScaledObjectMinReplicas checks the minReplicaCount on a ScaledObject using kubectl
 func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32) error {
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
-		"--namespace", namespace,
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
+		kubectlNamespaceFlag, namespace,
 		"-o", "jsonpath={.spec.minReplicaCount}")
 	output, err := utils.Run(cmd)
 	if err != nil {
@@ -398,8 +405,8 @@ func verifyKEDAScaledObjectMinReplicas(name, namespace string, expectedMin int32
 func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedValue string) error {
 	// Use -o json and parse in Go because kubectl jsonpath doesn't handle
 	// annotation keys with dots/slashes (e.g. eviction-autoscaler.azure.com/original-min-replicas).
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
-		"--namespace", namespace, "-o", "json")
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
+		kubectlNamespaceFlag, namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return err
@@ -420,8 +427,8 @@ func verifyKEDAScaledObjectAnnotation(name, namespace, annotationKey, expectedVa
 
 // verifyKEDAScaledObjectNoAnnotation checks that a ScaledObject does NOT have a specific annotation
 func verifyKEDAScaledObjectNoAnnotation(name, namespace, annotationKey string) error {
-	cmd := exec.Command("kubectl", "get", "scaledobject", name,
-		"--namespace", namespace, "-o", "json")
+	cmd := exec.Command("kubectl", kubectlGetCmd, "scaledobject", name,
+		kubectlNamespaceFlag, namespace, "-o", "json")
 	output, err := utils.Run(cmd)
 	if err != nil {
 		return err
@@ -521,14 +528,14 @@ func installKEDA() error {
 		return err
 	}
 	cmd = exec.Command("helm", "upgrade", "--install", "keda", "kedacore/keda",
-		"--namespace", "keda", "--create-namespace", "--wait", "--timeout", "300s")
+		kubectlNamespaceFlag, "keda", "--create-namespace", "--wait", "--timeout", "300s")
 	_, err = utils.Run(cmd)
 	return err
 }
 
 // uninstallKEDA removes KEDA
 func uninstallKEDA() {
-	cmd := exec.Command("helm", "uninstall", "keda", "--namespace", "keda")
+	cmd := exec.Command("helm", "uninstall", "keda", kubectlNamespaceFlag, "keda")
 	_, _ = utils.Run(cmd)
 	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
 	_, _ = utils.Run(cmd)
@@ -548,21 +555,21 @@ func dumpClusterState() {
 		file string
 		args []string
 	}{
-		{"controller.log", []string{"logs", "-n", "eviction-autoscaler",
+		{"controller.log", []string{"logs", "-n", namespace,
 			"-l", "app.kubernetes.io/name=eviction-autoscaler", "--tail=2000"}},
-		{"pods.txt", []string{"get", "pods", "-A", "-o", "wide"}},
-		{"nodes.txt", []string{"get", "nodes", "-o", "wide"}},
-		{"deployments.txt", []string{"get", "deployments", "-A", "-o", "wide"}},
-		{"pdb.yaml", []string{"get", "pdb", "-A", "-o", "yaml"}},
-		{"hpa.yaml", []string{"get", "hpa", "-A", "-o", "yaml"}},
-		{"scaledobjects.yaml", []string{"get", "scaledobjects.keda.sh", "-A", "-o", "yaml"}},
-		{"events.txt", []string{"get", "events", "-A", "--sort-by=.lastTimestamp"}},
+		{"pods.txt", []string{kubectlGetCmd, "pods", "-A", "-o", outputWideFlag}},
+		{"nodes.txt", []string{kubectlGetCmd, "nodes", "-o", outputWideFlag}},
+		{"deployments.txt", []string{kubectlGetCmd, "deployments", "-A", "-o", outputWideFlag}},
+		{"pdb.yaml", []string{kubectlGetCmd, "pdb", "-A", "-o", outputYamlFlag}},
+		{"hpa.yaml", []string{kubectlGetCmd, "hpa", "-A", "-o", outputYamlFlag}},
+		{"scaledobjects.yaml", []string{kubectlGetCmd, "scaledobjects.keda.sh", "-A", "-o", outputYamlFlag}},
+		{"events.txt", []string{kubectlGetCmd, "events", "-A", "--sort-by=.lastTimestamp"}},
 	}
 
 	for _, d := range dumps {
 		out, err := exec.Command("kubectl", d.args...).CombinedOutput()
 		if err != nil {
-			out = append(out, []byte(fmt.Sprintf("\nerror: %v\n", err))...)
+			out = append(out, fmt.Appendf(nil, "\nerror: %v\n", err)...)
 		}
 		_ = os.WriteFile(e2eLogsDir+"/"+d.file, out, 0600)
 	}

@@ -21,8 +21,10 @@ type Surger interface {
 
 // Todo change casing to match k8s?
 const (
-	deploymentKind  = "deployment"
-	statefulSetKind = "statefulset"
+	deploymentKind   = "deployment"
+	statefulSetKind  = "statefulset"
+	appsV1APIVersion = "apps/v1"
+	replicaSetKind   = "ReplicaSet"
 )
 
 type DeploymentWrapper struct {
@@ -97,14 +99,14 @@ func (s *StatefulSetWrapper) GetMaxSurge() intstr.IntOrString {
 }
 
 func GetSurger(kind string) (Surger, error) {
-	if kind == deploymentKind {
+	switch kind {
+	case deploymentKind:
 		return &DeploymentWrapper{obj: &v1.Deployment{}}, nil
-	} else if kind == statefulSetKind {
+	case statefulSetKind:
 		return &StatefulSetWrapper{obj: &v1.StatefulSet{}}, nil
-	} else {
+	default:
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}
-
 }
 
 // AddAnnotation will reset and add new annotation map every time this func is called

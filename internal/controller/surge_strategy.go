@@ -144,7 +144,7 @@ func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinRep
 }
 
 func (d *DeploymentSurgeApplier) Name() string {
-	return "deployment"
+	return deploymentKind
 }
 
 func (d *DeploymentSurgeApplier) IsSurgeActive() bool {

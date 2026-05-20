@@ -45,6 +45,29 @@ import (
 // These tests use Ginkgo (BDD-style Go testing framework). Refer to
 // http://onsi.github.io/ginkgo/ to learn more about Ginkgo.
 
+// Shared string constants for the controllers test package.
+const (
+	defaultNamespace    = "default"
+	appLabelKey         = "app"
+	nginxContainerName  = "nginx"
+	nginxImage          = "nginx:latest"
+	testGenerateName    = "test"
+	exampleLabelValue   = "example"
+	somePodName         = "somepod"
+	dualTargetName      = "dual-target"
+	dualLabelValue      = "dual"
+	dualEAName          = "dual-ea"
+	ownershipTestLabel  = "ownership-test"
+	annotationTrue      = "true"
+	testDeployName      = "test-deploy"
+	testPDBName         = "test-pdb"
+	testPodName         = "test-pod"
+	testKubeDeployName  = "test-kube-deploy"
+	testKubeLabelValue  = "test-kube"
+	testKubePDBName     = "test-kube-pdb"
+	testAnnotationValue = "value"
+)
+
 var cfg *rest.Config
 var k8sClient client.Client
 var testEnv *envtest.Environment

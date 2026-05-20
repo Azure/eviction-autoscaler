@@ -9,7 +9,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -20,15 +19,15 @@ var _ = Describe("ResolveMinReplicas", func() {
 		so := &kedav1alpha1.ScaledObject{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "scale-to-zero-so",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Spec: kedav1alpha1.ScaledObjectSpec{
 				ScaleTargetRef: &kedav1alpha1.ScaleTarget{
 					Name: "my-deploy",
-					Kind: "Deployment",
+					Kind: ResourceTypeDeployment,
 				},
 				// MinReplicaCount intentionally omitted (nil) — KEDA defaults to 0
-				MaxReplicaCount: ptr.To(int32(10)),
+				MaxReplicaCount: new(int32(10)),
 			},
 		}
 
@@ -40,7 +39,7 @@ var _ = Describe("ResolveMinReplicas", func() {
 			WithObjects(so).
 			Build()
 
-		min, hasAutoscaler, err := ResolveMinReplicas(ctx, fc, "default", "my-deploy", "Deployment", 3)
+		min, hasAutoscaler, err := ResolveMinReplicas(ctx, fc, defaultNamespace, "my-deploy", ResourceTypeDeployment, 3)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(hasAutoscaler).To(BeTrue())
 		Expect(min).To(Equal(int32(0)))
@@ -52,15 +51,15 @@ var _ = Describe("ResolveMinReplicas", func() {
 		so := &kedav1alpha1.ScaledObject{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "normal-so",
-				Namespace: "default",
+				Namespace: defaultNamespace,
 			},
 			Spec: kedav1alpha1.ScaledObjectSpec{
 				ScaleTargetRef: &kedav1alpha1.ScaleTarget{
 					Name: "my-deploy",
-					Kind: "Deployment",
+					Kind: ResourceTypeDeployment,
 				},
-				MinReplicaCount: ptr.To(int32(2)),
-				MaxReplicaCount: ptr.To(int32(10)),
+				MinReplicaCount: new(int32(2)),
+				MaxReplicaCount: new(int32(10)),
 			},
 		}
 
@@ -72,7 +71,7 @@ var _ = Describe("ResolveMinReplicas", func() {
 			WithObjects(so).
 			Build()
 
-		min, hasAutoscaler, err := ResolveMinReplicas(ctx, fc, "default", "my-deploy", "Deployment", 5)
+		min, hasAutoscaler, err := ResolveMinReplicas(ctx, fc, defaultNamespace, "my-deploy", ResourceTypeDeployment, 5)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(hasAutoscaler).To(BeTrue())
 		Expect(min).To(Equal(int32(2)))

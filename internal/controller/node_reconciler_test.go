@@ -33,9 +33,9 @@ var _ = Describe("Node Controller", func() {
 		BeforeEach(func() {
 			namespaceObj := &corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
-					GenerateName: "test",
+					GenerateName: testGenerateName,
 					Annotations: map[string]string{
-						namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+						namespacefilter.EnableEvictionAutoscalerAnnotationKey: annotationTrue,
 					},
 				},
 			}
@@ -57,7 +57,7 @@ var _ = Describe("Node Controller", func() {
 				},
 				Spec: v1.EvictionAutoScalerSpec{
 					TargetName: "exmple-whatever",
-					TargetKind: "deployment",
+					TargetKind: deploymentKind,
 				},
 			}
 			err := k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
@@ -71,14 +71,14 @@ var _ = Describe("Node Controller", func() {
 					Name:      podName,
 					Namespace: namespace,
 					Labels: map[string]string{
-						"app": "example",
+						appLabelKey: exampleLabelValue,
 					},
 				},
 				Spec: corev1.PodSpec{ // Use corev1.PodSpec
 					Containers: []corev1.Container{ // Use corev1.Container
 						{
-							Name:  "nginx",
-							Image: "nginx:latest",
+							Name:  nginxContainerName,
+							Image: nginxImage,
 						},
 					},
 					NodeName: nodeName,
@@ -109,7 +109,7 @@ var _ = Describe("Node Controller", func() {
 					},
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{
-							"app": "example",
+							appLabelKey: exampleLabelValue,
 						},
 					},
 				},
@@ -189,7 +189,7 @@ var _ = Describe("Node Controller", func() {
 			err = k8sClient.Get(ctx, podNamespacedName, pod)
 			Expect(err).NotTo(HaveOccurred())
 			pod.Labels = map[string]string{
-				"app": "notexample",
+				appLabelKey: "notexample",
 			}
 			err = k8sClient.Update(ctx, pod)
 			Expect(err).NotTo(HaveOccurred())

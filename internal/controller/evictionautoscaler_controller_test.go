@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
@@ -18,6 +19,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -228,11 +230,425 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			//we don't update status of last eviction till
 			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
-			// Verify Deployment scaling if necessary
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			deployment := &appsv1.Deployment{}
 			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(2))) // Change as needed to verify scaling
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
+		})
+
+		It("should surge by exactly displaced pod count when pods are on a cordoned node", func() {
+			By("setting up a cordoned node and pods on it")
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// Create a node and cordon it.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cordoned-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			// Create 2 pods on the cordoned node matching the PDB selector.
+			for i := 0; i < 2; i++ {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						GenerateName: "displaced-pod-",
+						Namespace:    namespace,
+						Labels:       map[string]string{"app": "example"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: node.Name,
+						Containers: []corev1.Container{
+							{Name: "nginx", Image: "nginx:latest"},
+						},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			}
+
+			// Run once to populate TargetGeneration.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Log an eviction so the reconciler enters the surge path.
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "displaced-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Deployment should have surged to minReplicas(1) + displaced(2) = 3.
+			// MaxSurge=1 on the deployment caps it at minReplicas(1) + maxSurge(1) = 2.
+			// Since displaced(2) > maxSurge(1), surgeTarget is capped at 2.
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+		})
+
+		It("should surge by exactly displaced pod count when displaced is less than maxSurge", func() {
+			By("setting up a cordoned node with fewer pods than maxSurge")
+			// Increase maxSurge on the deployment to 5 so displaced(1) < maxSurge(5).
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			bigSurge := intstr.FromInt32(5)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &bigSurge
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// Create a cordoned node with exactly 1 matching pod.
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-small-drain-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "small-drain-pod-" + namespace,
+					Namespace: namespace,
+					Labels:    map[string]string{"app": "example"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName:   node.Name,
+					Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			// Reconcile once to update TargetGeneration after the deployment change.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Log an eviction.
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "small-drain-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// displaced(1) < maxSurge(5), so surgeTarget = minReplicas(1) + displaced(1) = 2.
+			// Not minReplicas(1) + maxSurge(5) = 6.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+		})
+
+		It("should top up surge incrementally as more nodes are cordoned", func() {
+			// Verifies the "scale TO target" formula: surgeTarget = minReplicas + totalDisplaced.
+			// Cordoning a second node should top up to the new total without double-counting.
+			By("giving the deployment a generous maxSurge so it doesn't cap us")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			bigSurge := intstr.FromInt32(10)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &bigSurge
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// Create two nodes, both cordoned; each has 1 pod.
+			nodeA := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "incremental-node-a-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			nodeB := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "incremental-node-b-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: false}, // start uncordoned
+			}
+			Expect(k8sClient.Create(ctx, nodeA)).To(Succeed())
+			Expect(k8sClient.Create(ctx, nodeB)).To(Succeed())
+
+			podA := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "inc-pod-a-" + namespace,
+					Namespace: namespace,
+					Labels:    map[string]string{"app": "example"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName:   nodeA.Name,
+					Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			}
+			podB := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "inc-pod-b-" + namespace,
+					Namespace: namespace,
+					Labels:    map[string]string{"app": "example"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName:   nodeB.Name,
+					Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, podA)).To(Succeed())
+			Expect(k8sClient.Create(ctx, podB)).To(Succeed())
+
+			// Reconcile once to populate TargetGeneration after the deployment maxSurge change.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// --- Wave 1: only node A is cordoned (1 displaced pod) ---
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "inc-pod-a", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// surgeTarget = minReplicas(1) + displaced(1) = 2.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)), "after first cordon: should surge to 2")
+
+			// --- Wave 2: cordon node B as well (now 2 displaced pods total) ---
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeB.Name}, nodeB)).To(Succeed())
+			nodeB.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, nodeB)).To(Succeed())
+
+			// New eviction triggers reconcile.
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "inc-pod-b", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// surgeTarget = minReplicas(1) + displaced(2) = 3. Tops up without double-counting.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(3)), "after second cordon: should top up to 3")
+		})
+
+		It("should not scale down when some nodes are uncordoned but drain is still blocked", func() {
+			// When DisruptionsAllowed is still 0 (drain ongoing), surgeTarget drops if displaced
+			// drops, but we do NOT scale the deployment down — only the cooldown path does that.
+			// This tests that we don't inadvertently evict pods we just brought up.
+			By("giving the deployment a generous maxSurge")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			bigSurge := intstr.FromInt32(10)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &bigSurge
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// Create two cordoned nodes each with 1 pod.
+			nodeC := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "partial-uncordon-c-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			nodeD := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "partial-uncordon-d-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, nodeC)).To(Succeed())
+			Expect(k8sClient.Create(ctx, nodeD)).To(Succeed())
+
+			for i, nodeName := range []string{nodeC.Name, nodeD.Name} {
+				pod := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "partial-pod-" + string(rune('c'+i)) + "-" + namespace,
+						Namespace: namespace,
+						Labels:    map[string]string{"app": "example"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName:   nodeName,
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+			}
+
+			// Reconcile once to update TargetGeneration.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Trigger surge with both nodes cordoned: displaced=2, surgeTarget=3.
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "partial-pod-c", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(3)), "surged to 3 with 2 displaced pods")
+
+			// Now uncordon node D (only node C remains cordoned, displaced=1).
+			// DisruptionsAllowed is still 0 (PDB still blocking — drain not done).
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeD.Name}, nodeD)).To(Succeed())
+			nodeD.Spec.Unschedulable = false
+			Expect(k8sClient.Update(ctx, nodeD)).To(Succeed())
+
+			// Reconcile again with the same unhandled eviction.
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// surgeTarget is now 2, but GetReplicas()=3 >= 2, so no scale-up fires.
+			// Scale-down does NOT happen here — it only fires via the cooldown path
+			// once DisruptionsAllowed > 0. Replicas remain at 3.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(3)), "no premature scale-down while drain is still blocked")
+		})
+
+		It("should surge incrementally across multiple nodes then scale back down when all drains complete", func() {
+			// Full end-to-end multi-node drain scenario:
+			//   1. Cordon node A (2 pods) → surge to minReplicas+2
+			//   2. Cordon node B (2 more pods) → top up to minReplicas+4
+			//   3. Both nodes drain; PDB unblocks; cooldown expires → scale down to minReplicas
+			By("giving the deployment enough maxSurge for the scenario")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			bigSurge := intstr.FromInt32(10)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &bigSurge
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// Two nodes, initially uncordoned; 2 pods each.
+			nodeE := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-drain-e-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: false},
+			}
+			nodeF := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "multi-drain-f-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: false},
+			}
+			Expect(k8sClient.Create(ctx, nodeE)).To(Succeed())
+			Expect(k8sClient.Create(ctx, nodeF)).To(Succeed())
+
+			for i := 0; i < 2; i++ {
+				podE := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fmt.Sprintf("multi-pod-e%d-%s", i, namespace),
+						Namespace: namespace,
+						Labels:    map[string]string{"app": "example"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName:   nodeE.Name,
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				}
+				podF := &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      fmt.Sprintf("multi-pod-f%d-%s", i, namespace),
+						Namespace: namespace,
+						Labels:    map[string]string{"app": "example"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName:   nodeF.Name,
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				}
+				Expect(k8sClient.Create(ctx, podE)).To(Succeed())
+				Expect(k8sClient.Create(ctx, podF)).To(Succeed())
+			}
+
+			// Seed TargetGeneration so future reconciles don't see a "deployment changed" reset.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// ── Wave 1: cordon node E ──────────────────────────────────────────────────────
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeE.Name}, nodeE)).To(Succeed())
+			nodeE.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, nodeE)).To(Succeed())
+
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "multi-pod-e0", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// minReplicas(1) + displaced(2) = 3
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(3)), "wave 1: surged to 3")
+
+			// ── Wave 2: cordon node F ──────────────────────────────────────────────────────
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeF.Name}, nodeF)).To(Succeed())
+			nodeF.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, nodeF)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "multi-pod-f0", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// minReplicas(1) + displaced(4) = 5
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(5)), "wave 2: topped up to 5")
+
+			// ── Drain completes: remove pods from both cordoned nodes ─────────────────────
+			// In a real cluster the scheduler rescheduled them; here we just delete them.
+			podList := &corev1.PodList{}
+			Expect(k8sClient.List(ctx, podList, client.InNamespace(namespace), client.MatchingLabels{"app": "example"})).To(Succeed())
+			for i := range podList.Items {
+				pod := &podList.Items[i]
+				if pod.Spec.NodeName == nodeE.Name || pod.Spec.NodeName == nodeF.Name {
+					Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+				}
+			}
+
+			// PDB now unblocked (drain finished).
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pdb)).To(Succeed())
+			pdb.Status.DisruptionsAllowed = 1
+			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			// Advance TargetGeneration so the reconciler treats the current deployment as known.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Status.TargetGeneration = dep.Generation
+			Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+			// First reconcile after drain: still within cooldown — should requeue but not scale.
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction.EvictionTime = metav1.Now()
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown), "should requeue during cooldown")
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(5)), "no scale-down yet: still within cooldown")
+
+			// ── Cooldown expires ──────────────────────────────────────────────────────────
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(1)), "post-drain: scaled back down to minReplicas")
 		})
 
 		It("should skip StatefulSet targets without surging", func() {
@@ -798,10 +1214,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify deployment WAS scaled
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-deploy", Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 		})
 
 		It("should process EvictionAutoScaler in kube-system by default", func() {
@@ -809,6 +1225,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			testNamespace := metav1.NamespaceSystem
 
 			// Create deployment
+			kubeSurge := intstr.FromInt(1)
 			deployment := &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-kube-deploy",
@@ -818,6 +1235,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 					Replicas: int32Ptr(2),
 					Selector: &metav1.LabelSelector{
 						MatchLabels: map[string]string{"app": "test-kube"},
+					},
+					Strategy: appsv1.DeploymentStrategy{
+						RollingUpdate: &appsv1.RollingUpdateDeployment{
+							MaxSurge: &kubeSurge,
+						},
 					},
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
@@ -885,10 +1307,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 
-			// Verify deployment WAS scaled (kube-system is enabled by default)
+			// No real pods exist on a cordoned node, so displaced=0 and no surge fires.
 			err = k8sClient.Get(ctx, types.NamespacedName{Name: "test-kube-deploy", Namespace: testNamespace}, deployment)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(*deployment.Spec.Replicas).To(Equal(int32(3))) // Should be scaled up
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
 
 			// Cleanup
 			Expect(k8sClient.Delete(ctx, EvictionAutoScaler)).To(Succeed())

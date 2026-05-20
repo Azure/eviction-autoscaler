@@ -1,9 +1,6 @@
 name: Build and publish to ACR
 
 on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       tag:
@@ -11,7 +8,7 @@ on:
         required: true
         type: string
       force_override:
-        description: 'Override an existing version in ACR/MCR (use with caution — the existing image will be replaced).'
+        description: 'Force re-release an existing ACR version (unlocks and overwrites). Use when re-tagging with a fixed Dockerfile.'
         required: false
         type: boolean
         default: false

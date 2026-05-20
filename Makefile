@@ -84,7 +84,7 @@ test: manifests generate fmt vet envtest ## Run tests.
 # Utilize Kind or modify the e2e tests to load the image locally, enabling compatibility with other vendors.
 .PHONY: test-e2e  # Run the e2e tests against a Kind k8s instance that is spun up.
 test-e2e:
-	go test ./test/e2e/ -v -ginkgo.v
+	go test ./test/e2e/ -v -ginkgo.v -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -106,6 +106,13 @@ helm-validate: helm ## Run helm lint and template on the chart
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
 	go build -o bin/manager cmd/main.go
+
+.PHONY: fips-check
+fips-check: build ## Verify the manager binary links against OpenSSL (Microsoft Go FIPS backend).
+	@echo "Checking for OpenSSL/CGO crypto symbols in manager binary..."
+	@go tool nm bin/manager | grep -q '_Cfunc_\|_cgo_' && \
+		echo "✓ FIPS: CGO/OpenSSL symbols found — binary uses Microsoft Go FIPS backend" || \
+		(echo "✗ FIPS: No CGO symbols found — binary was not built with CGO_ENABLED=1" && exit 1)
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.

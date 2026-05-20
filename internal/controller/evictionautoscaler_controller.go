@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -14,7 +15,7 @@ import (
 	//v1 "k8s.io/api/apps/v1"
 
 	policyv1 "k8s.io/api/policy/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -58,7 +59,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	err := r.Get(ctx, req.NamespacedName, EvictionAutoScaler)
 	if err != nil {
 		//should we use a finalizer to scale back down on deletion?
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil // EvictionAutoScaler not found, could be deleted, nothing to do
 		}
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
@@ -81,7 +82,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	pdb := &policyv1.PodDisruptionBudget{}
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			degraded(&EvictionAutoScaler.Status.Conditions, "NoPdb", "PDB of same name not found")
 			logger.Error(err, "no matching pdb", "namespace", EvictionAutoScaler.Namespace, "name", EvictionAutoScaler.Name)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
@@ -113,7 +114,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Spec.TargetName, Namespace: EvictionAutoScaler.Namespace}, target.Obj())
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			logger.Error(err, "pdb watcher target does not exist", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
 			degraded(&EvictionAutoScaler.Status.Conditions, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
@@ -127,6 +128,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Detect surge strategy based on KEDA, HPA, or plain deployment
 	surgeApplier, err := detectSurgeApplier(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target)
 	if err != nil {
+		if errors.Is(err, errUnsupportedAutoscalerConfig) {
+			logger.Error(err, "unsupported autoscaler configuration, not requeueing")
+			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", err.Error())
+			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
 		logger.Error(err, "failed to detect surge strategy")
 		return ctrl.Result{}, err
 	}

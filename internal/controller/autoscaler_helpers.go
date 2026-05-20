@@ -3,13 +3,11 @@ package controllers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
@@ -17,42 +15,25 @@ import (
 var errNotFound = errors.New("not found")
 
 // findScaledObjectForTarget looks for a KEDA ScaledObject targeting the given workload.
-// We use unstructured types instead of importing github.com/kedacore/keda/v2 because
-// KEDA's module pulls in 80+ direct dependencies (AWS, Azure, GCP SDKs, Kafka, etc.)
-// which would massively bloat our dependency tree for just two types.
 // Returns nil, errNotFound if KEDA is not installed or no matching ScaledObject is found.
-func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*unstructured.Unstructured, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObjectList",
-	})
-
-	if err := c.List(ctx, list, client.InNamespace(namespace)); err != nil {
+func findScaledObjectForTarget(ctx context.Context, c client.Client, namespace, targetName, targetKind string) (*kedav1alpha1.ScaledObject, error) {
+	var list kedav1alpha1.ScaledObjectList
+	if err := c.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		if meta.IsNoMatchError(err) {
 			return nil, errNotFound
 		}
 		return nil, err
 	}
 
-	for _, item := range list.Items {
-		scaleTargetRef, found, err := unstructured.NestedMap(item.Object, "spec", "scaleTargetRef")
-		if err != nil {
-			return nil, fmt.Errorf("failed to read scaleTargetRef from ScaledObject %s/%s: %w", namespace, item.GetName(), err)
-		}
-		if !found {
-			log.FromContext(ctx).V(1).Info("ScaledObject missing scaleTargetRef, skipping",
-				"namespace", namespace, "name", item.GetName())
-			continue
-		}
-		name, _ := scaleTargetRef["name"].(string)
-		kind, _ := scaleTargetRef["kind"].(string)
+	for i := range list.Items {
+		so := &list.Items[i]
+		name := so.Spec.ScaleTargetRef.Name
+		kind := so.Spec.ScaleTargetRef.Kind
 		if kind == "" {
 			kind = "Deployment" // KEDA default
 		}
 		if name == targetName && strings.EqualFold(kind, targetKind) {
-			return &item, nil
+			return so, nil
 		}
 	}
 
@@ -124,7 +105,16 @@ func HasAutoscaler(ctx context.Context, c client.Client, namespace, targetName, 
 }
 
 // ResolveMinReplicas returns the effective minimum replica count for a workload.
-// Priority: KEDA ScaledObject minReplicaCount > HPA minReplicas > deployment.spec.replicas.
+// Priority: KEDA ScaledObject minReplicaCount > standalone HPA minReplicas > deployment.spec.replicas.
+//
+// The strategies are mutually exclusive in detectSurgeApplier: when a KEDA
+// ScaledObject is present, only the KEDA strategy is used. If a standalone HPA
+// also targets the same deployment, detectSurgeApplier rejects the configuration
+// with an error (unsupported). This function mirrors that precedence for baseline
+// calculation but does not enforce the rejection — that is done by detectSurgeApplier.
+//
+// KEDA-managed HPAs are filtered out by isKEDAManagedHPA, so only user-created
+// standalone HPAs are considered at tier 2.
 //
 // The returned bool indicates whether an autoscaler (KEDA or HPA) was found.
 // When true, the int32 is the autoscaler's floor (which may be 0 for KEDA scale-to-zero).
@@ -139,11 +129,14 @@ func ResolveMinReplicas(ctx context.Context, c client.Client, namespace, targetN
 		return 0, false, err
 	}
 	if err == nil && scaledObj != nil {
-		if val, found, _ := unstructured.NestedInt64(scaledObj.Object, "spec", "minReplicaCount"); found {
-			logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
-				"target", targetName, "minReplicaCount", val)
-			return int32(val), true, nil
+		// KEDA defaults an omitted minReplicaCount to 0 (scale-to-zero).
+		minReplicaCount := int32(0)
+		if scaledObj.Spec.MinReplicaCount != nil {
+			minReplicaCount = *scaledObj.Spec.MinReplicaCount
 		}
+		logger.V(1).Info("Using KEDA ScaledObject minReplicaCount",
+			"target", targetName, "minReplicaCount", minReplicaCount)
+		return minReplicaCount, true, nil
 	}
 
 	// 2. Check standalone HPA

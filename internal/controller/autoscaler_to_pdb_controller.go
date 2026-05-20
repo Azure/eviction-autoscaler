@@ -5,10 +5,10 @@ import (
 	"errors"
 	"strings"
 
+	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	v1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,7 +37,7 @@ type AutoscalerToPDBReconciler struct {
 }
 
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch
-// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch
+// +kubebuilder:rbac:groups=keda.sh,resources=scaledobjects,verbs=get;list;watch;update
 
 // Reconcile is triggered when an HPA or ScaledObject changes. The request key is the
 // autoscaler's namespace/name. We resolve the target deployment from its scaleTargetRef.
@@ -151,17 +151,10 @@ func (r *AutoscalerToPDBReconciler) resolveDeploymentName(ctx context.Context, r
 	}
 
 	// Try ScaledObject
-	scaledObj := &unstructured.Unstructured{}
-	scaledObj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
-	})
-	if err := r.Get(ctx, req.NamespacedName, scaledObj); err == nil {
-		scaleTargetRef, found, err := unstructured.NestedMap(scaledObj.Object, "spec", "scaleTargetRef")
-		if err != nil || !found {
-			return "", nil
-		}
-		name, _ := scaleTargetRef["name"].(string)
-		kind, _ := scaleTargetRef["kind"].(string)
+	var scaledObj kedav1alpha1.ScaledObject
+	if err := r.Get(ctx, req.NamespacedName, &scaledObj); err == nil {
+		name := scaledObj.Spec.ScaleTargetRef.Name
+		kind := scaledObj.Spec.ScaleTargetRef.Kind
 		if kind == "" {
 			kind = ResourceTypeDeployment
 		}
@@ -188,13 +181,9 @@ func (r *AutoscalerToPDBReconciler) isSurgeActiveOnAutoscaler(ctx context.Contex
 	}
 
 	// Check ScaledObject
-	scaledObj := &unstructured.Unstructured{}
-	scaledObj.SetGroupVersionKind(schema.GroupVersionKind{
-		Group: "keda.sh", Version: "v1alpha1", Kind: "ScaledObject",
-	})
-	if err := r.Get(ctx, req.NamespacedName, scaledObj); err == nil {
-		annotations := scaledObj.GetAnnotations()
-		if _, exists := annotations[EvictionSurgeReplicasAnnotationKey]; exists {
+	var scaledObj kedav1alpha1.ScaledObject
+	if err := r.Get(ctx, req.NamespacedName, &scaledObj); err == nil {
+		if _, exists := scaledObj.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 			return true
 		}
 	}
@@ -214,18 +203,10 @@ func (r *AutoscalerToPDBReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Try to watch KEDA ScaledObjects (only if the CRD is installed).
 	// CRD discovery happens once at startup. If KEDA is installed after the controller
 	// starts, a restart is required to begin watching ScaledObjects.
-	scaledObjectGVK := schema.GroupVersionKind{
-		Group:   "keda.sh",
-		Version: "v1alpha1",
-		Kind:    "ScaledObject",
-	}
-	scaledObj := &unstructured.Unstructured{}
-	scaledObj.SetGroupVersionKind(scaledObjectGVK)
-
 	if err := r.discoverScaledObjectCRD(mgr); err == nil {
 		builder = builder.WatchesRawSource(
-			source.Kind(mgr.GetCache(), scaledObj,
-				&handler.TypedEnqueueRequestForObject[*unstructured.Unstructured]{}))
+			source.Kind(mgr.GetCache(), &kedav1alpha1.ScaledObject{},
+				&handler.TypedEnqueueRequestForObject[*kedav1alpha1.ScaledObject]{}))
 	} else {
 		mgr.GetLogger().Info("KEDA ScaledObject CRD not found, skipping ScaledObject watch")
 	}

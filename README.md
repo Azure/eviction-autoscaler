@@ -10,6 +10,7 @@
 - [Introduction](#introduction)
 - [Features](#features)
 - [Installation](#installation)
+- [Networking](#networking)
 - [Usage](#usage)
 
 ## Introduction
@@ -28,6 +29,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
+- **KEDA-aware surge**: When a KEDA ScaledObject targets the deployment, the controller surges by temporarily raising the ScaledObject's `minReplicaCount`. The same pattern applies — annotations on the ScaledObject track the surge state and original value for safe revert.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
 - **Autoscaler-to-PDB Controller** (Optional): Watches HPA and KEDA ScaledObject changes and updates PDB `minAvailable` to track the autoscaler's min replicas floor, even when deployment replicas don't change.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler). Defers to the Autoscaler-to-PDB controller when an HPA or KEDA ScaledObject is present.
@@ -69,90 +71,7 @@ graph TD;
 
 ### Install
 
-You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resource Provider (RP) or via Helm.
-
-### Install via Helm
-
-1. Add the eviction-autoscaler Helm repository:
-
-    ```bash
-    helm repo add eviction-autoscaler https://azure.github.io/eviction-autoscaler/charts
-    helm repo update
-    ```
-
-2. Install the chart into your cluster:
-
-    ```bash
-    helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-          --namespace eviction-autoscaler --create-namespace \
-          --set controllerConfig.pdb.create=true
-    ```
-
-**Configuration Examples:**
-
-Enable PDB creation and specify target namespaces:
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-      --namespace eviction-autoscaler --create-namespace \
-      --set controllerConfig.pdb.create=true \
-      --set controllerConfig.namespaces.actionedNamespaces="{kube-system,default}"
-```
-
-Enable eviction-autoscaler for all namespaces by default:
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-      --namespace eviction-autoscaler --create-namespace \
-      --set controllerConfig.pdb.create=false \
-      --set controllerConfig.namespaces.enabledByDefault=true
-```
-
-> **Note:** Setting `pdb.create=true` will automatically create a PodDisruptionBudget (PDB) for deployments that do not already have one, ensuring your workloads are protected and enabling eviction-autoscaler to manage disruptions effectively.
->
-> If a deployment already has a PDB whose label selector matches the deployment's pod template labels, eviction-autoscaler will **not** create a new PDB—even if `pdb.create=true`. This avoids duplicate PDBs and ensures existing disruption budgets are respected.
->
-> For example, if you deploy an app without a PDB:
->
-> ```yaml
-> apiVersion: apps/v1
-> kind: Deployment
-> metadata:
->   name: my-app
->   namespace: default
-> spec:
->   replicas: 2
->   selector:
->     matchLabels:
->       app: my-app
->   template:
->     metadata:
->       labels:
->         app: my-app
->     spec:
->       containers:
->       - name: my-app
->         image: nginx
-> ```
->
-> With `pdb.create=true`, eviction-autoscaler will automatically create a matching PDB:
->
-> ```yaml
-> apiVersion: policy/v1
-> kind: PodDisruptionBudget
-> metadata:
->   name: my-app
->   namespace: default
-> spec:
->   minAvailable: 2
->   selector:
->     matchLabels:
->       app: my-app
-> ```
->
-> If a matching PDB already exists, eviction-autoscaler will not create another. If you later disable `pdb.create`, eviction-autoscaler will not delete any existing PDBs—it will simply stop creating new ones.
-
-3. (Optional) Customize values by passing `--values my-values.yaml` or using `--set key=value`.
-
-Refer to the [Helm Values](https://github.com/Azure/eviction-autoscaler/blob/main/helm/eviction-autoscaler/values.yaml) for configuration options.
+You can install Eviction-Autoscaler using the Azure Kubernetes Extension Resource Provider (RP).
 
 ### Install via Azure Kubernetes Extension RP
 
@@ -288,7 +207,7 @@ metadata:
         eviction-autoscaler.azure.com/pdb-create: "false"
 ```
 
-This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via Helm or the Azure Kubernetes Extension Resource Provider.
+This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via the Azure Kubernetes Extension Resource Provider.
 
 ### Deployments with MaxUnavailable
 
@@ -340,30 +259,6 @@ When `ENABLED_BY_DEFAULT=false` (the default), eviction autoscaler operates as f
 - Other namespaces can be **enabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "true"`
 - Namespaces in `ACTIONED_NAMESPACES` can be **overridden** with annotation `eviction-autoscaler.azure.com/enable: "false"`
 
-**Configuration via Helm:**
-
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-  --namespace eviction-autoscaler --create-namespace \
-  --set controllerConfig.pdb.create=true \
-  --set controllerConfig.namespaces.enabledByDefault=false \
-  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production","staging"]'
-```
-
-Or via values.yaml:
-
-```yaml
-controllerConfig:
-  pdb:
-    create: true
-  namespaces:
-    enabledByDefault: false  # Namespaces disabled by default (default)
-    actionedNamespaces:
-      - kube-system
-      - production
-      - staging
-```
-
 **Configuration via environment variables:**
 
 ```bash
@@ -396,26 +291,6 @@ When `ENABLED_BY_DEFAULT=true` is set, eviction autoscaler operates as follows:
 - **`ACTIONED_NAMESPACES` is ignored** - only annotations control which namespaces are disabled
 - Namespaces can be **disabled** by adding the annotation `eviction-autoscaler.azure.com/enable: "false"`
 - Namespaces can be **explicitly enabled** with annotation `eviction-autoscaler.azure.com/enable: "true"` (though they're already enabled by default)
-
-**Configuration via Helm:**
-
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-  --namespace eviction-autoscaler --create-namespace \
-  --set controllerConfig.pdb.create=true \
-  --set controllerConfig.namespaces.enabledByDefault=true
-```
-
-Or via values.yaml:
-
-```yaml
-controllerConfig:
-  pdb:
-    create: true
-  namespaces:
-    enabledByDefault: true  # Namespaces enabled by default
-    actionedNamespaces: []   # Ignored when enabled_by_default=true
-```
 
 **Configuration via environment variables:**
 
@@ -532,16 +407,6 @@ Namespace watches trigger reconciliation by listing all deployments/PDBs in that
 
 #### Example: enabled_by_default=false Configuration
 
-**Via Helm:**
-
-```bash
-helm install eviction-autoscaler eviction-autoscaler/eviction-autoscaler \
-  --namespace eviction-autoscaler --create-namespace \
-  --set controllerConfig.pdb.create=true \
-  --set controllerConfig.namespaces.enabledByDefault=true \
-  --set-json 'controllerConfig.namespaces.actionedNamespaces=["kube-system","production"]'
-```
-
 **Via environment variables:**
 
 Deploy with environment variables:
@@ -619,7 +484,59 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 # The PDB will now be deleted when the deployment is deleted
 ```
 
+## Networking
+
+### ARM Endpoint Usage
+
+Eviction-Autoscaler is a **pure Kubernetes operator**. It makes no calls to Azure Resource Manager (ARM) or any other Azure control-plane API. All communication is with the in-cluster Kubernetes API server via `controller-runtime`. Consequently, **no ARM Private Link private endpoint is required** for this extension.
+
+### Required Outbound Network Rules (Private / Restricted Clusters)
+
+The only external network dependency is pulling the extension container image from Microsoft Container Registry (MCR) at install/upgrade time. For clusters with restricted egress (e.g., private AKS clusters with `--outbound-type userDefinedRouting`), allow the following outbound FQDNs:
+
+| FQDN | Port | Purpose |
+|---|---|---|
+| `mcr.microsoft.com` | 443 | MCR redirect endpoint |
+| `*.data.mcr.microsoft.com` | 443 | MCR blob storage (layer download) |
+
+These are already included in the AKS-required FQDN list. Verify your cluster's rules against the official reference:
+
+> **[AKS outbound network and FQDN rules for AKS clusters](https://learn.microsoft.com/azure/aks/outbound-rules-control-egress)**
+
+No additional FQDNs are needed beyond what a standard AKS cluster already requires.
+
+### Private AKS Clusters
+
+Eviction-Autoscaler runs as an in-cluster pod and communicates with the Kubernetes API server through the in-cluster endpoint (`kubernetes.default.svc`). On a [private AKS cluster](https://learn.microsoft.com/azure/aks/private-cluster), this path is already fully private — no extra Private Endpoint configuration is needed for the extension itself.
+
+If you use the `az k8s-extension create` CLI to install or upgrade the extension, that command calls ARM from your **local machine** (not from the cluster). Ensure your local machine or CI agent can reach `management.azure.com`, or use [Azure Private Link for ARM](https://learn.microsoft.com/azure/azure-resource-manager/management/create-private-link-access-portal) if your management plane is also locked down.
+
 ## Usage
+
+### Surge Annotations
+
+During a surge, the eviction autoscaler places annotations on the **autoscaler object** (HPA or KEDA ScaledObject) — not on the deployment. This avoids modifying the deployment's metadata and the generation-tracking complexity that comes with it.
+
+| Annotation | Placed On | Value | Purpose |
+|---|---|---|---|
+| `evictionSurgeReplicas` | HPA or ScaledObject | Surged replica count (e.g., `"3"`) | Marks that a surge is active |
+| `eviction-autoscaler.azure.com/original-min-replicas` | HPA or ScaledObject | Pre-surge min replicas (e.g., `"1"`) | Stores the original value for safe revert |
+| `evictionSurgeReplicas` | Deployment | Surged replica count | Only used when **no** HPA/KEDA is present |
+
+These annotations are managed automatically by the controller. They are set atomically with the `minReplicas`/`minReplicaCount` change during surge and removed during revert. You should not modify them manually.
+
+**Inspecting surge state:**
+
+```bash
+# Check if a surge is active on an HPA
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations}'
+
+# Check if a surge is active on a KEDA ScaledObject
+kubectl get scaledobject <name> -n <namespace> -o jsonpath='{.metadata.annotations}'
+
+# Check the original minReplicas that will be restored on revert
+kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations.eviction-autoscaler\.azure\.com/original-min-replicas}'
+```
 
 ### Build and Push Multi-Arch Image
 

@@ -32,6 +32,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
 - **KEDA-aware surge**: When a KEDA ScaledObject targets the deployment, the controller surges by temporarily raising the ScaledObject's `minReplicaCount`. The same pattern applies — annotations on the ScaledObject track the surge state and original value for safe revert.
+- **Readiness-aware surge revert**: The controller waits for all surged pods to become Ready before reverting to the original replica count. Reverting while pods are still starting would kill them on their new nodes and lose drain progress. Use the `eviction-autoscaler.azure.com/time-to-ready` deployment annotation to tell the controller how long your pods typically take to start (default: 5 minutes, maximum: 10 minutes). Once the wait limit is reached the controller reverts regardless, so a slow start never blocks drain indefinitely.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
 - **Autoscaler-to-PDB Controller** (Optional): Watches HPA and KEDA ScaledObject changes and updates PDB `minAvailable` to track the autoscaler's min replicas floor, even when deployment replicas don't change.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler). Defers to the Autoscaler-to-PDB controller when an HPA or KEDA ScaledObject is present.
@@ -524,8 +525,56 @@ During a surge, the eviction autoscaler places annotations on the **autoscaler o
 | `evictionSurgeReplicas` | HPA or ScaledObject | Surged replica count (e.g., `"3"`) | Marks that a surge is active |
 | `eviction-autoscaler.azure.com/original-min-replicas` | HPA or ScaledObject | Pre-surge min replicas (e.g., `"1"`) | Stores the original value for safe revert |
 | `evictionSurgeReplicas` | Deployment | Surged replica count | Only used when **no** HPA/KEDA is present |
+| `eviction-autoscaler.azure.com/time-to-ready` | **Deployment** | Minutes pods take to become Ready (e.g., `"3"`) | Configures how long the controller waits before reverting (see below) |
 
-These annotations are managed automatically by the controller. They are set atomically with the `minReplicas`/`minReplicaCount` change during surge and removed during revert. You should not modify them manually.
+The first three annotations are managed automatically by the controller. They are set atomically with the `minReplicas`/`minReplicaCount` change during surge and removed during revert. You should not modify them manually.
+
+The `time-to-ready` annotation is set by you on the **Deployment** to tune how long the controller waits for surged pods before reverting — see the next section.
+
+### Tuning Surge Revert: `time-to-ready` Annotation
+
+After scaling up, the controller waits for all surged pods to become `Ready` before reverting to the original replica count. Reverting early would kill pods that are still starting on the new nodes, losing drain progress.
+
+The `eviction-autoscaler.azure.com/time-to-ready` annotation on the **Deployment** controls the maximum wait:
+
+| Setting | Behaviour |
+|---|---|
+| Annotation absent | Waits up to **5 minutes** (default) |
+| `"1"` – `"10"` | Waits up to that many minutes |
+| Value outside 1–10 | EA CR is marked **Degraded** (`InvalidTimeToReadyAnnotation`) and no surge is attempted |
+
+> **TODO:** The current maximum of 10 minutes covers most typical web services and JVM apps, but is too low for workloads that legitimately take longer to start — for example, ML inference servers loading large models (GPT, BERT, etc.) can need 10–30 minutes. Consider raising the cap or removing it entirely and relying on documentation to guide sensible values. The safety guarantee (revert even if pods never become Ready) holds regardless of the chosen limit.
+
+**Apply the annotation:**
+
+```bash
+kubectl annotate deployment <name> -n <namespace> \
+  eviction-autoscaler.azure.com/time-to-ready="8"
+```
+
+Or in the Deployment manifest:
+
+```yaml
+metadata:
+  annotations:
+    eviction-autoscaler.azure.com/time-to-ready: "8"   # pods take ~8 min to start
+```
+
+**How it works:**
+
+The controller wakes up once per cooldown period (1 minute). Each wake-up counts as one attempt. When the number of attempts reaches the `time-to-ready` value the controller reverts the surge even if some pods are not yet Ready, so a slow-starting deployment never blocks a node drain indefinitely.
+
+If all pods become Ready *before* the limit is reached the controller reverts immediately without burning the remaining attempts.
+
+**Inspecting progress:**
+
+```bash
+# How many requeue attempts have been used so far
+kubectl get evictionautoscaler <name> -n <namespace> \
+  -o jsonpath='{.status.surgeAttempts}'
+```
+
+A `surgeAttempts` value of `0` means no surge is in progress (or it has been successfully reverted).
 
 **Inspecting surge state:**
 

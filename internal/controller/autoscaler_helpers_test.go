@@ -14,6 +14,111 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+var _ = Describe("getMaxSurgeAttempts", func() {
+	makeTarget := func(annotations map[string]string) Surger {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Annotations: annotations},
+		}
+		return &DeploymentWrapper{obj: dep}
+	}
+
+	It("returns the default when no annotation is set", func() {
+		target := makeTarget(nil)
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(defaultTimeToReadyMinutes)))
+	})
+
+	It("returns the value from the time-to-ready annotation", func() {
+		target := makeTarget(map[string]string{TimeToReadyAnnotationKey: "10"})
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(10)))
+	})
+
+	It("returns 1 from a time-to-ready annotation of 1", func() {
+		target := makeTarget(map[string]string{TimeToReadyAnnotationKey: "1"})
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(1)))
+	})
+
+	It("returns the default when the annotation value is not a number", func() {
+		target := makeTarget(map[string]string{TimeToReadyAnnotationKey: "invalid"})
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(defaultTimeToReadyMinutes)))
+	})
+
+	It("returns the default when the annotation value is zero", func() {
+		target := makeTarget(map[string]string{TimeToReadyAnnotationKey: "0"})
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(defaultTimeToReadyMinutes)))
+	})
+
+	It("returns the default when the annotation value is negative", func() {
+		target := makeTarget(map[string]string{TimeToReadyAnnotationKey: "-5"})
+		Expect(getMaxSurgeAttempts(target)).To(Equal(int32(defaultTimeToReadyMinutes)))
+	})
+})
+
+var _ = Describe("validateTimeToReadyAnnotation", func() {
+	makeTarget := func(annotations map[string]string) Surger {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Annotations: annotations},
+		}
+		return &DeploymentWrapper{obj: dep}
+	}
+
+	It("returns nil when annotation is absent", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(nil))).To(Succeed())
+	})
+
+	It("returns nil when annotation is absent from a non-nil map", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{"other": "val"}))).To(Succeed())
+	})
+
+	It("returns nil for minimum valid value 1", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "1"}))).To(Succeed())
+	})
+
+	It("returns nil for maximum valid value 10", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "10"}))).To(Succeed())
+	})
+
+	It("returns nil for a value in the middle of the range", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "5"}))).To(Succeed())
+	})
+
+	It("returns an error for value 0", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "0"}))).To(HaveOccurred())
+	})
+
+	It("returns an error for value 11 (above maximum)", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "11"}))).To(HaveOccurred())
+	})
+
+	It("returns an error for a negative value", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "-1"}))).To(HaveOccurred())
+	})
+
+	It("returns an error for a non-numeric value", func() {
+		Expect(validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "fast"}))).To(HaveOccurred())
+	})
+
+	It("error message names the annotation key and the bad value", func() {
+		err := validateTimeToReadyAnnotation(makeTarget(map[string]string{TimeToReadyAnnotationKey: "99"}))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring(TimeToReadyAnnotationKey))
+		Expect(err.Error()).To(ContainSubstring("99"))
+	})
+})
+
+var _ = Describe("GetReadyReplicas", func() {
+	It("returns ReadyReplicas from deployment status", func() {
+		dep := &appsv1.Deployment{
+			Status: appsv1.DeploymentStatus{ReadyReplicas: 3},
+		}
+		Expect((&DeploymentWrapper{obj: dep}).GetReadyReplicas()).To(Equal(int32(3)))
+	})
+
+	It("returns 0 when no pods are ready", func() {
+		dep := &appsv1.Deployment{}
+		Expect((&DeploymentWrapper{obj: dep}).GetReadyReplicas()).To(Equal(int32(0)))
+	})
+})
+
 var _ = Describe("ResolveMinReplicas", func() {
 	It("should return 0 when KEDA ScaledObject has nil minReplicaCount (scale-to-zero)", func() {
 		ctx := context.Background()

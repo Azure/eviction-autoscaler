@@ -8,10 +8,14 @@ on:
         required: false
         type: string
       force_override:
-        description: 'Force re-tag an existing version (moves the tag to the current HEAD). Use to re-release a version with a fixed Dockerfile.'
+        description: 'Force re-tag an existing version (moves the tag to the specified commit, or HEAD if no commit given). Use to re-release a version with a fixed Dockerfile.'
         required: false
         type: boolean
         default: false
+      commit:
+        description: 'Commit SHA to tag (e.g. abc1234). Leave empty to use the latest HEAD of the branch.'
+        required: false
+        type: string
 
 jobs:
   create-tag:
@@ -85,9 +89,20 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@users.noreply.github.com"
-          git tag -a "${{ env.new_tag }}" -m "Release ${{ env.new_tag }}"
+          COMMIT_REF="${{ inputs.commit }}"
+          if [ -n "$COMMIT_REF" ]; then
+            # Validate the commit exists in this repo
+            if ! git cat-file -e "${COMMIT_REF}^{commit}" 2>/dev/null; then
+              echo "Error: commit '$COMMIT_REF' not found in this repository"
+              exit 1
+            fi
+            git tag -a "${{ env.new_tag }}" "$COMMIT_REF" -m "Release ${{ env.new_tag }}"
+            echo "Created production release tag: ${{ env.new_tag }} at commit $COMMIT_REF"
+          else
+            git tag -a "${{ env.new_tag }}" -m "Release ${{ env.new_tag }}"
+            echo "Created production release tag: ${{ env.new_tag }} at HEAD"
+          fi
           git push origin "${{ env.new_tag }}"
-          echo "Created production release tag: ${{ env.new_tag }}"
 
       - name: Trigger build and publish
         env:

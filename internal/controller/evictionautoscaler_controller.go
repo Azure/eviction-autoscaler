@@ -307,28 +307,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// If the surged pods are not all ready yet, give them more time before reverting.
 		// Reverting early would kill not-yet-ready pods on new nodes and lose drain progress.
-		// We requeue up to maxSurgeAttempts times (each waits one cooldown period) to handle
-		// pods that are slow to start. Once all desired pods are ready the drain can proceed,
-		// so we revert immediately rather than burning unnecessary attempts.
-		maxAttempts := getMaxSurgeAttempts(target)
-		if target.GetReadyReplicas() < target.GetReplicas() && EvictionAutoScaler.Status.SurgeAttempts < maxAttempts {
-			EvictionAutoScaler.Status.SurgeAttempts++
-			logger.Info("Surge active, waiting for pods to become ready before reverting",
-				"readyReplicas", target.GetReadyReplicas(),
-				"desiredReplicas", target.GetReplicas(),
-				"surgeAttempts", EvictionAutoScaler.Status.SurgeAttempts,
-				"maxSurgeAttempts", maxAttempts,
-				"target", EvictionAutoScaler.Spec.TargetName)
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", fmt.Sprintf("waiting for surged pods to become ready (attempt %d/%d)", EvictionAutoScaler.Status.SurgeAttempts, maxAttempts))
-			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
-
-		if EvictionAutoScaler.Status.SurgeAttempts >= maxAttempts {
-			logger.Info("Max surge attempts reached, reverting surge",
-				"readyReplicas", target.GetReadyReplicas(),
-				"desiredReplicas", target.GetReplicas(),
-				"surgeAttempts", EvictionAutoScaler.Status.SurgeAttempts,
-				"target", EvictionAutoScaler.Spec.TargetName)
+		if result, err, done := r.waitForSurgePodReadiness(ctx, EvictionAutoScaler, target); done {
+			return result, err
 		}
 
 		//okay we aren't at allowed disruptions Revert Target to the original state
@@ -358,6 +338,39 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+}
+
+// waitForSurgePodReadiness checks whether the surged pods are ready before allowing
+// a revert. If pods are not all ready and the retry budget is not exhausted it
+// increments SurgeAttempts, requeues with cooldown, and returns done=true.
+// If the budget is exhausted it logs a warning and returns done=false so the
+// caller proceeds with the unconditional revert.
+func (r *EvictionAutoScalerReconciler) waitForSurgePodReadiness(
+	ctx context.Context,
+	ea *myappsv1.EvictionAutoScaler,
+	target Surger,
+) (ctrl.Result, error, bool) {
+	logger := log.FromContext(ctx)
+	maxAttempts := getMaxSurgeAttempts(target)
+	if target.GetReadyReplicas() < target.GetReplicas() && ea.Status.SurgeAttempts < maxAttempts {
+		ea.Status.SurgeAttempts++
+		logger.Info("Surge active, waiting for pods to become ready before reverting",
+			"readyReplicas", target.GetReadyReplicas(),
+			"desiredReplicas", target.GetReplicas(),
+			"surgeAttempts", ea.Status.SurgeAttempts,
+			"maxSurgeAttempts", maxAttempts,
+			"target", ea.Spec.TargetName)
+		ready(&ea.Status.Conditions, "Reconciled", fmt.Sprintf("waiting for surged pods to become ready (attempt %d/%d)", ea.Status.SurgeAttempts, maxAttempts))
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, ea), true
+	}
+	if ea.Status.SurgeAttempts >= maxAttempts {
+		logger.Info("Max surge attempts reached, reverting surge",
+			"readyReplicas", target.GetReadyReplicas(),
+			"desiredReplicas", target.GetReplicas(),
+			"surgeAttempts", ea.Status.SurgeAttempts,
+			"target", ea.Spec.TargetName)
+	}
+	return ctrl.Result{}, nil, false
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {

@@ -639,6 +639,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(5)), "no scale-down yet: still within cooldown")
 
+			// Simulate all surged pods becoming ready so the readiness check allows revert.
+			dep.Status.Replicas = 5
+			dep.Status.ReadyReplicas = 5
+			Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
 			// ── Cooldown expires ──────────────────────────────────────────────────────────
 			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
 			ea.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))

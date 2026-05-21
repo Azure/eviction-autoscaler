@@ -133,6 +133,9 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              surgeAttempts:
+                format: int32
+                type: integer
             required:
             - deploymentGeneration
             - minReplicas

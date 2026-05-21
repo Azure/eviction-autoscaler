@@ -783,6 +783,14 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
 			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(Equal(EvictionAutoScaler.Status.LastEviction.EvictionTime))
 
+			// All surged pods are now ready — the new retry logic only reverts when
+			// readyReplicas >= desiredReplicas (or max attempts exhausted).
+			err = k8sClient.Get(ctx, deploymentNamespacedName, deployment)
+			Expect(err).NotTo(HaveOccurred())
+			deployment.Status.Replicas = 2
+			deployment.Status.ReadyReplicas = 2
+			Expect(k8sClient.Status().Update(ctx, deployment)).To(Succeed())
+
 			//second reconcile should scaledown.
 			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
@@ -1324,6 +1332,223 @@ func int32Ptr(i int32) *int32 {
 	return &i
 }
 
+var _ = Describe("EvictionAutoScaler Controller - surge retry behavior", func() {
+	ctx := context.Background()
+
+	var (
+		surgeNs         string
+		eaNsName        types.NamespacedName
+		deployNsName    types.NamespacedName
+		surgeReconciler *EvictionAutoScalerReconciler
+	)
+
+	BeforeEach(func() {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-surge-",
+				Annotations: map[string]string{
+					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		surgeNs = ns.Name
+		eaNsName = types.NamespacedName{Name: "surge-ea", Namespace: surgeNs}
+		deployNsName = types.NamespacedName{Name: "surge-deploy", Namespace: surgeNs}
+
+		// Create a deployment that is already in the surged state (spec.replicas=2, surge annotation present).
+		surge := intstr.FromInt(1)
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "surge-deploy",
+				Namespace: surgeNs,
+				Annotations: map[string]string{
+					EvictionSurgeReplicasAnnotationKey: "2",
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: int32Ptr(2),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "surge-test"}},
+				Strategy: appsv1.DeploymentStrategy{
+					RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "surge-test"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: "surge-ea", Namespace: surgeNs},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 1},
+				Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "surge-test"}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		// DisruptionsAllowed > 0 so the reconciler skips the scale-up path and goes straight to revert logic.
+		pdb.Status.DisruptionsAllowed = 1
+		Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+		// Create EA with a past eviction (beyond cooldown) so the cooldown gate is already open.
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "surge-ea", Namespace: surgeNs},
+			Spec: v1.EvictionAutoScalerSpec{
+				TargetName: "surge-deploy",
+				TargetKind: "deployment",
+				LastEviction: v1.Eviction{
+					PodName:      "evicted-pod",
+					EvictionTime: metav1.NewTime(time.Now().Add(-2 * cooldown)),
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+		// Set EA status to reflect the surged state: minReplicas=1, attempt 1 already recorded.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		ea.Status.MinReplicas = 1
+		ea.Status.TargetGeneration = dep.Generation
+		ea.Status.SurgeAttempts = 1
+		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+		surgeReconciler = &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &evictionTestFilter{},
+		}
+	})
+
+	It("requeues and increments SurgeAttempts when pods are not ready and under max attempts", func() {
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Status.Replicas = 2
+		dep.Status.ReadyReplicas = 1 // 1 of 2 desired pods ready
+		Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+		result, err := surgeReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(cooldown))
+
+		// Deployment must NOT be reverted.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+
+		// SurgeAttempts must be incremented.
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		Expect(ea.Status.SurgeAttempts).To(Equal(int32(2)))
+	})
+
+	It("reverts immediately when all surged pods are ready before max attempts", func() {
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Status.Replicas = 2
+		dep.Status.ReadyReplicas = 2 // all desired pods ready
+		Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+		result, err := surgeReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+		// Deployment must be reverted to the original minReplicas.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+
+		// SurgeAttempts must be reset.
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		Expect(ea.Status.SurgeAttempts).To(Equal(int32(0)))
+	})
+
+	It("gives up and reverts after max surge attempts when pods remain not ready", func() {
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Status.ReadyReplicas = 0 // pods still not ready
+		Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+		// Advance SurgeAttempts to the default maximum.
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		ea.Status.SurgeAttempts = defaultTimeToReadyMinutes
+		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+		result, err := surgeReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+		// Deployment must be reverted despite pods not being ready.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		Expect(ea.Status.SurgeAttempts).To(Equal(int32(0)))
+	})
+
+	It("uses the time-to-ready annotation on the deployment to determine max attempts", func() {
+		// Annotate the deployment with time-to-ready=2 → max 2 attempts.
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Annotations[TimeToReadyAnnotationKey] = "2"
+		Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed()) // refresh RV
+		dep.Status.Replicas = 2
+		dep.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+		// SurgeAttempts is at the annotation-based max (2).
+		// Re-sync TargetGeneration in case annotating the deployment bumped the generation.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		ea.Status.SurgeAttempts = 2
+		ea.Status.TargetGeneration = dep.Generation
+		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+		result, err := surgeReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+	})
+
+	It("keeps waiting when time-to-ready annotation allows more attempts", func() {
+		// Annotate the deployment with time-to-ready=10 → max 10 attempts.
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Annotations[TimeToReadyAnnotationKey] = "10"
+		Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		dep.Status.Replicas = 2
+		dep.Status.ReadyReplicas = 1 // still not fully ready
+		Expect(k8sClient.Status().Update(ctx, dep)).To(Succeed())
+
+		// SurgeAttempts is well under the annotation-based max.
+		// Re-sync TargetGeneration in case annotating the deployment bumped the generation.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		ea.Status.SurgeAttempts = 3
+		ea.Status.TargetGeneration = dep.Generation
+		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+		result, err := surgeReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result.RequeueAfter).To(Equal(cooldown))
+
+		// Deployment must NOT be reverted.
+		Expect(k8sClient.Get(ctx, deployNsName, dep)).To(Succeed())
+		Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+
+		Expect(k8sClient.Get(ctx, eaNsName, ea)).To(Succeed())
+		Expect(ea.Status.SurgeAttempts).To(Equal(int32(4)))
+	})
+})
+
 var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config", func() {
 	ctx := context.Background()
 
@@ -1445,5 +1670,113 @@ var _ = Describe("EvictionAutoScaler Controller - unsupported autoscaler config"
 		Expect(degradedCondition.Reason).To(Equal("UnsupportedAutoscalerConfiguration"))
 		Expect(degradedCondition.Message).To(ContainSubstring("KEDA ScaledObject"))
 		Expect(degradedCondition.Message).To(ContainSubstring("standalone HPA"))
+	})
+})
+
+var _ = Describe("EvictionAutoScaler Controller - invalid time-to-ready annotation", func() {
+	ctx := context.Background()
+
+	// buildInvalidAnnotationScenario creates all necessary resources and returns a
+	// ready-to-use reconciler plus the EA namespaced name.
+	buildScenario := func(annotationValue string) (*EvictionAutoScalerReconciler, types.NamespacedName) {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "test-ttr-invalid-",
+				Annotations:  map[string]string{"eviction-autoscaler.azure.com/enable": "true"},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+		namespace := ns.Name
+
+		surge := intstr.FromInt(1)
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "ttr-deploy",
+				Namespace: namespace,
+				Annotations: map[string]string{
+					TimeToReadyAnnotationKey: annotationValue,
+				},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Replicas: ptr.To(int32(1)),
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "ttr"}},
+				Strategy: appsv1.DeploymentStrategy{
+					RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
+				},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "ttr"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: "ttr-ea", Namespace: namespace},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 1},
+				Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "ttr"}},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: "ttr-ea", Namespace: namespace},
+			Spec: v1.EvictionAutoScalerSpec{
+				TargetName: "ttr-deploy",
+				TargetKind: "deployment",
+			},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+		reconciler := &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &evictionTestFilter{},
+		}
+		eaNsName := types.NamespacedName{Name: "ttr-ea", Namespace: namespace}
+		return reconciler, eaNsName
+	}
+
+	checkDegraded := func(eaNsName types.NamespacedName) {
+		var updated v1.EvictionAutoScaler
+		Expect(k8sClient.Get(ctx, eaNsName, &updated)).To(Succeed())
+		var cond *metav1.Condition
+		for i := range updated.Status.Conditions {
+			if updated.Status.Conditions[i].Type == "Degraded" {
+				cond = &updated.Status.Conditions[i]
+				break
+			}
+		}
+		Expect(cond).ToNot(BeNil(), "expected Degraded condition")
+		Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond.Reason).To(Equal("InvalidTimeToReadyAnnotation"))
+		Expect(cond.Message).To(ContainSubstring(TimeToReadyAnnotationKey))
+	}
+
+	It("marks EA degraded when time-to-ready is above the maximum (11)", func() {
+		reconciler, eaNsName := buildScenario("11")
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		checkDegraded(eaNsName)
+	})
+
+	It("marks EA degraded when time-to-ready is 0", func() {
+		reconciler, eaNsName := buildScenario("0")
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		checkDegraded(eaNsName)
+	})
+
+	It("marks EA degraded when time-to-ready is not a number", func() {
+		reconciler, eaNsName := buildScenario("fast")
+		result, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaNsName})
+		Expect(err).ToNot(HaveOccurred())
+		Expect(result.RequeueAfter).To(BeZero())
+		checkDegraded(eaNsName)
 	})
 })

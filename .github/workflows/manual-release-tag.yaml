@@ -93,8 +93,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          gh workflow run build-publish-mcr.yaml \
-            --repo ${{ github.repository }} \
-            --field tag=${{ env.new_tag }} \
-            --field force_override=${{ inputs.force_override || 'false' }}
+          # Only pass force_override field if true — older versions of the workflow
+          # don't define this input and GitHub rejects unknown fields.
+          if [ "${{ inputs.force_override }}" = "true" ]; then
+            gh workflow run build-publish-mcr.yaml \
+              --repo ${{ github.repository }} \
+              --ref ${{ github.ref_name }} \
+              --field tag=${{ env.new_tag }} \
+              --field force_override=true
+          else
+            gh workflow run build-publish-mcr.yaml \
+              --repo ${{ github.repository }} \
+              --ref ${{ github.ref_name }} \
+              --field tag=${{ env.new_tag }}
+          fi
           echo "Triggered build-publish-mcr.yaml for tag ${{ env.new_tag }} (force_override=${{ inputs.force_override || 'false' }})"

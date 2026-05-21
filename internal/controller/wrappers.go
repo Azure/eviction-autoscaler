@@ -11,6 +11,7 @@ import (
 type Surger interface {
 	//GetGeneration() int64
 	GetReplicas() int32
+	GetReadyReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
@@ -40,6 +41,10 @@ func (d *DeploymentWrapper) GetReplicas() int32 {
 		return 1 // Default value in Kubernetes if not set
 	}
 	return *d.obj.Spec.Replicas
+}
+
+func (d *DeploymentWrapper) GetReadyReplicas() int32 {
+	return d.obj.Status.ReadyReplicas
 }
 
 func (d *DeploymentWrapper) SetReplicas(replicas int32) {
@@ -85,6 +90,10 @@ func (s *StatefulSetWrapper) GetReplicas() int32 {
 		return 1 // Default value in Kubernetes if not set
 	}
 	return *s.obj.Spec.Replicas
+}
+
+func (s *StatefulSetWrapper) GetReadyReplicas() int32 {
+	return s.obj.Status.ReadyReplicas
 }
 
 func (s *StatefulSetWrapper) SetReplicas(replicas int32) {

@@ -42,6 +42,55 @@ type EvictionAutoScalerReconciler struct {
 
 const cooldown = 1 * time.Minute
 
+// defaultTimeToReadyMinutes is used when the deployment does not have the
+// eviction-autoscaler.azure.com/time-to-ready annotation. The controller requeues
+// once per cooldown period, so this is also the default number of retries.
+const defaultTimeToReadyMinutes = 5
+
+// TimeToReadyAnnotationKey is a deployment annotation that tells the controller how
+// many minutes the deployment's pods typically take to become Ready. The controller
+// uses this to determine how many times to requeue (one per cooldown minute) before
+// giving up and reverting the surge.
+// Example: eviction-autoscaler.azure.com/time-to-ready: "10"
+const TimeToReadyAnnotationKey = "eviction-autoscaler.azure.com/time-to-ready"
+
+// getMaxSurgeAttempts returns the maximum number of requeue attempts before the
+// controller gives up waiting for surged pods to become ready and reverts the surge.
+// It reads the time-to-ready annotation from the target deployment (in minutes) and
+// divides by the cooldown period. Falls back to defaultTimeToReadyMinutes.
+// Callers must have already validated the annotation with validateTimeToReadyAnnotation.
+func getMaxSurgeAttempts(target Surger) int32 {
+	if annotations := target.Obj().GetAnnotations(); annotations != nil {
+		if val, ok := annotations[TimeToReadyAnnotationKey]; ok {
+			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil && parsed > 0 {
+				return int32(math.Ceil(float64(parsed) / cooldown.Minutes()))
+			}
+		}
+	}
+	return int32(math.Ceil(float64(defaultTimeToReadyMinutes) / cooldown.Minutes()))
+}
+
+// validateTimeToReadyAnnotation checks the TimeToReadyAnnotationKey annotation on the
+// target. If present the value must be an integer in [1, 10] (inclusive). Returns a
+// non-nil error with a human-readable message when the annotation is invalid so the
+// caller can mark the EA CR as Degraded.
+func validateTimeToReadyAnnotation(target Surger) error {
+	annotations := target.Obj().GetAnnotations()
+	if annotations == nil {
+		return nil
+	}
+	val, ok := annotations[TimeToReadyAnnotationKey]
+	if !ok {
+		return nil
+	}
+	parsed, err := strconv.ParseInt(val, 10, 32)
+	if err != nil || parsed < 1 || parsed > 10 {
+		return fmt.Errorf("invalid %s annotation %q: must be an integer between 1 and 10",
+			TimeToReadyAnnotationKey, val)
+	}
+	return nil
+}
+
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/finalizers,verbs=update
@@ -120,6 +169,16 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		return ctrl.Result{}, err
+	}
+
+	// Validate the time-to-ready annotation before doing any surge work.
+	// An out-of-range value is a misconfiguration that would produce confusing behaviour,
+	// so we surface it immediately as a Degraded condition and stop reconciling.
+	if err := validateTimeToReadyAnnotation(target); err != nil {
+		logger.Error(err, "invalid time-to-ready annotation, marking EA as degraded",
+			"target", EvictionAutoScaler.Spec.TargetName)
+		degraded(&EvictionAutoScaler.Status.Conditions, "InvalidTimeToReadyAnnotation", err.Error())
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
@@ -222,6 +281,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 			// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+			EvictionAutoScaler.Status.SurgeAttempts = 1
 			//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
 			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
@@ -245,6 +305,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
+		// If the surged pods are not all ready yet, give them more time before reverting.
+		// Reverting early would kill not-yet-ready pods on new nodes and lose drain progress.
+		if result, err, done := r.waitForSurgePodReadiness(ctx, EvictionAutoScaler, target); done {
+			return result, err
+		}
+
 		//okay we aren't at allowed disruptions Revert Target to the original state
 		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {
@@ -260,6 +326,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
+		EvictionAutoScaler.Status.SurgeAttempts = 0
 		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
@@ -271,6 +338,39 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+}
+
+// waitForSurgePodReadiness checks whether the surged pods are ready before allowing
+// a revert. If pods are not all ready and the retry budget is not exhausted it
+// increments SurgeAttempts, requeues with cooldown, and returns done=true.
+// If the budget is exhausted it logs a warning and returns done=false so the
+// caller proceeds with the unconditional revert.
+func (r *EvictionAutoScalerReconciler) waitForSurgePodReadiness(
+	ctx context.Context,
+	ea *myappsv1.EvictionAutoScaler,
+	target Surger,
+) (ctrl.Result, error, bool) {
+	logger := log.FromContext(ctx)
+	maxAttempts := getMaxSurgeAttempts(target)
+	if target.GetReadyReplicas() < target.GetReplicas() && ea.Status.SurgeAttempts < maxAttempts {
+		ea.Status.SurgeAttempts++
+		logger.Info("Surge active, waiting for pods to become ready before reverting",
+			"readyReplicas", target.GetReadyReplicas(),
+			"desiredReplicas", target.GetReplicas(),
+			"surgeAttempts", ea.Status.SurgeAttempts,
+			"maxSurgeAttempts", maxAttempts,
+			"target", ea.Spec.TargetName)
+		ready(&ea.Status.Conditions, "Reconciled", fmt.Sprintf("waiting for surged pods to become ready (attempt %d/%d)", ea.Status.SurgeAttempts, maxAttempts))
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, ea), true
+	}
+	if ea.Status.SurgeAttempts >= maxAttempts {
+		logger.Info("Max surge attempts reached, reverting surge",
+			"readyReplicas", target.GetReadyReplicas(),
+			"desiredReplicas", target.GetReplicas(),
+			"surgeAttempts", ea.Status.SurgeAttempts,
+			"target", ea.Spec.TargetName)
+	}
+	return ctrl.Result{}, nil, false
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {

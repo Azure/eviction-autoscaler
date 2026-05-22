@@ -568,7 +568,7 @@ As additional nodes are cordoned during a rolling drain, `displaced` grows and t
 
 Scale-down back to `minReplicas` happens only when **both** conditions are met:
 
-1. The last eviction happened more than the cooldown period ago (default 30s).
+1. The last eviction happened more than the cooldown period ago (default 60s).
 2. The PDB's `DisruptionsAllowed` is greater than zero (i.e. the drain is no longer blocking evictions).
 
 **Importantly, the replica count does not decrease while a drain is still in progress.** If node A drains but node B is still cordoned and blocking evictions, replicas stay at their current level until the full drain completes and the cooldown expires. This avoids a churn cycle where scale-down triggers new evictions, which trigger scale-up again.

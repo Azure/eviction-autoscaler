@@ -245,7 +245,17 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
-		//okay we aren't at allowed disruptions Revert Target to the original state
+		// Wait until the PDB allows disruptions before reverting.
+		// DisruptionsAllowed > 0 means enough pods are healthy to absorb the scale-down.
+		if pdb.Status.DisruptionsAllowed == 0 {
+			logger.Info("Waiting for PDB to allow disruptions before reverting surge",
+				"pdb", pdb.Name,
+				"target", EvictionAutoScaler.Spec.TargetName)
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "waiting for PDB to allow disruptions before reverting")
+			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
+
+		//okay we have allowed disruptions, revert target to the original state
 		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {
 			return ctrl.Result{}, err

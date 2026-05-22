@@ -7,12 +7,18 @@ on:
         description: 'Version to release (e.g., 1.0.0). Leave empty to auto-bump minor version.'
         required: false
         type: string
+      force_override:
+        description: 'Force re-tag an existing version (moves the tag to the current HEAD). Use to re-release a version with a fixed Dockerfile.'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   create-tag:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
 
     steps:
       - name: Checkout code
@@ -65,8 +71,14 @@ jobs:
       - name: Check if tag already exists
         run: |
           if git rev-parse "${{ env.new_tag }}" >/dev/null 2>&1; then
-            echo "Error: Tag ${{ env.new_tag }} already exists"
-            exit 1
+            if [ "${{ inputs.force_override }}" = "true" ]; then
+              echo "WARNING: Tag ${{ env.new_tag }} already exists. force_override=true — deleting and re-creating."
+              git push origin --delete "${{ env.new_tag }}" || true
+              git tag -d "${{ env.new_tag }}" || true
+            else
+              echo "Error: Tag ${{ env.new_tag }} already exists"
+              exit 1
+            fi
           fi
 
       - name: Create and push production tag
@@ -76,4 +88,23 @@ jobs:
           git tag -a "${{ env.new_tag }}" -m "Release ${{ env.new_tag }}"
           git push origin "${{ env.new_tag }}"
           echo "Created production release tag: ${{ env.new_tag }}"
-          echo "This will trigger the ACR build and publish workflow."
+
+      - name: Trigger build and publish
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          # Only pass force_override field if true — older versions of the workflow
+          # don't define this input and GitHub rejects unknown fields.
+          if [ "${{ inputs.force_override }}" = "true" ]; then
+            gh workflow run build-publish-mcr.yaml \
+              --repo ${{ github.repository }} \
+              --ref ${{ github.ref_name }} \
+              --field tag=${{ env.new_tag }} \
+              --field force_override=true
+          else
+            gh workflow run build-publish-mcr.yaml \
+              --repo ${{ github.repository }} \
+              --ref ${{ github.ref_name }} \
+              --field tag=${{ env.new_tag }}
+          fi
+          echo "Triggered build-publish-mcr.yaml for tag ${{ env.new_tag }} (force_override=${{ inputs.force_override || 'false' }})"

@@ -199,3 +199,40 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 	}
 	return false
 }
+
+// countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned
+// (Unschedulable) nodes. It aggregates across all cordoned nodes, so simultaneous drains
+// are counted correctly.
+func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (int32, error) {
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PDB selector: %w", err)
+	}
+
+	var podList corev1.PodList
+	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
+	}
+
+	// We use node cordon (Spec.Unschedulable) as the signal for "pods need to move".
+	// This is the best signal available today via the controller-runtime cache (no API server round-trip).
+	// In the future this may be replaced by a more direct pod-eviction signal — e.g. via an
+	// admission webhook interceptor or pod conditions — which would let us right-size the surge
+	// without needing to inspect nodes at all.
+	var nodeList corev1.NodeList
+	if err := c.List(ctx, &nodeList); err != nil {
+		return 0, fmt.Errorf("failed to list nodes: %w", err)
+	}
+	cordoned := make(map[string]bool, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		cordoned[node.Name] = node.Spec.Unschedulable
+	}
+
+	var count int32
+	for _, pod := range podList.Items {
+		if cordoned[pod.Spec.NodeName] {
+			count++
+		}
+	}
+	return count, nil
+}

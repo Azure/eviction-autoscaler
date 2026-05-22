@@ -1,15 +1,17 @@
 name: Build and publish to ACR
 
 on:
-  push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       tag:
         description: 'Production tag to build (e.g., 0.0.17, 1.0.0). Must match X.Y.Z format, no dev tags allowed.'
         required: true
-        type: string    
+        type: string
+      force_override:
+        description: 'Force re-release an existing ACR version (unlocks and overwrites). Use when re-tagging with a fixed Dockerfile.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -112,7 +114,7 @@ jobs:
         az login --identity
         az acr login -n $RELEASE_ACR
         if [ -n "$TAG_VERSION" ]; then
-          ./hack/release.sh "$TAG_VERSION"
+          FORCE_OVERRIDE="${{ inputs.force_override || 'false' }}" ./hack/release.sh "$TAG_VERSION"
         else
           ./hack/release.sh
         fi

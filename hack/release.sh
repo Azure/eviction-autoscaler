@@ -142,11 +142,22 @@ existing_tag=$(az acr repository show-tags -n "$RELEASE_ACR" --repository "$repo
 set -e
 
 if [[ -n "$existing_tag" ]]; then
-  echo "Version $version already exists in ACR - skipping release"
-  echo "To release a new version, create a new tag:"
-  echo "  git tag <new-version>  (e.g., 1.0.1)"
-  echo "  git push origin <new-version>"
-  exit 1
+  existing_digest=$(crane digest "${IMAGE_REPO}:${version}" 2>/dev/null || true)
+  echo "Version $version already exists in ACR (digest: ${existing_digest:-unknown})."
+  if [[ "${FORCE_OVERRIDE:-false}" == "true" ]]; then
+    echo "WARNING: FORCE_OVERRIDE=true — proceeding with override."
+    echo "Unlocking existing image and Helm chart tags in ACR to allow overwrite..."
+    az acr repository update -n "${RELEASE_ACR}" --image "${repo_path}:${version}" --write-enabled true --delete-enabled true
+    az acr repository update -n "${RELEASE_ACR}" --image "${repo_path}/helm/eviction-autoscaler:${version}" --write-enabled true --delete-enabled true || true
+    echo "Successfully unlocked $version in ACR. The existing image and Helm chart will be replaced."
+  else
+    echo "Version $version already exists in ACR - skipping release"
+    echo "To release a new version, create a new tag:"
+    echo "  git tag <new-version>  (e.g., 1.0.1)"
+    echo "  git push origin <new-version>"
+    echo "To override the existing version, re-run the workflow with force_override=true."
+    exit 1
+  fi
 fi
 
 echo "Releasing eviction-autoscaler"
@@ -170,6 +181,13 @@ IMG="${IMAGE_REPO}:${version}"
 img_digest="$(crane digest "$IMG")"
 IMG_REF="${IMAGE_REPO}@${img_digest}"
 echo "Image pushed: ${IMG_REF}"
+if [[ -n "${existing_digest:-}" ]]; then
+  if [[ "$img_digest" != "$existing_digest" ]]; then
+    echo "Image successfully replaced: ${existing_digest} → ${img_digest}"
+  else
+    echo "WARNING: Image digest unchanged after push: ${img_digest}"
+  fi
+fi
 
 echo "Verifying manifest contains platforms: ${RELEASE_PLATFORMS}..."
 manifest_output="$(docker buildx imagetools inspect "$IMG")"

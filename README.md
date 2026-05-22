@@ -12,6 +12,8 @@
 - [Installation](#installation)
 - [Networking](#networking)
 - [Usage](#usage)
+  - [Surge Annotations](#surge-annotations)
+  - [How Surge Sizing Works](#how-surge-sizing-works)
 
 ## Introduction
 
@@ -537,6 +539,47 @@ kubectl get scaledobject <name> -n <namespace> -o jsonpath='{.metadata.annotatio
 # Check the original minReplicas that will be restored on revert
 kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations.eviction-autoscaler\.azure\.com/original-min-replicas}'
 ```
+
+### How Surge Sizing Works
+
+Eviction-autoscaler scales **to** a specific target rather than scaling **by** a fixed amount. The target is computed per reconcile:
+
+```
+surgeTarget = minReplicas + displaced
+```
+
+where `displaced` is the number of PDB-selected pods currently running on cordoned nodes. `surgeTarget` is capped at `minReplicas + maxSurge` (the deployment's configured max surge). This means the surge is right-sized to exactly what is needed — no over-provisioning.
+
+#### Incremental Scale-Up
+
+As additional nodes are cordoned during a rolling drain, `displaced` grows and the controller tops the deployment up automatically on each reconcile.
+
+**Example — two-node drain:**
+
+| Event | Cordoned nodes | Displaced pods | Replicas |
+|---|---|---|---|
+| Initial state | 0 | 0 | `minReplicas` = 3 |
+| Node A cordoned (2 pods) | 1 | 2 | 3 + 2 = **5** |
+| Node B cordoned (1 pod) | 2 | 3 | 3 + 3 = **6** |
+| Pods drain off node A | 1 | 1 | still **6** (see below) |
+| All drains complete, cooldown expires | 0 | 0 | back to **3** |
+
+#### Scale-Down Timing
+
+Scale-down back to `minReplicas` happens only when **both** conditions are met:
+
+1. The last eviction happened more than the cooldown period ago (default 30s).
+2. The PDB's `DisruptionsAllowed` is greater than zero (i.e. the drain is no longer blocking evictions).
+
+**Importantly, the replica count does not decrease while a drain is still in progress.** If node A drains but node B is still cordoned and blocking evictions, replicas stay at their current level until the full drain completes and the cooldown expires. This avoids a churn cycle where scale-down triggers new evictions, which trigger scale-up again.
+
+```
+# What you will see during a partial drain
+$ kubectl get deployment my-app -o jsonpath='{.spec.replicas}'
+6   # stays here even after some pods have moved, until all drains complete + cooldown
+```
+
+If you need to force a faster scale-down you can manually uncordon nodes; once `DisruptionsAllowed` rises and the cooldown passes, the controller will revert.
 
 ### Build and Push Multi-Arch Image
 

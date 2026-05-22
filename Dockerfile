@@ -2,7 +2,9 @@
 
 # Build the manager binary
 # Use Microsoft's FIPS-validated Go distribution (uses OpenSSL backend for FIPS)
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
+# Use --platform=$TARGETPLATFORM so CGO compiles natively via QEMU, avoiding
+# cross-compiler issues with CGO_ENABLED=1 on arm64.
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
 
 WORKDIR /workspace
 

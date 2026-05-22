@@ -381,7 +381,9 @@ var _ = Describe("controller", Ordered, func() {
 				ExpectWithOffset(1, err).NotTo(HaveOccurred())
 				deployment.Spec.Replicas = ptr.To(int32(2))
 				err = clientset.Update(ctx, deployment, &client.UpdateOptions{})
-				Expect(err).NotTo(HaveOccurred())
+				if err != nil {
+					return err // 409 conflict: Eventually will retry with a fresh Get above
+				}
 				return nil
 			}
 			EventuallyWithOffset(1, scaleNginxReplicas, time.Minute, time.Second).Should(Succeed())

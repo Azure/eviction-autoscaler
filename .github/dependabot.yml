@@ -1,0 +1,68 @@
+# Dependabot configuration for Azure/eviction-autoscaler
+# Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+#
+# This file enables Dependabot VERSION updates (scheduled hygiene bumps that keep
+# dependencies current). CVE-driven SECURITY updates are enabled separately in
+# repo Settings > Code security, are driven by Dependabot alerts, and arrive as
+# soon as an advisory is published regardless of the schedule below.
+version: 2
+
+updates:
+  # --- Go modules (go.mod / go.sum) ----------------------------------------
+  # Primary surface for dependency CVEs in this project.
+  - package-ecosystem: "gomod"
+    directory: "/"                 # go.mod / go.sum live at the repo root
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "go"
+    groups:
+      # Kubernetes libraries are version-locked to one another and must be
+      # bumped together (e.g. every k8s.io/* moves to v0.36.0 at the same time).
+      # Grouping them into a single PR prevents inconsistent, build-breaking bumps.
+      kubernetes:
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+      # Everything else: bundle routine minor + patch bumps into one PR to reduce
+      # review noise and CI runs. Major bumps fall outside this group and are
+      # raised as individual PRs so breaking changes get focused review.
+      go-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # --- Docker base images (Dockerfile) -------------------------------------
+  # Watches the FROM tags: the Microsoft FIPS Go builder and the Azure Linux
+  # distroless base. Managed DALEC rebuilds the OS layer downstream, so this
+  # ecosystem mainly catches major/minor base-image version bumps.
+  - package-ecosystem: "docker"
+    directory: "/"                 # Dockerfile is at the repo root
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "docker"
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
+
+  # --- GitHub Actions (.github/workflows/*) --------------------------------
+  # Keeps action versions current (e.g. actions/checkout). Supports the
+  # supply-chain hardening that the existing Scorecard workflow encourages.
+  - package-ecosystem: "github-actions"
+    directory: "/"                 # "/" maps to .github/workflows for this ecosystem
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

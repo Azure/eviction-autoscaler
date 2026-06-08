@@ -24,7 +24,7 @@ spec:
         app.kubernetes.io/component: controller
         app.kubernetes.io/instance: {{ .Release.Name }}
     spec:
-      serviceAccountName: {{ include "eviction-autoscaler.fullname" . }}
+      serviceAccountName: eviction-autoscaler
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true

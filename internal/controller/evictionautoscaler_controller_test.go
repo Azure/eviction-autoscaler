@@ -237,6 +237,40 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 		})
 
+		It("should error when the target deployment has maxSurge zero", func() {
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			deployment := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
+			zeroSurge := intstr.FromInt(0)
+			deployment.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+
+			// Run once to populate status from the target with maxSurge already set to zero.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			evictionAutoScaler := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, evictionAutoScaler)).To(Succeed())
+			evictionAutoScaler.Spec.LastEviction = v1.Eviction{
+				PodName:      "somepod",
+				EvictionTime: metav1.Now(),
+			}
+			Expect(k8sClient.Update(ctx, evictionAutoScaler)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("max surge 0"))
+		})
+
 		It("should surge by exactly displaced pod count when pods are on a cordoned node", func() {
 			By("setting up a cordoned node and pods on it")
 			controllerReconciler := &EvictionAutoScalerReconciler{

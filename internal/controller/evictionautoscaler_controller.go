@@ -181,10 +181,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	maxSurgeTarget := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
 		// this should never happen since most eviction autoscalers are generated but possible if manually created
-		// so just error.
-		err := errors.New("max surge 0 eviction autoscaler makes no sense")
-		logger.Error(err, "invalid max surge", "pdb", pdb.Name, "target", EvictionAutoScaler.Spec.TargetName)
-		return ctrl.Result{}, err
+		// so degrade and do nothing
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", "max surge 0 eviction autoscaler makes no sense"))
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	// If the PDB is blocking evictions, compute a right-sized surge: bring up exactly

@@ -815,54 +815,5 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
 			Expect(err).To(HaveOccurred())
 		})
-
-		It("should delete existing EvictionAutoScaler for user-owned PDB when namespace is disabled", func() {
-			// Start with namespace enabled
-			ns := &corev1.Namespace{}
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true"}
-			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
-
-			setupDeployment()
-
-			// Create a user-owned PDB (no ownedBy annotation)
-			pdb := &policyv1.PodDisruptionBudget{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      deploymentName,
-					Namespace: namespace,
-				},
-				Spec: policyv1.PodDisruptionBudgetSpec{
-					Selector: &metav1.LabelSelector{
-						MatchLabels: map[string]string{"app": deploymentName},
-					},
-				},
-			}
-			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
-
-			// First reconcile: namespace enabled → EvictionAutoScaler should be created
-			req := reconcile.Request{
-				NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
-			}
-			_, err := reconciler.Reconcile(ctx, req)
-			Expect(err).ToNot(HaveOccurred())
-
-			eas := &types.EvictionAutoScaler{}
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, eas)
-			Expect(err).ToNot(HaveOccurred(), "EvictionAutoScaler should exist after first reconcile")
-
-			// Disable the namespace (simulates user annotating namespace with enable=false)
-			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: namespace}, ns)).To(Succeed())
-			ns.Annotations = map[string]string{namespacefilter.EnableEvictionAutoscalerAnnotationKey: "false"}
-			Expect(k8sClient.Update(ctx, ns)).To(Succeed())
-
-			// Second reconcile: namespace now disabled → EvictionAutoScaler should be deleted.
-			// In production this reconcile is triggered by requeuePDBsOnNamespaceChange when the
-			// namespace annotation changes; the predicate fix ensures that event is not filtered out.
-			_, err = reconciler.Reconcile(ctx, req)
-			Expect(err).ToNot(HaveOccurred())
-
-			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, eas)
-			Expect(err).To(HaveOccurred(), "EvictionAutoScaler should be deleted after namespace is disabled")
-		})
 	})
 })

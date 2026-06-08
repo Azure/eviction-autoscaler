@@ -232,13 +232,8 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				// Only filter PDB updates; let Namespace updates through so namespace
-				// annotation changes (enable/disable) trigger cleanup of EvictionAutoScalers
-				if _, ok := e.ObjectNew.(*policyv1.PodDisruptionBudget); ok {
-					return triggerOnPDBAnnotationChange(e, logger)
-				}
-				// For non-PDB objects (e.g. Namespace), always trigger
-				return true
+				// Trigger on ownedBy annotation changes
+				return triggerOnPDBAnnotationChange(e, logger)
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },
 		}).

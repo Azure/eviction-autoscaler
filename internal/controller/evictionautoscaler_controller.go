@@ -12,7 +12,7 @@ import (
 	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 
-	// v1 "k8s.io/api/apps/v1"
+	//v1 "k8s.io/api/apps/v1"
 
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,10 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
-const (
-	EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
-	OriginalMinReplicasAnnotationKey   = "eviction-autoscaler.azure.com/original-min-replicas"
-)
+const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
+const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
@@ -60,13 +58,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
 	err := r.Get(ctx, req.NamespacedName, EvictionAutoScaler)
 	if err != nil {
-		// should we use a finalizer to scale back down on deletion?
+		//should we use a finalizer to scale back down on deletion?
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil // EvictionAutoScaler not found, could be deleted, nothing to do
 		}
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
-	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() // don't mutate the cache
+	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
 
 	// Check if eviction autoscaler should be enabled for this namespace
 	isEnabled, err := r.Filter.Filter(ctx, r.Client, EvictionAutoScaler.Namespace)
@@ -158,7 +156,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			EvictionAutoScaler.Status.MinReplicas = minReplicas
 		}
 		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) // should we go rety in case there is also an eviction or just wait till the next eviction
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
 
 	// Log current state before checks
@@ -237,29 +235,29 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		// Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+		//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
-	// what if we're allowed disruptions >0 and minreplicas == replicas? Could argue that we should mark the eviction as handled
-	// BUT maybe PDB is slow to update? so just letting it requeue anyways
+	//what if we're allowed disruptions >0 and minreplicas == replicas? Could argue that we should mark the eviction as handled
+	//BUT maybe PDB is slow to update? so just letting it requeue anyways
 
-	// Cool down time makes sure we're not still getting more evictions
-	// we could substantially reduce this if we looked at pods and knew that none remaining (not already evicted) had been an eviction target but that means tracking more data in EvictionAutoScaler
+	//Cool down time makes sure we're not still getting more evictions
+	//we could substantially reduce this if we looked at pods and knew that none remaining (not already evicted) had been an eviction target but that means tracking more data in EvictionAutoScaler
 	// or using pod conditons which we're not doing.....yet
 	if time.Since(EvictionAutoScaler.Spec.LastEviction.EvictionTime.Time) < cooldown {
 		logger.Info(fmt.Sprintf("Giving %s/%s cooldown of  %s after last eviction %s ", target.Obj().GetNamespace(), target.Obj().GetName(), cooldown, EvictionAutoScaler.Spec.LastEviction.EvictionTime))
 		return ctrl.Result{RequeueAfter: cooldown}, nil
 	}
 
-	// still at a scaled out state check if we can scale back down
+	//still at a scaled out state check if we can scale back down
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
 
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
-		// okay we have allowed disruptions, revert target to the original state
+		//okay we have allowed disruptions, revert target to the original state
 		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -273,18 +271,18 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction // we could still keep a log here if thats useful
+		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
-	// could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
-	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction // we could still keep a log here if thats useful
+	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
+	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
-	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) // should we go rety in case there is also an eviction or just wait till the next eviction
+	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {
@@ -322,6 +320,7 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 
 // TODO Unittest
 func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 {
+
 	surge := target.GetMaxSurge()
 	if surge.Type == intstr.Int {
 		return minrepicas + surge.IntVal
@@ -331,7 +330,7 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
 		percentage, err := strconv.Atoi(percentageStr)
 		if err != nil {
-			// return an error? so we can set degraded?
+			//return an error? so we can set degraded?
 			log.FromContext(ctx).Error(err, "invalid surge")
 			return minrepicas
 		}
@@ -339,4 +338,5 @@ func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 
 	}
 
 	panic("must be string or int")
+
 }

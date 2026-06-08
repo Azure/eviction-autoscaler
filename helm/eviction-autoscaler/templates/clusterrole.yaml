@@ -121,5 +121,5 @@ roleRef:
   name: {{ include "eviction-autoscaler.fullname" . }}-manager-role
 subjects:
 - kind: ServiceAccount
-  name: eviction-autoscaler
+  name: {{ include "eviction-autoscaler.fullname" . }}
   namespace: {{ .Release.Namespace }}

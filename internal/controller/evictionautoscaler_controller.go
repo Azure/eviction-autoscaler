@@ -175,6 +175,17 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
 	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
+	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
+	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
+	// we fall through to the cooldown/scale-down path — which is correct.
+	maxSurgeTarget := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
+	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
+		// this should never happen since most eviction autoscalers are generated but possible if manually created
+		// so degrade and do nothing
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", "max surge 0 eviction autoscaler makes no sense"))
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
 	// If the PDB is blocking evictions, compute a right-sized surge: bring up exactly
 	// enough replacements to unblock the displaced pods, capped at maxSurge.
 	// We re-evaluate on every reconcile so that incremental cordons (e.g. Node Y
@@ -186,46 +197,46 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, countErr
 		}
 
-		// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
-		// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
-		// we fall through to the cooldown/scale-down path — which is correct.
-		// If maxSurge is 0 (not configured), surgeTarget == minReplicas → no surge (opted out).
-		maxSurgeTarget := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
-
 		if surgeTarget > maxSurgeTarget {
 			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
 			surgeTarget = maxSurgeTarget
 		}
 
-		if target.GetReplicas() < surgeTarget {
-			logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
-
-			// Track blocked eviction if the PDB is blocking the eviction
-			metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
-
-			// Track scaling opportunity with signal label
-			signalLabel := metrics.GetScalingSignal(pdb)
-			metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
-
-			err = surgeApplier.ApplySurge(ctx, surgeTarget)
-			if err != nil {
-				logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
-				return ctrl.Result{}, err
-			}
-
-			// Track actual scaling action
-			metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
-
-			// Log the scaling action
-			logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
-			logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
-			// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
-			EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-			//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
+		if target.GetReplicas() >= surgeTarget {
+			logger.Info("Waiting for PDB to allow disruptions before reverting surge",
+				"pdb", pdb.Name,
+				"target", EvictionAutoScaler.Spec.TargetName)
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "waiting for PDB to allow disruptions before reverting")
 			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
+
+		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+
+		// Track blocked eviction if the PDB is blocking the eviction
+		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
+
+		// Track scaling opportunity with signal label
+		signalLabel := metrics.GetScalingSignal(pdb)
+		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
+
+		err = surgeApplier.ApplySurge(ctx, surgeTarget)
+		if err != nil {
+			logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
+			return ctrl.Result{}, err
+		}
+
+		// Track actual scaling action
+		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
+
+		// Log the scaling action
+		logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
+		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
+		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
+		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+		//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	//what if we're allowed disruptions >0 and minreplicas == replicas? Could argue that we should mark the eviction as handled
@@ -244,16 +255,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
-
-		// Wait until the PDB allows disruptions before reverting.
-		// DisruptionsAllowed > 0 means enough pods are healthy to absorb the scale-down.
-		if pdb.Status.DisruptionsAllowed == 0 {
-			logger.Info("Waiting for PDB to allow disruptions before reverting surge",
-				"pdb", pdb.Name,
-				"target", EvictionAutoScaler.Spec.TargetName)
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "waiting for PDB to allow disruptions before reverting")
-			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
 
 		//okay we have allowed disruptions, revert target to the original state
 		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)

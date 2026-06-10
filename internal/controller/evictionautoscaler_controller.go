@@ -204,10 +204,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		if target.GetReplicas() >= surgeTarget {
-			logger.Info("Waiting for PDB to allow disruptions before reverting surge",
+			//we've scaled up but pdb is still blockign may just be waiting for new pods to become ready
+			logger.Info("Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting",
 				"pdb", pdb.Name,
 				"target", EvictionAutoScaler.Spec.TargetName)
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "waiting for PDB to allow disruptions before reverting")
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting")
 			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 

@@ -7,6 +7,10 @@ on:
         description: 'Version to release (e.g., 1.0.0). Leave empty to auto-bump minor version.'
         required: false
         type: string
+      commit:
+        description: 'Commit SHA to tag. Leave empty to tag the current HEAD of the branch.'
+        required: false
+        type: string
       force_override:
         description: 'Force re-tag an existing version (moves the tag to the current HEAD). Use to re-release a version with a fixed Dockerfile.'
         required: false
@@ -85,9 +89,13 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@users.noreply.github.com"
-          git tag -a "${{ env.new_tag }}" -m "Release ${{ env.new_tag }}"
+          TARGET_COMMIT="${{ inputs.commit }}"
+          if [ -z "$TARGET_COMMIT" ]; then
+            TARGET_COMMIT="HEAD"
+          fi
+          git tag -a "${{ env.new_tag }}" "$TARGET_COMMIT" -m "Release ${{ env.new_tag }}"
           git push origin "${{ env.new_tag }}"
-          echo "Created production release tag: ${{ env.new_tag }}"
+          echo "Created production release tag: ${{ env.new_tag }} at commit $TARGET_COMMIT"
 
       - name: Trigger build and publish
         env:

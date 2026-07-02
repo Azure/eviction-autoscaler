@@ -12,7 +12,7 @@ jobs:
   dependabot-auto-merge:
     runs-on: ubuntu-latest
     if: >-
-      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
       github.repository == 'Azure/eviction-autoscaler'
     steps:
       - name: Fetch Dependabot metadata

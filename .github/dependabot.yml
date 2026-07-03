@@ -18,6 +18,7 @@ updates:
         patterns:
           - "k8s.io/*"
           - "sigs.k8s.io/*"
+          - "github.com/kedacore/*"
       # Separate group so CVE security updates stay bundled too; without it they
       # open one-PR-per-dependency and break the version lock.
       kubernetes-security:
@@ -25,6 +26,7 @@ updates:
         patterns:
           - "k8s.io/*"
           - "sigs.k8s.io/*"
+          - "github.com/kedacore/*"
       go-minor-and-patch:
         patterns:
           - "*"

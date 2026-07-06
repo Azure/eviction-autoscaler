@@ -1,0 +1,59 @@
+# Dependabot configuration for Azure/eviction-autoscaler
+version: 2
+
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "go"
+    groups:
+      # k8s.io/* and sigs.k8s.io/* are version-locked to one another and must be
+      # bumped together; grouping them prevents inconsistent, build-breaking bumps.
+      kubernetes:
+        applies-to: version-updates
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+          - "github.com/kedacore/*"
+      # Separate group so CVE security updates stay bundled too; without it they
+      # open one-PR-per-dependency and break the version lock.
+      kubernetes-security:
+        applies-to: security-updates
+        patterns:
+          - "k8s.io/*"
+          - "sigs.k8s.io/*"
+          - "github.com/kedacore/*"
+      go-minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "docker"
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

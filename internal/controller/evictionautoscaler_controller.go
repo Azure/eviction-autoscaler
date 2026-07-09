@@ -182,7 +182,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
 		// this should never happen since most eviction autoscalers are generated but possible if manually created
 		// so degrade and do nothing
-		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", "max surge 0 eviction autoscaler makes no sense"))
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", "max surge 0 eviction autoscaler makes no sense")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 

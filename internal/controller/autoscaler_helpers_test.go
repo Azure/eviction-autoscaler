@@ -111,11 +111,11 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns errNoRollingUpdate when no RollingUpdate strategy is set", func() {
+	It("returns errMaxSurgeZero when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
 		target := &DeploymentWrapper{obj: dep}
 		result, err := calculateSurge(ctx, target, 4)
-		Expect(errors.Is(err, errNoRollingUpdate)).To(BeTrue())
+		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(4)))
 	})
 

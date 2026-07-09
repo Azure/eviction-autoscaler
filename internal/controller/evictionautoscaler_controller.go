@@ -182,12 +182,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
-			// Explicitly set to 0 — misconfigured for an EA, degrade.
+			// maxSurge is 0 (explicit or not configured) — can't surge, degrade.
 			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
-		case errors.Is(surgeErr, errNoRollingUpdate):
-			// No RollingUpdate strategy (e.g. Recreate) — surge not possible, skip.
-			logger.Info("No RollingUpdate strategy configured, skipping surge")
 		default:
 			// Parse error or unexpected — degrade.
 			degraded(&EvictionAutoScaler.Status.Conditions, "InvalidSurgeConfiguration", surgeErr.Error())
@@ -322,15 +319,13 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 }
 
 var (
-	errMaxSurgeZero      = errors.New("maxSurge is explicitly 0; eviction autoscaler cannot surge")
-	errNoRollingUpdate   = errors.New("RollingUpdate strategy not configured; no surge capacity")
+	errMaxSurgeZero      = errors.New("maxSurge is 0; eviction autoscaler cannot surge")
 	errInvalidPercentage = errors.New("invalid surge percentage")
 )
 
 // calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
-// Returns a sentinel error to let callers distinguish:
-//   - errMaxSurgeZero: maxSurge explicitly set to 0 (or 0%)
-//   - errNoRollingUpdate: RollingUpdate strategy missing entirely
+// Returns a sentinel error to distinguish:
+//   - errMaxSurgeZero: maxSurge resolves to 0 (explicitly set or not configured)
 //   - errInvalidPercentage: percentage string could not be parsed
 func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
 
@@ -354,6 +349,6 @@ func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, 
 		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
 	}
 
-	// RollingUpdate not set — no surge strategy configured
-	return minrepicas, errNoRollingUpdate
+	// Unreachable for well-formed intstr values, but handle gracefully
+	return minrepicas, errMaxSurgeZero
 }

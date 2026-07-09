@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
@@ -103,18 +104,18 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns minReplicas when maxSurge is 0", func() {
+	It("returns errMaxSurgeZero when maxSurge is 0", func() {
 		target := makeTarget(intstr.FromInt32(0))
 		result, err := calculateSurge(ctx, target, 5)
-		Expect(err).NotTo(HaveOccurred())
+		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns minReplicas when no RollingUpdate strategy is set", func() {
+	It("returns errNoRollingUpdate when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
 		target := &DeploymentWrapper{obj: dep}
 		result, err := calculateSurge(ctx, target, 4)
-		Expect(err).NotTo(HaveOccurred())
+		Expect(errors.Is(err, errNoRollingUpdate)).To(BeTrue())
 		Expect(result).To(Equal(int32(4)))
 	})
 
@@ -150,10 +151,16 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(10)))
 	})
 
-	It("returns error for invalid percentage string", func() {
+	It("returns errInvalidPercentage for invalid percentage string", func() {
 		target := makeTarget(intstr.FromString("abc%"))
 		_, err := calculateSurge(ctx, target, 3)
-		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("invalid surge percentage"))
+		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
+	})
+
+	It("returns errMaxSurgeZero for 0% string", func() {
+		target := makeTarget(intstr.FromString("0%"))
+		result, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(result).To(Equal(int32(3)))
 	})
 })

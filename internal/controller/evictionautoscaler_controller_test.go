@@ -237,7 +237,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 		})
 
-		It("should skip surge when maxSurge is zero (opt-out, no error)", func() {
+		It("should set Degraded when maxSurge is explicitly zero", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -264,11 +264,22 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			}
 			Expect(k8sClient.Update(ctx, evictionAutoScaler)).To(Succeed())
 
-			// maxSurge=0 means surge is opted out — reconcile succeeds without scaling.
+			// maxSurge=0 is a misconfiguration for an EA — should set Degraded condition.
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
 			Expect(err).NotTo(HaveOccurred())
+
+			// Verify Degraded condition was set
+			Expect(k8sClient.Get(ctx, typeNamespacedName, evictionAutoScaler)).To(Succeed())
+			found := false
+			for _, c := range evictionAutoScaler.Status.Conditions {
+				if c.Reason == "UnsupportedAutoscalerConfiguration" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Degraded condition with reason UnsupportedAutoscalerConfiguration")
 
 			// Verify no scale-up happened
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())

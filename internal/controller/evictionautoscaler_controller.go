@@ -180,14 +180,19 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// we fall through to the cooldown/scale-down path — which is correct.
 	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 	if surgeErr != nil {
-		// Invalid surge configuration (e.g. unparseable percentage) — degrade.
-		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
-	}
-	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
-		// maxSurge is 0 or RollingUpdate not configured — surge opted out.
-		// No surge capacity, so fall through to cooldown/scale-down path.
-		logger.Info("maxSurge is 0 or not configured, skipping surge")
+		switch {
+		case errors.Is(surgeErr, errMaxSurgeZero):
+			// Explicitly set to 0 — misconfigured for an EA, degrade.
+			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
+			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		case errors.Is(surgeErr, errNoRollingUpdate):
+			// No RollingUpdate strategy (e.g. Recreate) — surge not possible, skip.
+			logger.Info("No RollingUpdate strategy configured, skipping surge")
+		default:
+			// Parse error or unexpected — degrade.
+			degraded(&EvictionAutoScaler.Status.Conditions, "InvalidSurgeConfiguration", surgeErr.Error())
+			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
 		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
 		if countErr != nil {
@@ -316,16 +321,23 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Complete(r)
 }
 
+var (
+	errMaxSurgeZero      = errors.New("maxSurge is explicitly 0; eviction autoscaler cannot surge")
+	errNoRollingUpdate   = errors.New("RollingUpdate strategy not configured; no surge capacity")
+	errInvalidPercentage = errors.New("invalid surge percentage")
+)
+
 // calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
-// Returns an error if the surge configuration is invalid (e.g. unparseable percentage).
-// Returns (minReplicas, nil) when maxSurge is 0 or RollingUpdate is not configured,
-// meaning surge is opted out — this is not an error.
+// Returns a sentinel error to let callers distinguish:
+//   - errMaxSurgeZero: maxSurge explicitly set to 0 (or 0%)
+//   - errNoRollingUpdate: RollingUpdate strategy missing entirely
+//   - errInvalidPercentage: percentage string could not be parsed
 func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
 
 	surge := target.GetMaxSurge()
 	if surge.Type == intstr.Int {
 		if surge.IntVal == 0 {
-			return minrepicas, nil
+			return minrepicas, errMaxSurgeZero
 		}
 		return minrepicas + surge.IntVal, nil
 	}
@@ -334,14 +346,14 @@ func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, 
 		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
 		percentage, err := strconv.Atoi(percentageStr)
 		if err != nil {
-			return minrepicas, fmt.Errorf("invalid surge percentage %q: %w", surge.StrVal, err)
+			return minrepicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
 		}
 		if percentage == 0 {
-			return minrepicas, nil
+			return minrepicas, errMaxSurgeZero
 		}
 		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
 	}
 
-	// RollingUpdate not set — surge not configured, opt out
-	return minrepicas, nil
+	// RollingUpdate not set — no surge strategy configured
+	return minrepicas, errNoRollingUpdate
 }

@@ -178,19 +178,17 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
 	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
 	// we fall through to the cooldown/scale-down path — which is correct.
-	maxSurgeTarget := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
-	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
-		// this should never happen since most eviction autoscalers are generated but possible if manually created
-		// so degrade and do nothing
-		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", "max surge 0 eviction autoscaler makes no sense")
+	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
+	if surgeErr != nil {
+		// Invalid surge configuration (e.g. unparseable percentage) — degrade.
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
-
-	// If the PDB is blocking evictions, compute a right-sized surge: bring up exactly
-	// enough replacements to unblock the displaced pods, capped at maxSurge.
-	// We re-evaluate on every reconcile so that incremental cordons (e.g. Node Y
-	// cordoned after Node X) top up to the new total without double-counting.
-	if pdb.Status.DisruptionsAllowed == 0 {
+	if maxSurgeTarget == EvictionAutoScaler.Status.MinReplicas {
+		// maxSurge is 0 or RollingUpdate not configured — surge opted out.
+		// No surge capacity, so fall through to cooldown/scale-down path.
+		logger.Info("maxSurge is 0 or not configured, skipping surge")
+	} else if pdb.Status.DisruptionsAllowed == 0 {
 		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
 		if countErr != nil {
 			logger.Error(countErr, "failed to count displaced pods on cordoned nodes")
@@ -318,25 +316,32 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		Complete(r)
 }
 
-// TODO Unittest
-func calculateSurge(ctx context.Context, target Surger, minrepicas int32) int32 {
+// calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
+// Returns an error if the surge configuration is invalid (e.g. unparseable percentage).
+// Returns (minReplicas, nil) when maxSurge is 0 or RollingUpdate is not configured,
+// meaning surge is opted out — this is not an error.
+func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
 
 	surge := target.GetMaxSurge()
 	if surge.Type == intstr.Int {
-		return minrepicas + surge.IntVal
+		if surge.IntVal == 0 {
+			return minrepicas, nil
+		}
+		return minrepicas + surge.IntVal, nil
 	}
 
 	if surge.Type == intstr.String {
 		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
 		percentage, err := strconv.Atoi(percentageStr)
 		if err != nil {
-			//return an error? so we can set degraded?
-			log.FromContext(ctx).Error(err, "invalid surge")
-			return minrepicas
+			return minrepicas, fmt.Errorf("invalid surge percentage %q: %w", surge.StrVal, err)
 		}
-		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0))
+		if percentage == 0 {
+			return minrepicas, nil
+		}
+		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
 	}
 
-	panic("must be string or int")
-
+	// RollingUpdate not set — surge not configured, opt out
+	return minrepicas, nil
 }

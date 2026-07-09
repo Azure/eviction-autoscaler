@@ -237,7 +237,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 		})
 
-		It("should error when the target deployment has maxSurge zero", func() {
+		It("should skip surge when maxSurge is zero (opt-out, no error)", func() {
 			controllerReconciler := &EvictionAutoScalerReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
@@ -264,11 +264,15 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			}
 			Expect(k8sClient.Update(ctx, evictionAutoScaler)).To(Succeed())
 
+			// maxSurge=0 means surge is opted out — reconcile succeeds without scaling.
 			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("max surge 0"))
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify no scale-up happened
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
 		})
 
 		It("should surge by exactly displaced pod count when pods are on a cordoned node", func() {

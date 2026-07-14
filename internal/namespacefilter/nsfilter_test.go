@@ -473,3 +473,50 @@ func TestFilter_RealWorldScenario_OptOut(t *testing.T) {
 		t.Errorf("expected disabled to be disabled via annotation, got %v", result)
 	}
 }
+
+func TestFilter_AKSOwned_OptIn_NoConfig(t *testing.T) {
+	filter := New([]string{}, true)
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+
+	result, err := filter.Filter(context.Background(), fakeClient, "kube-system")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != true {
+		t.Errorf("expected true (AKS-owned namespace always enabled), got %v", result)
+	}
+}
+
+func TestFilter_AKSOwned_AnnotationFalse_StillEnabled(t *testing.T) {
+	filter := New([]string{}, true)
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:        "flux-system",
+		Annotations: map[string]string{EnableEvictionAutoscalerAnnotationKey: "false"},
+	}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+
+	result, err := filter.Filter(context.Background(), fakeClient, "flux-system")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != true {
+		t.Errorf("expected true (AKS-owned namespace ignores enable annotation), got %v", result)
+	}
+}
+
+func TestIsAKSOwnedNamespace(t *testing.T) {
+	if !IsAKSOwnedNamespace("kube-system") {
+		t.Errorf("expected kube-system to be AKS-owned")
+	}
+	if !IsAKSOwnedNamespace("gatekeeper-system") {
+		t.Errorf("expected gatekeeper-system to be AKS-owned")
+	}
+	if IsAKSOwnedNamespace("my-app") {
+		t.Errorf("expected my-app to NOT be AKS-owned")
+	}
+}

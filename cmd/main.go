@@ -160,6 +160,14 @@ func main() {
 		actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
 	}
 
+	// Customers may not action AKS-owned namespaces; fail the install if they try.
+	for _, ns := range actionedNamespacesList {
+		if namespacefilter.IsAKSOwnedNamespace(ns) {
+			setupLog.Error(nil, "ACTIONED_NAMESPACES may not contain an AKS-owned namespace; eviction-autoscaler manages these automatically", "namespace", ns)
+			os.Exit(1)
+		}
+	}
+
 	// Create namespace filter
 	nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
 

@@ -33,14 +33,18 @@ controllerConfig:
     # - true (opt-out mode): All namespaces are enabled by default.
     #                        actionedNamespaces is ignored.
     #                        Namespaces can opt-out with annotation "eviction-autoscaler.azure.com/enable=false"
-    # Note: Annotations always take precedence over these settings
+    # Note: Annotations take precedence over these settings, EXCEPT for AKS-owned
+    # namespaces (kube-system, flux-system, etc.), which eviction-autoscaler always
+    # manages and which ignore both this configuration and the annotation.
     enabledByDefault: false
     
     # Namespaces to action on (behavior depends on enabledByDefault)
     # When enabledByDefault=false (opt-in): These namespaces are enabled, all others disabled
     # When enabledByDefault=true (opt-out): This list is ignored, all namespaces enabled by default
-    # Default: [kube-system] (kube-system enabled by default)
-    actionedNamespaces: [kube-system]
+    # Only customer namespaces belong here. AKS-owned namespaces (kube-system, etc.)
+    # are always managed automatically and must NOT be listed (doing so fails startup).
+    # Default: [] (no customer namespaces actioned)
+    actionedNamespaces: []
   
   # PDB creation configuration
   pdb:

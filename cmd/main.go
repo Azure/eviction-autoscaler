@@ -162,9 +162,7 @@ func main() {
 
 	// Customers may not action AKS-owned namespaces; fail the install if they try.
 	for _, ns := range actionedNamespacesList {
-		if namespacefilter.IsAKSOwnedNamespace(ns) {
-			setupLog.Error(nil, "ACTIONED_NAMESPACES may not contain an AKS-owned namespace; eviction-autoscaler manages these automatically", "namespace", ns)
-			os.Exit(1)
+			setupLog.Error(os.ErrInvalid, "ACTIONED_NAMESPACES may not contain an AKS-owned namespace; eviction-autoscaler manages these automatically", "namespace", ns)
 		}
 	}
 

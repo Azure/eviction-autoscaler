@@ -17,6 +17,10 @@ const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/ena
 // aksOwnedNamespaces mirrors ProtectedNamespaces in aks-rp
 // (toolkit/constvalues/automatic/subjects.go). It is intentionally unexported so its
 // contents cannot be mutated by other packages; use IsAKSOwnedNamespace to query it.
+//
+// NOTE: This is a hardcoded copy of the RP's ProtectedNamespaces list. Before every
+// eviction-autoscaler extension release, check this list against the RP source
+// (aks-rp toolkit/constvalues/automatic/subjects.go) and update it to keep the two in sync.
 var aksOwnedNamespaces = []string{
 	"aks-command",
 	"kube-system",

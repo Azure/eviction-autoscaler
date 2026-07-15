@@ -14,9 +14,10 @@ import (
 
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
 
-// AKSOwnedNamespaces mirrors ProtectedNamespaces in aks-rp
-// (toolkit/constvalues/automatic/subjects.go).
-var AKSOwnedNamespaces = []string{
+// aksOwnedNamespaces mirrors ProtectedNamespaces in aks-rp
+// (toolkit/constvalues/automatic/subjects.go). It is intentionally unexported so its
+// contents cannot be mutated by other packages; use IsAKSOwnedNamespace to query it.
+var aksOwnedNamespaces = []string{
 	"aks-command",
 	"kube-system",
 	"calico-system",
@@ -42,7 +43,7 @@ var AKSOwnedNamespaces = []string{
 
 // IsAKSOwnedNamespace reports whether ns is an AKS-owned namespace.
 func IsAKSOwnedNamespace(ns string) bool {
-	return slices.Contains(AKSOwnedNamespaces, ns)
+	return slices.Contains(aksOwnedNamespaces, ns)
 }
 
 type nsfilter struct {

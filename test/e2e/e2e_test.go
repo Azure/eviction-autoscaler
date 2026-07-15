@@ -788,8 +788,9 @@ var _ = Describe("controller", Ordered, func() {
 				"--set", "image.pullPolicy=IfNotPresent",
 				"--set", "controllerConfig.pdb.create=true",
 				"--set", "controllerConfig.namespaces.enabledByDefault=false",
-				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
-				"--set", "controllerConfig.namespaces.actionedNamespaces[1]=actioned-test",
+				// kube-system is AKS-owned and must NOT be listed here (the controller rejects
+				// AKS-owned namespaces in actionedNamespaces); it is always managed regardless.
+				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=actioned-test",
 			}
 			cmd = exec.Command("helm", helmArgsOptIn...)
 			_, err = utils.Run(cmd)

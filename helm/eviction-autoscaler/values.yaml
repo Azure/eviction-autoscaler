@@ -44,6 +44,8 @@ controllerConfig:
     # Only customer namespaces belong here. AKS-owned namespaces (kube-system, etc.)
     # are always managed automatically and must NOT be listed (doing so fails startup).
     # Default: [] (no customer namespaces actioned)
+    # Upgrade note: if upgrading from an older chart that defaulted to [kube-system],
+    # remove it from your values (or use `helm upgrade --reset-values`), otherwise startup fails.
     actionedNamespaces: []
   
   # PDB creation configuration

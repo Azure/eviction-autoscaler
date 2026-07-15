@@ -154,10 +154,14 @@ func main() {
 	// Parse ACTIONED_NAMESPACES environment variable (comma-separated list)
 	// These namespaces will be enabled when disabledByDefault=true and will be ignored when disabledByDefault=false
 	actionedNamespacesStr := os.Getenv("ACTIONED_NAMESPACES")
-	actionedNamespacesList := strings.Split(actionedNamespacesStr, ",")
-	// Trim whitespace from each namespace
-	for i := range actionedNamespacesList {
-		actionedNamespacesList[i] = strings.TrimSpace(actionedNamespacesList[i])
+	// Split on commas, trim whitespace, and drop empty entries. An unset or empty
+	// ACTIONED_NAMESPACES yields no entries (strings.Split("", ",") would otherwise
+	// produce a single empty string).
+	var actionedNamespacesList []string
+	for _, ns := range strings.Split(actionedNamespacesStr, ",") {
+		if trimmed := strings.TrimSpace(ns); trimmed != "" {
+			actionedNamespacesList = append(actionedNamespacesList, trimmed)
+		}
 	}
 
 	// Customers may not action AKS-owned namespaces; fail the install if they try.

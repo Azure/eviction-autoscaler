@@ -854,6 +854,24 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyPdbCreated(ctx, clientset, "kube-system", "test-kube-opt")
 			}, time.Minute, time.Second).Should(Succeed())
 
+			// Test 7b: kube-system is AKS-owned, so a disable annotation must be ignored.
+			By("annotating kube-system with enable=false (AKS-owned namespaces must ignore it)")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "kube-system",
+				"eviction-autoscaler.azure.com/enable=false", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB STILL exists in kube-system despite enable=false (AKS-owned override)")
+			Consistently(func() error {
+				return verifyPdbCreated(ctx, clientset, "kube-system", "test-kube-opt")
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("removing the enable=false annotation from kube-system to restore state")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "kube-system",
+				"eviction-autoscaler.azure.com/enable-")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
 			// Test 8: Create new deployment with annotation in opt-in mode namespace
 			testNsOptInWithAnnotation := "test-opt-in-with-anno"
 			By("creating a namespace with enable=true annotation in opt-in mode")
@@ -1517,6 +1535,82 @@ var _ = Describe("controller", Ordered, func() {
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
 			uninstallKEDA()
+		})
+
+		It("should reject an AKS-owned namespace in actionedNamespaces and refuse to start", func() {
+			ctx := context.Background()
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("uninstalling the existing eviction-autoscaler to reconfigure")
+			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+			time.Sleep(10 * time.Second)
+
+			By("installing eviction-autoscaler with kube-system (AKS-owned) in actionedNamespaces")
+			projectimage := "evictionautoscaler:e2etest"
+			imgParts := strings.Split(projectimage, ":")
+			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+			repo := imgParts[0]
+			tag := imgParts[1]
+			helmArgs := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				// kube-system is AKS-owned; the controller must reject it and exit rather than start.
+				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
+			}
+			cmd = exec.Command("helm", helmArgs...)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("verifying the controller never becomes available (it exits on the rejected config)")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler", "--namespace", namespace, "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(),
+				"deployment must not become available with an AKS-owned namespace in actionedNamespaces")
+
+			By("verifying a controller pod is crashlooping because the config was rejected")
+			Eventually(func() (bool, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return false, err
+				}
+				for _, pod := range pods.Items {
+					for _, cs := range pod.Status.ContainerStatuses {
+						if cs.RestartCount > 0 {
+							return true, nil
+						}
+						if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+							return true, nil
+						}
+					}
+				}
+				return false, nil
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "expected a crashlooping controller pod")
+
+			By("confirming the rejection reason is logged")
+			Eventually(func() (string, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return "", err
+				}
+				if len(pods.Items) == 0 {
+					return "", fmt.Errorf("no controller pod found")
+				}
+				logCmd := exec.Command("kubectl", "logs", pods.Items[0].Name,
+					"--namespace", namespace, "--all-containers", "--tail=-1")
+				out, _ := utils.Run(logCmd)
+				return string(out), nil
+			}, 2*time.Minute, 5*time.Second).Should(ContainSubstring("may not contain an AKS-owned namespace"))
 		})
 	})
 })

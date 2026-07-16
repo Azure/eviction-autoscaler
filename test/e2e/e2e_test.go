@@ -1537,6 +1537,133 @@ var _ = Describe("controller", Ordered, func() {
 			uninstallKEDA()
 		})
 
+		It("should surge and scale back down for an AKS-owned namespace (kube-system)", func() {
+			ctx := context.Background()
+			const aksNs = "kube-system"
+			const depName = "nginx-aks-surge"
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("uncordoning all nodes to ensure a clean starting state")
+			nodesOut, err := utils.Run(exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"))
+			Expect(err).NotTo(HaveOccurred())
+			for _, n := range strings.Fields(string(nodesOut)) {
+				_, _ = utils.Run(exec.Command("kubectl", "uncordon", n))
+			}
+
+			By("creating a deployment in kube-system with no enable annotation (AKS-owned is always managed)")
+			err = createDeployment(deploymentConfig{
+				Name:           depName,
+				Namespace:      aksNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the deployment to be ready")
+			Expect(waitForDeployment(depName, aksNs)).To(Succeed())
+
+			By("verifying EA manages it: a PDB is created even without an enable annotation")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, aksNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the EvictionAutoScaler CR is created")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, aksNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(aksNs), client.MatchingLabels{"app": depName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+
+			By("cordoning the node to trigger an eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the deployment gets the evictionSurgeReplicas annotation (surge happened)")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not added yet")
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment surges to 2 available replicas")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 2 {
+					return fmt.Errorf("expected 2 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("draining the node to complete the eviction")
+			drain := func() error {
+				var podList corev1.PodList
+				if err := clientset.List(ctx, &podList, client.InNamespace(aksNs),
+					client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+					return err
+				}
+				for _, pod := range podList.Items {
+					if pod.Labels["app"] != depName {
+						continue
+					}
+					if err := evictionClient.PolicyV1().Evictions(pod.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: pod.ObjectMeta,
+					}); err != nil {
+						return fmt.Errorf("failed to evict %s: %w", pod.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment scales back down to 1 and clears the surge annotation")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
+					return fmt.Errorf("expected 1 replica after cooldown, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not removed")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning the node")
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("cleaning up the kube-system test deployment")
+			deleteDeployment(depName, aksNs)
+		})
+
 		It("should reject an AKS-owned namespace in actionedNamespaces and refuse to start", func() {
 			ctx := context.Background()
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))

@@ -550,6 +550,32 @@ surgeTarget = minReplicas + displaced
 
 where `displaced` is the number of PDB-selected pods currently running on cordoned nodes. `surgeTarget` is capped at `minReplicas + maxSurge` (the deployment's configured max surge). This means the surge is right-sized to exactly what is needed — no over-provisioning.
 
+#### Surge Override (`maxSurge: 0` workloads)
+
+The surge budget defaults to the target's rolling-update `maxSurge`. Workloads that pin `maxSurge: 0` in their rollout strategy (for example, capacity-constrained or single-zone deployments that must never run extra pods during a normal rollout) therefore get **no** drain-time surge at all — `calculateSurge` returns an error and the controller cannot add replicas to relieve a PDB-blocked drain.
+
+To decouple the drain-time surge budget from the rollout `maxSurge`, set the following annotation on the **target workload** (Deployment or StatefulSet):
+
+| Annotation | Placed On | Value | Purpose |
+|---|---|---|---|
+| `eviction-autoscaler.azure.com/surge-override` | Deployment or StatefulSet | Int (e.g. `"3"`) or percentage (e.g. `"20%"`) | Surge budget to use during drains, **overriding** the target's `maxSurge` |
+
+When present, the override **always wins** over `maxSurge`, so a workload can keep `maxSurge: 0` for its rollout strategy yet still surge on drain. The value is interpreted exactly like `maxSurge`: an integer is added to `minReplicas`; a percentage is applied to `minReplicas` and rounded up. A value of `0` (or `0%`) disables surge just like `maxSurge: 0`.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  annotations:
+    eviction-autoscaler.azure.com/surge-override: "3"   # surge by up to 3 on drain, even with maxSurge: 0
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 0        # rollout strategy still never surges
+      maxUnavailable: 1
+```
+
 #### Incremental Scale-Up
 
 As additional nodes are cordoned during a rolling drain, `displaced` grows and the controller tops the deployment up automatically on each reconcile.

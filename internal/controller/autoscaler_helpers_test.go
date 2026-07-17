@@ -163,4 +163,67 @@ var _ = Describe("calculateSurge", func() {
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(3)))
 	})
+
+	// --- surge-override annotation ---
+
+	makeTargetAnn := func(surge intstr.IntOrString, override string) Surger {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{SurgeOverrideAnnotationKey: override},
+			},
+			Spec: appsv1.DeploymentSpec{
+				Strategy: appsv1.DeploymentStrategy{
+					RollingUpdate: &appsv1.RollingUpdateDeployment{MaxSurge: &surge},
+				},
+			},
+		}
+		return &DeploymentWrapper{obj: dep}
+	}
+
+	It("uses an integer surge-override even when maxSurge is 0", func() {
+		target := makeTargetAnn(intstr.FromInt32(0), "2")
+		result, err := calculateSurge(ctx, target, 5)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(7)))
+	})
+
+	It("surge-override wins over a non-zero maxSurge", func() {
+		target := makeTargetAnn(intstr.FromInt32(5), "2")
+		result, err := calculateSurge(ctx, target, 3)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(5))) // 3 + override(2), NOT 3 + maxSurge(5)
+	})
+
+	It("supports a percentage surge-override", func() {
+		target := makeTargetAnn(intstr.FromInt32(0), "10%")
+		// 10 * 10% = 1.0 → ceil = 1 → 10 + 1 = 11
+		result, err := calculateSurge(ctx, target, 10)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(11)))
+	})
+
+	It("applies the override even with no RollingUpdate strategy", func() {
+		dep := &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{
+				Annotations: map[string]string{SurgeOverrideAnnotationKey: "3"},
+			},
+		}
+		target := &DeploymentWrapper{obj: dep}
+		result, err := calculateSurge(ctx, target, 4)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(7)))
+	})
+
+	It("returns errMaxSurgeZero for a zero surge-override", func() {
+		target := makeTargetAnn(intstr.FromInt32(2), "0")
+		result, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(result).To(Equal(int32(3)))
+	})
+
+	It("returns errInvalidPercentage for an unparseable surge-override", func() {
+		target := makeTargetAnn(intstr.FromInt32(2), "abc")
+		_, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
+	})
 })

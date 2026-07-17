@@ -32,6 +32,19 @@ import (
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
+// SurgeOverrideAnnotationKey lets an operator override how much the eviction
+// autoscaler surges a target, independently of the target's own
+// spec.strategy.rollingUpdate.maxSurge. When set on the target workload it
+// ALWAYS takes precedence over maxSurge. The value is an int ("2") or a
+// percentage of minReplicas ("10%"), matching maxSurge semantics.
+//
+// Motivation: safe-deployment guidance often mandates maxSurge=0 on the rollout
+// strategy (no extra pods created during an app update). But that also disables
+// the eviction autoscaler's drain-time surge for exactly those workloads. This
+// annotation decouples the two: keep maxSurge=0 for rollouts while still allowing
+// a bounded, drain-only surge that the autoscaler reverts when the drain finishes.
+const SurgeOverrideAnnotationKey = "eviction-autoscaler.azure.com/surge-override"
+
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
 	client.Client
@@ -323,13 +336,27 @@ var (
 	errInvalidPercentage = errors.New("invalid surge percentage")
 )
 
-// calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
+// calculateSurge returns the maximum replica count after surge (minReplicas + surge).
+// The surge amount is taken from the SurgeOverrideAnnotationKey annotation on the
+// target when present (it always wins), otherwise from the target's maxSurge.
 // Returns a sentinel error to distinguish:
-//   - errMaxSurgeZero: maxSurge resolves to 0 (explicitly set or not configured)
+//   - errMaxSurgeZero: the surge amount resolves to 0 (explicitly set or not configured)
 //   - errInvalidPercentage: percentage string could not be parsed
 func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
+	// An explicit surge-override annotation on the target always wins over maxSurge,
+	// so a workload can keep maxSurge=0 for its rollout strategy yet still surge on drain.
+	if ann := target.Obj().GetAnnotations(); ann != nil {
+		if override, ok := ann[SurgeOverrideAnnotationKey]; ok {
+			return surgeFromValue(intstr.Parse(override), minrepicas)
+		}
+	}
+	return surgeFromValue(target.GetMaxSurge(), minrepicas)
+}
 
-	surge := target.GetMaxSurge()
+// surgeFromValue resolves an int-or-percentage surge value against minReplicas.
+// An int is added directly; a percentage is applied to minReplicas and rounded up.
+// A zero value yields errMaxSurgeZero; an unparseable percentage yields errInvalidPercentage.
+func surgeFromValue(surge intstr.IntOrString, minrepicas int32) (int32, error) {
 	if surge.Type == intstr.Int {
 		if surge.IntVal == 0 {
 			return minrepicas, errMaxSurgeZero

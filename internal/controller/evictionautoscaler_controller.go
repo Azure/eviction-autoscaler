@@ -194,8 +194,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
 	if surgeErr != nil {
 		switch {
-		case errors.Is(surgeErr, errMaxSurgeZero):
-			// maxSurge is 0 (explicit or not configured) — can't surge, degrade.
+		case errors.Is(surgeErr, errSurgeZero):
+			// Surge resolves to 0 (maxSurge=0/unset or a zero override) — can't surge, degrade.
 			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		default:
@@ -332,50 +332,64 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 }
 
 var (
-	errMaxSurgeZero      = errors.New("maxSurge is 0; eviction autoscaler cannot surge")
+	errSurgeZero         = errors.New("surge is 0; eviction autoscaler cannot surge")
 	errInvalidPercentage = errors.New("invalid surge percentage")
+	errNegativeSurge     = errors.New("surge value is negative")
 )
 
 // calculateSurge returns the maximum replica count after surge (minReplicas + surge).
 // The surge amount is taken from the SurgeOverrideAnnotationKey annotation on the
 // target when present (it always wins), otherwise from the target's maxSurge.
 // Returns a sentinel error to distinguish:
-//   - errMaxSurgeZero: the surge amount resolves to 0 (explicitly set or not configured)
-//   - errInvalidPercentage: percentage string could not be parsed
-func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
+//   - errSurgeZero: the surge amount resolves to 0 (explicitly set or not configured)
+//   - errInvalidPercentage: percentage string could not be parsed or lacks a "%" suffix
+//   - errNegativeSurge: the surge amount is negative
+func calculateSurge(_ context.Context, target Surger, minReplicas int32) (int32, error) {
 	// An explicit surge-override annotation on the target always wins over maxSurge,
 	// so a workload can keep maxSurge=0 for its rollout strategy yet still surge on drain.
 	if ann := target.Obj().GetAnnotations(); ann != nil {
 		if override, ok := ann[SurgeOverrideAnnotationKey]; ok {
-			return surgeFromValue(intstr.Parse(override), minrepicas)
+			return surgeFromValue(intstr.Parse(override), minReplicas)
 		}
 	}
-	return surgeFromValue(target.GetMaxSurge(), minrepicas)
+	return surgeFromValue(target.GetMaxSurge(), minReplicas)
 }
 
 // surgeFromValue resolves an int-or-percentage surge value against minReplicas.
-// An int is added directly; a percentage is applied to minReplicas and rounded up.
-// A zero value yields errMaxSurgeZero; an unparseable percentage yields errInvalidPercentage.
-func surgeFromValue(surge intstr.IntOrString, minrepicas int32) (int32, error) {
+// An int is added directly; a percentage (a string ending in "%") is applied to
+// minReplicas and rounded up. A zero value yields errSurgeZero; a negative value
+// yields errNegativeSurge; a string that is not a valid "<n>%" percentage yields
+// errInvalidPercentage.
+func surgeFromValue(surge intstr.IntOrString, minReplicas int32) (int32, error) {
 	if surge.Type == intstr.Int {
-		if surge.IntVal == 0 {
-			return minrepicas, errMaxSurgeZero
+		switch {
+		case surge.IntVal < 0:
+			return minReplicas, fmt.Errorf("%w: %d", errNegativeSurge, surge.IntVal)
+		case surge.IntVal == 0:
+			return minReplicas, errSurgeZero
 		}
-		return minrepicas + surge.IntVal, nil
+		return minReplicas + surge.IntVal, nil
 	}
 
 	if surge.Type == intstr.String {
-		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
-		percentage, err := strconv.Atoi(percentageStr)
+		// A string surge value must be a percentage, e.g. "10%". Reject bare numbers
+		// like "10" so they are never silently interpreted as a percentage.
+		if !strings.HasSuffix(surge.StrVal, "%") {
+			return minReplicas, fmt.Errorf("%w: %q is not a percentage (missing %% suffix)", errInvalidPercentage, surge.StrVal)
+		}
+		percentage, err := strconv.Atoi(strings.TrimSuffix(surge.StrVal, "%"))
 		if err != nil {
-			return minrepicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
+			return minReplicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
 		}
-		if percentage == 0 {
-			return minrepicas, errMaxSurgeZero
+		switch {
+		case percentage < 0:
+			return minReplicas, fmt.Errorf("%w: %q", errNegativeSurge, surge.StrVal)
+		case percentage == 0:
+			return minReplicas, errSurgeZero
 		}
-		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
+		return minReplicas + int32(math.Ceil((float64(minReplicas)*float64(percentage))/100.0)), nil
 	}
 
 	// Unreachable for well-formed intstr values, but handle gracefully
-	return minrepicas, errMaxSurgeZero
+	return minReplicas, errSurgeZero
 }

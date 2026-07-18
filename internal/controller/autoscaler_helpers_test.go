@@ -104,18 +104,18 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns errMaxSurgeZero when maxSurge is 0", func() {
+	It("returns errSurgeZero when maxSurge is 0", func() {
 		target := makeTarget(intstr.FromInt32(0))
 		result, err := calculateSurge(ctx, target, 5)
-		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(errors.Is(err, errSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns errMaxSurgeZero when no RollingUpdate strategy is set", func() {
+	It("returns errSurgeZero when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
 		target := &DeploymentWrapper{obj: dep}
 		result, err := calculateSurge(ctx, target, 4)
-		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(errors.Is(err, errSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(4)))
 	})
 
@@ -157,10 +157,28 @@ var _ = Describe("calculateSurge", func() {
 		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
 	})
 
-	It("returns errMaxSurgeZero for 0% string", func() {
+	It("returns errInvalidPercentage for a string without a % suffix", func() {
+		target := makeTarget(intstr.FromString("10"))
+		_, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
+	})
+
+	It("returns errNegativeSurge for a negative int maxSurge", func() {
+		target := makeTarget(intstr.FromInt32(-1))
+		_, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
+	})
+
+	It("returns errNegativeSurge for a negative percentage", func() {
+		target := makeTarget(intstr.FromString("-10%"))
+		_, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
+	})
+
+	It("returns errSurgeZero for 0% string", func() {
 		target := makeTarget(intstr.FromString("0%"))
 		result, err := calculateSurge(ctx, target, 3)
-		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(errors.Is(err, errSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(3)))
 	})
 
@@ -214,11 +232,17 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(7)))
 	})
 
-	It("returns errMaxSurgeZero for a zero surge-override", func() {
+	It("returns errSurgeZero for a zero surge-override", func() {
 		target := makeTargetAnn(intstr.FromInt32(2), "0")
 		result, err := calculateSurge(ctx, target, 3)
-		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(errors.Is(err, errSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(3)))
+	})
+
+	It("returns errNegativeSurge for a negative surge-override", func() {
+		target := makeTargetAnn(intstr.FromInt32(2), "-1")
+		_, err := calculateSurge(ctx, target, 3)
+		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
 	})
 
 	It("returns errInvalidPercentage for an unparseable surge-override", func() {

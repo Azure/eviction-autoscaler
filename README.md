@@ -14,6 +14,7 @@
 - [Usage](#usage)
   - [Surge Annotations](#surge-annotations)
   - [How Surge Sizing Works](#how-surge-sizing-works)
+  - [PDB Floor Mutation](#pdb-floor-mutation)
 
 ## Introduction
 
@@ -580,6 +581,63 @@ $ kubectl get deployment my-app -o jsonpath='{.spec.replicas}'
 ```
 
 If you need to force a faster scale-down you can manually uncordon nodes; once `DisruptionsAllowed` rises and the cooldown passes, the controller will revert.
+
+### PDB Floor Mutation
+
+> **Opt-in (two levels).** This feature is **disabled by default** because it
+> temporarily rewrites a (possibly user-authored) partner PDB. It runs only when
+> **both**: (1) the controller has `ENABLE_PDB_FLOOR_MUTATION` set to a truthy
+> value (fleet-wide operator switch), **and** (2) the target's **namespace**
+> carries the annotation `eviction-autoscaler.azure.com/pdb-floor-mutation: "true"`
+> (per-namespace owner opt-in).
+
+Surging replicas only raises a PDB's `DisruptionsAllowed` when the PDB uses a
+*percentage* `minAvailable`. With an **absolute** PDB — `maxUnavailable: 1` (a
+common safe-deployment requirement) or an absolute `minAvailable` — the implied
+floor **rises with the surged replica count**, so once the surge pods are Ready
+`DisruptionsAllowed` is still `1` and the drain crawls one pod per wave.
+
+To make the surge effective, during a drain the controller **temporarily pins
+the target's PDB to an absolute `minAvailable` floor** equal to the partner's
+required-healthy count captured at the pre-surge moment, then restores the
+original spec when the drain finishes. This preserves the partner's absolute
+disruption tolerance exactly — it changes the *shape* of the guarantee
+(relative → absolute, so it stops tracking surged replicas), never the *number*
+of pods required healthy.
+
+| Item | Where | Purpose |
+|---|---|---|
+| `eviction-autoscaler.azure.com/original-pdb-spec` | PDB annotation | JSON snapshot of the partner's spec, restored on revert |
+| `eviction-autoscaler.azure.com/mutated-at` | PDB annotation | Mutation timestamp, used by the stale-window backstop |
+| `eviction-autoscaler.azure.com/pinned-floor` | PDB annotation | The pinned floor `F` (durable copy, survives a lost CR status write) |
+| `pinnedPDBFloor` | EvictionAutoScaler `.status` | The absolute floor `F`, captured once and held for the drain |
+| `eviction-autoscaler.azure.com/pdb-floor-restore` | EvictionAutoScaler finalizer | Ensures the PDB is restored if the CR is deleted mid-drain |
+
+Behaviour:
+
+- **Floor `F`** is captured once from the PDB's `DesiredHealthy` at the pre-surge
+  `DisruptionsAllowed == 0` moment and persisted on the CR status, so it is
+  immune to surge inflation and survives a partner stripping the PDB annotations.
+- **Partner overwrite protection:** if a partner patches the PDB mid-drain, the
+  controller re-captures their new spec (so the eventual restore honours their
+  latest intent) and re-pins `F` on the next reconcile.
+- **Restore** happens on scale-down (drain complete) and via a finalizer on CR
+  deletion.
+- **Stale-window backstop:** any PDB left mutated longer than the window (a
+  crashed/removed controller) is restored unconditionally. The window defaults
+  to `2h` and is configurable via the `PDB_MUTATION_STALE_WINDOW` environment
+  variable (a Go duration string, e.g. `30m`, `1h`).
+
+Enable/config summary:
+
+| Setting | Where | Default | Purpose |
+|---|---|---|---|
+| `ENABLE_PDB_FLOOR_MUTATION` | Controller env var | `false` | Fleet-wide master opt-in switch |
+| `eviction-autoscaler.azure.com/pdb-floor-mutation: "true"` | Namespace annotation | (absent) | Per-namespace owner opt-in (required in addition to the master switch) |
+| `PDB_MUTATION_STALE_WINDOW` | Controller env var | `2h` | Max time a PDB may stay mutated before the backstop restores it |
+
+These per-PDB annotations and the status field are managed automatically — do
+not edit them manually.
 
 ### Build and Push Multi-Arch Image
 

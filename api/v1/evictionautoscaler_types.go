@@ -24,6 +24,13 @@ type EvictionAutoScalerStatus struct {
 	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
 	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
 	Conditions       []metav1.Condition `json:"conditions,omitempty"`
+	// PinnedPDBFloor is the absolute minAvailable value the controller has pinned
+	// onto the target's PDB for the duration of an active drain. It is captured
+	// once (from the PDB's DesiredHealthy at the pre-surge moment) and held
+	// constant until the drain completes, so it is immune to surge inflation and
+	// survives a partner stripping the PDB's snapshot annotations. Nil when no
+	// PDB-floor mutation is active.
+	PinnedPDBFloor *int32 `json:"pinnedPDBFloor,omitempty"`
 }
 
 // +kubebuilder:object:root=true

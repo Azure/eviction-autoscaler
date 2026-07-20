@@ -101,6 +101,32 @@ var _ = Describe("pinPDBFloor", func() {
 	})
 })
 
+var _ = Describe("pinnedFloorFromPDB", func() {
+	It("round-trips a floor written by pinPDBFloor", func() {
+		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
+		pinPDBFloor(pdb, 42)
+		f, ok := pinnedFloorFromPDB(pdb)
+		Expect(ok).To(BeTrue())
+		Expect(f).To(Equal(int32(42)))
+	})
+	It("returns false when the annotation is absent", func() {
+		_, ok := pinnedFloorFromPDB(pdbWithMaxUnavailable(intstr.FromInt32(1)))
+		Expect(ok).To(BeFalse())
+	})
+	It("rejects a value that overflows int32 rather than truncating", func() {
+		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
+		pdb.Annotations = map[string]string{AnnotationPinnedFloor: "3000000000"} // > int32 max
+		_, ok := pinnedFloorFromPDB(pdb)
+		Expect(ok).To(BeFalse())
+	})
+	It("rejects a non-numeric value", func() {
+		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
+		pdb.Annotations = map[string]string{AnnotationPinnedFloor: "abc"}
+		_, ok := pinnedFloorFromPDB(pdb)
+		Expect(ok).To(BeFalse())
+	})
+})
+
 var _ = Describe("snapshot + restore round-trip", func() {
 	It("restores the original spec and clears annotations", func() {
 		orig := pdbWithMaxUnavailable(intstr.FromInt32(1))

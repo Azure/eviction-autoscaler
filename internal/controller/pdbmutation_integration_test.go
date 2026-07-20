@@ -500,4 +500,59 @@ var _ = Describe("PDB floor mutation", func() {
 		Expect(controllerutil.ContainsFinalizer(ea, PDBFloorFinalizer)).To(BeFalse())
 		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
 	})
+
+	It("stops claiming the pin (removes marker, drops finalizer) when the snapshot annotation is gone on scale-down", func() {
+		createDeployment(7, intstr.FromInt32(2))
+
+		// Partner stripped the original-pdb-spec snapshot but the spec is still
+		// pinned at F and our pinned-floor marker remains. Drain is done (DA>0).
+		pinned := intstr.FromInt32(4)
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: ns,
+				Annotations: map[string]string{
+					AnnotationPinnedFloor: "4",
+					// original-pdb-spec intentionally absent (stripped by partner).
+				},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &pinned,
+				Selector:     &metav1.LabelSelector{MatchLabels: selectorMatch},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		setPDBStatus(pdb, 1, 7, 4, 7) // DA>0 -> drain done
+
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Finalizers: []string{PDBFloorFinalizer}},
+			Spec: v1.EvictionAutoScalerSpec{
+				TargetName:   name,
+				TargetKind:   "deployment",
+				LastEviction: v1.Eviction{PodName: "p", EvictionTime: metav1.NewTime(time.Now().Add(-2 * cooldown))},
+			},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, nsName, dep)).To(Succeed())
+		ea.Status.MinReplicas = 5
+		ea.Status.TargetGeneration = dep.Generation
+		ea.Status.PinnedPDBFloor = ptr.To(int32(4))
+		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+
+		// We cannot restore (snapshot gone), so the stricter floor stays, but we
+		// stop claiming it: our marker annotation is removed, the finalizer is
+		// dropped, and the CR floor is cleared.
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		Expect(controllerutil.ContainsFinalizer(ea, PDBFloorFinalizer)).To(BeFalse())
+		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+	})
 })

@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/util/homedir"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	controller "github.com/azure/eviction-autoscaler/internal/controller"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -1599,7 +1600,7 @@ var _ = Describe("controller", Ordered, func() {
 				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
 					return err
 				}
-				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; !ok {
 					return fmt.Errorf("evictionSurgeReplicas annotation not added yet")
 				}
 				return nil
@@ -1647,7 +1648,7 @@ var _ = Describe("controller", Ordered, func() {
 				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
 					return fmt.Errorf("expected 1 replica after cooldown, got %v", dep.Spec.Replicas)
 				}
-				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; ok {
 					return fmt.Errorf("evictionSurgeReplicas annotation not removed")
 				}
 				return nil

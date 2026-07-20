@@ -2,7 +2,10 @@ name: Dependabot auto-merge
 
 # Requires branch protection with required status checks on the default branch;
 # gh pr merge --auto waits on those checks before merging.
-on: pull_request
+on:
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write

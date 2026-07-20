@@ -69,6 +69,10 @@ var _ = Describe("Surge appliers when Deployment Safeguards blocks the write", f
 			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
 				MinReplicas: ptr.To(int32(1)),
 				MaxReplicas: 5,
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+					Kind: "Deployment",
+					Name: dep.Name,
+				},
 			},
 		}
 		applier := &HPASurgeApplier{

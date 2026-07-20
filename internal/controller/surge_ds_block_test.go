@@ -28,12 +28,15 @@ func forbiddenOnUpdateClient(objs ...client.Object) client.Client {
 	Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
 	base := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 	return interceptor.NewClient(base, interceptor.Funcs{
-		Update: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.UpdateOption) error {
-			return apierrors.NewForbidden(
-				schema.GroupResource{Resource: "deployments"},
-				obj.GetName(),
-				nil,
-			)
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if _, ok := obj.(*appsv1.Deployment); ok {
+				return apierrors.NewForbidden(
+					schema.GroupResource{Group: "apps", Resource: "deployments"},
+					obj.GetName(),
+					nil,
+				)
+			}
+			return c.Update(ctx, obj, opts...)
 		},
 	})
 }

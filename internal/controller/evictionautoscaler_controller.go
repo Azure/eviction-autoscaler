@@ -80,6 +80,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 					// Can't restore a snapshot we can't parse — do NOT block CR
 					// deletion on it. Log and proceed to drop the finalizer.
 					logger.Error(rerr, "failed to restore PDB on deletion; removing finalizer anyway to avoid a stuck CR", "pdb", pdb.Name)
+					r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
+						fmt.Sprintf("cannot restore PDB on EvictionAutoScaler deletion (%v); PDB may remain pinned and needs manual review", rerr))
 				} else if changed {
 					if uerr := r.Update(ctx, pdb); uerr != nil {
 						return ctrl.Result{}, uerr
@@ -575,6 +577,14 @@ func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *
 	return floor, true, nil
 }
 
+// recordPDBWarning emits a Warning event on the PDB if an event recorder is
+// configured. Nil-safe so tests (and any setup without a recorder) don't panic.
+func (r *EvictionAutoScalerReconciler) recordPDBWarning(pdb *policyv1.PodDisruptionBudget, reason, message string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(pdb, corev1.EventTypeWarning, reason, message)
+	}
+}
+
 // revertPDBFloor restores the partner's PDB spec, removes the restore finalizer
 // and clears the persisted floor (in memory — the caller persists it via a
 // status update). Safe to call when nothing is pinned.
@@ -586,6 +596,18 @@ func (r *EvictionAutoScalerReconciler) revertPDBFloor(ctx context.Context, eas *
 		return err
 	}
 	if changed {
+		if err := r.Update(ctx, pdb); err != nil {
+			return err
+		}
+	} else if floor, ok := pinnedFloorFromPDB(pdb); ok {
+		// The PDB still carries our pinned floor but the snapshot annotation is
+		// gone (e.g. a partner stripped only original-pdb-spec), so we cannot
+		// restore their original spec. Surface it to an operator and stop claiming
+		// the pin by clearing our marker annotation; the (stricter) floor spec is
+		// left in place as the fail-safe direction.
+		r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
+			fmt.Sprintf("cannot restore PDB: snapshot annotation %q missing while pinned floor is %d; leaving minAvailable in place", AnnotationOriginalPDBSpec, floor))
+		delete(pdb.Annotations, AnnotationPinnedFloor)
 		if err := r.Update(ctx, pdb); err != nil {
 			return err
 		}

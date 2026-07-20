@@ -198,7 +198,10 @@ func pinnedFloorFromPDB(pdb *policyv1.PodDisruptionBudget) (int32, bool) {
 	if !ok {
 		return 0, false
 	}
-	f, err := strconv.Atoi(v)
+	// ParseInt with bitSize 32 rejects values that would overflow int32, since
+	// the annotation is user-editable and a bad value must not silently truncate
+	// into the wrong pinned floor.
+	f, err := strconv.ParseInt(v, 10, 32)
 	if err != nil {
 		return 0, false
 	}

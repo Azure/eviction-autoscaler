@@ -132,15 +132,16 @@ func TestFilter_OptIn_HardcodedNamespace(t *testing.T) {
 }
 
 func TestFilter_OptIn_HardcodedWithAnnotationFalse(t *testing.T) {
-	// annotation takes precedence over hardcoded list
-	filter := New([]string{"kube-system"}, true)
+	// annotation takes precedence over the actionedNamespaces list (non-AKS-owned ns;
+	// AKS-owned namespaces intentionally ignore the annotation)
+	filter := New([]string{"special-ns"}, true)
 
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
 
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "kube-system",
+			Name: "special-ns",
 			Annotations: map[string]string{
 				EnableEvictionAutoscalerAnnotationKey: "false",
 			},
@@ -150,13 +151,13 @@ func TestFilter_OptIn_HardcodedWithAnnotationFalse(t *testing.T) {
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
 	ctx := context.Background()
 
-	result, err := filter.Filter(ctx, fakeClient, "kube-system")
+	result, err := filter.Filter(ctx, fakeClient, "special-ns")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if result != false {
-		t.Errorf("expected false (annotation takes precedence over hardcoded), got %v", result)
+		t.Errorf("expected false (annotation takes precedence over actionedNamespaces), got %v", result)
 	}
 }
 

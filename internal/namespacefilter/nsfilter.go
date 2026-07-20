@@ -14,6 +14,42 @@ import (
 
 const EnableEvictionAutoscalerAnnotationKey = "eviction-autoscaler.azure.com/enable"
 
+// aksOwnedNamespaces mirrors ProtectedNamespaces in aks-rp
+// (toolkit/constvalues/automatic/subjects.go). It is intentionally unexported so its
+// contents cannot be mutated by other packages; use IsAKSOwnedNamespace to query it.
+//
+// NOTE: This is a hardcoded copy of the RP's ProtectedNamespaces list. Before every
+// eviction-autoscaler extension release, check this list against the RP source
+// (aks-rp toolkit/constvalues/automatic/subjects.go) and update it to keep the two in sync.
+var aksOwnedNamespaces = []string{
+	"aks-command",
+	"kube-system",
+	"calico-system",
+	"tigera-system",
+	"gatekeeper-system",
+	"azappconfig-system",
+	"azureml",
+	"dapr-system",
+	"dataprotection-microsoft",
+	"flux-system",
+	"acstor",
+	"sc-system",
+	"azure-extensions-usage-system",
+	"app-routing-system",
+	"aks-periscope",
+	"aks-istio-system",
+	"aks-istio-ingress",
+	"aks-istio-egress",
+	"aks-static-egress-gateway",
+	"azuresecuritylinuxagent",
+	"fleet-system",
+}
+
+// IsAKSOwnedNamespace reports whether ns is an AKS-owned namespace.
+func IsAKSOwnedNamespace(ns string) bool {
+	return slices.Contains(aksOwnedNamespaces, ns)
+}
+
 type nsfilter struct {
 	disabledByDefault bool
 	hardcoded         []string
@@ -32,6 +68,12 @@ type Reader interface {
 
 func (n *nsfilter) Filter(ctx context.Context, c Reader, ns string) (bool, error) {
 	logger := ctrl.LoggerFrom(ctx)
+
+	// AKS-owned namespaces are always managed, ignoring config and the enable annotation.
+	if IsAKSOwnedNamespace(ns) {
+		logger.Info("namespace filtering decision", "namespace", ns, "source", "aks-owned", "filtering", true)
+		return true, nil
+	}
 
 	// Fetch the namespace to check for the annotation
 	namespace := &corev1.Namespace{}

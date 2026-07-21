@@ -29,7 +29,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 ## Features
 
 - **Node Controller**: Signals eviction-autoscaler for all pods on cordoned nodes selected by corresponding pdb whose name/namespace it shares.
-- **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
+- **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruptions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
 - **KEDA-aware surge**: When a KEDA ScaledObject targets the deployment, the controller surges by temporarily raising the ScaledObject's `minReplicaCount`. The same pattern applies — annotations on the ScaledObject track the surge state and original value for safe revert.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
@@ -194,7 +194,7 @@ Configuration options will be documented here in future updates. If you have sug
 >    az k8s-extension delete --resource-group <your-resource-group> \
 >      --cluster-name <your-cluster-name> \
 >      --cluster-type managedClusters \
->      --name evictionautoscaler --yes
+>      --name eviction-autoscaler --yes
 >    ```
 >
 > 2. Re-install the extension with your updated configuration settings using the `az k8s-extension create` command shown above.
@@ -568,7 +568,7 @@ As additional nodes are cordoned during a rolling drain, `displaced` grows and t
 
 Scale-down back to `minReplicas` happens only when **both** conditions are met:
 
-1. The last eviction happened more than the cooldown period ago (default 30s).
+1. The last eviction happened more than the cooldown period ago (default 60s).
 2. The PDB's `DisruptionsAllowed` is greater than zero (i.e. the drain is no longer blocking evictions).
 
 **Importantly, the replica count does not decrease while a drain is still in progress.** If node A drains but node B is still cordoned and blocking evictions, replicas stay at their current level until the full drain completes and the cooldown expires. This avoids a churn cycle where scale-down triggers new evictions, which trigger scale-up again.

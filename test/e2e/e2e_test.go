@@ -1161,6 +1161,132 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 		})
 
+		It("should not crash when Deployment Safeguards blocks the surge write in an AKS-owned namespace", func() {
+			ctx := context.Background()
+			testNs := "test-ds-block"
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+			}
+
+			By("creating test namespace with enable annotation and ds-block label")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "label", "namespace", testNs, "ds-block=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica and maxUnavailable=0")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-ds",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-ds", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("building a client")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-ds")
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, "nginx-ds")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("installing a ValidatingAdmissionPolicy that blocks Deployment writes (simulating DS)")
+			err = applyDSBlockPolicy()
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteDSBlockPolicy()
+
+			By("waiting for the DS policy to become enforced")
+			EventuallyWithOffset(1, func() error {
+				probe := exec.Command("kubectl", "-n", testNs, "annotate", "deployment", "nginx-ds",
+					"ds-probe=1", "--overwrite")
+				if _, perr := utils.Run(probe); perr == nil {
+					return fmt.Errorf("expected DS policy to block the deployment write, but it succeeded")
+				}
+				return nil
+			}, time.Minute, 2*time.Second).Should(Succeed())
+
+			By("recording the controller-manager pod baseline before the surge")
+			baselineName, baselineRestarts, err := controllerPodStatus(ctx, clientset)
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("controller pod %s baseline restarts=%d\n", baselineName, baselineRestarts)
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+			fmt.Printf("nginx-ds pod running on node %s\n", nodeName)
+
+			By("cordoning the node to trigger an eviction surge (which DS will block)")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the deployment never surges because the write is blocked")
+			ConsistentlyWithOffset(1, func() (int32, error) {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-ds"}, &dep); err != nil {
+					return 0, err
+				}
+				if dep.Spec.Replicas == nil {
+					return 0, fmt.Errorf("deployment replicas is nil")
+				}
+				return *dep.Spec.Replicas, nil
+			}, time.Minute, 5*time.Second).Should(Equal(int32(1)))
+
+			By("verifying the controller-manager pod stays healthy (no crash, panic, or restart)")
+			ConsistentlyWithOffset(1, func() error {
+				name, restarts, err := controllerPodStatus(ctx, clientset)
+				if err != nil {
+					return err
+				}
+				if restarts > baselineRestarts {
+					return fmt.Errorf("controller pod %s restarted (%d -> %d)", name, baselineRestarts, restarts)
+				}
+				return nil
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up: removing DS policy, uncordoning, deleting resources")
+			deleteDSBlockPolicy()
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+			deleteDeployment("nginx-ds", testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
+
 		// Test 3b: PDB minAvailable should use HPA minReplicas, not deployment replicas
 		It("should create PDB with minAvailable from HPA minReplicas when HPA targets the deployment", func() {
 			ctx := context.Background()

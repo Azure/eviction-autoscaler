@@ -196,9 +196,10 @@ func main() {
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
 	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Filter:   nsfilter,
+		Recorder: mgr.GetEventRecorderFor("eviction-autoscaler"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)

@@ -18,6 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -338,6 +339,57 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+		})
+
+		It("should emit a DrainSurgeOverride event when the surge-override annotation drives the surge", func() {
+			By("setting maxSurge=0 and a surge-override annotation on the deployment")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			zeroSurge := intstr.FromInt32(0)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			recorder := record.NewFakeRecorder(10)
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client:   k8sClient,
+				Scheme:   k8sClient.Scheme(),
+				Filter:   &evictionTestFilter{},
+				Recorder: recorder,
+			}
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "override-event-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "override-pod-", Namespace: namespace, Labels: map[string]string{"app": "example"}},
+				Spec:       corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			// Populate TargetGeneration, then log an eviction to enter the surge path.
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "override-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Surge fired (maxSurge=0 would otherwise degrade), so an override event was recorded.
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+			var got string
+			Eventually(recorder.Events).Should(Receive(&got))
+			Expect(got).To(ContainSubstring("DrainSurgeOverride"))
+			Expect(got).To(ContainSubstring("overrides rollout maxSurge"))
 		})
 
 		It("should surge by exactly displaced pod count when displaced is less than maxSurge", func() {

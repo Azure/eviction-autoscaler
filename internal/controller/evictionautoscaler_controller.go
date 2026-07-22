@@ -14,6 +14,7 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -31,6 +32,23 @@ import (
 
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
+
+// SurgeOverrideAnnotationKey sets a drain-time surge cap override on the target
+// workload: how much the eviction autoscaler may surge the target during a drain,
+// independently of the target's own spec.strategy.rollingUpdate.maxSurge (which
+// governs rollouts). When set it ALWAYS takes precedence over maxSurge for
+// drain-time surge. The value is an int ("2") or a percentage of minReplicas
+// ("10%"), matching maxSurge semantics.
+//
+// Motivation: rollout surge and drain surge are different operational events.
+// Safe-deployment guidance often mandates maxSurge=0 on the rollout strategy (no
+// extra pods created during an app update), which also disables the autoscaler's
+// drain-time surge for those workloads. This annotation decouples the two: keep
+// maxSurge=0 for rollouts while still allowing a bounded, workload-tuned surge
+// only during a drain, which the autoscaler reverts when the drain finishes. It
+// is a cap, not the amount: the actual surge stays demand-driven
+// (minReplicas + displaced), so larger drains proceed in waves.
+const SurgeOverrideAnnotationKey = "eviction-autoscaler.azure.com/surge-override"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
@@ -182,7 +200,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
-			// maxSurge is 0 (explicit or not configured) — can't surge, degrade.
+			// Surge resolves to 0 (maxSurge=0/unset or a zero override) — can't surge, degrade.
 			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		default:
@@ -213,6 +231,20 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+
+		// Surface when the drain-time surge cap overrides the workload's rollout
+		// maxSurge, since we are deliberately surging a workload whose author set an
+		// explicit (often 0) rollout maxSurge. Emitted only when a surge actually
+		// fires; the Kubernetes event recorder aggregates repeats across reconciles.
+		if override, ok := surgeOverrideValue(target); ok {
+			maxSurge := target.GetMaxSurge()
+			msg := fmt.Sprintf("drain-time surge cap %q overrides rollout maxSurge %q for %s/%s",
+				override, maxSurge.String(), target.Obj().GetNamespace(), target.Obj().GetName())
+			logger.Info(msg, "surgeOverride", override, "rolloutMaxSurge", maxSurge.String(), "surgeTarget", surgeTarget)
+			if r.Recorder != nil {
+				r.Recorder.Event(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride", msg)
+			}
+		}
 
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
@@ -321,34 +353,79 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 var (
 	errMaxSurgeZero      = errors.New("maxSurge is 0; eviction autoscaler cannot surge")
 	errInvalidPercentage = errors.New("invalid surge percentage")
+	errNegativeSurge     = errors.New("surge value is negative")
 )
 
-// calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
-// Returns a sentinel error to distinguish:
-//   - errMaxSurgeZero: maxSurge resolves to 0 (explicitly set or not configured)
-//   - errInvalidPercentage: percentage string could not be parsed
-func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
-
-	surge := target.GetMaxSurge()
-	if surge.Type == intstr.Int {
-		if surge.IntVal == 0 {
-			return minrepicas, errMaxSurgeZero
+// calculateSurge returns the maximum replica count after surge (minReplicas + surge).
+// The surge amount is taken from the SurgeOverrideAnnotationKey annotation on the
+// target when present (it always wins), otherwise from the target's maxSurge.
+// The underlying error unwraps to a sentinel:
+//   - errMaxSurgeZero: the surge amount resolves to 0 (explicitly set or not configured)
+//   - errInvalidPercentage: percentage string could not be parsed or lacks a "%" suffix
+//   - errNegativeSurge: the surge amount is negative
+func calculateSurge(_ context.Context, target Surger, minReplicas int32) (int32, error) {
+	// An explicit surge-override annotation on the target always wins over maxSurge,
+	// so a workload can keep maxSurge=0 for its rollout strategy yet still surge on drain.
+	if override, ok := surgeOverrideValue(target); ok {
+		result, err := surgeFromValue(intstr.Parse(override), minReplicas)
+		if err != nil {
+			// Wrap so operators see the value came from the override annotation,
+			// not from the target's maxSurge.
+			return result, fmt.Errorf("surge-override annotation %q: %w", override, err)
 		}
-		return minrepicas + surge.IntVal, nil
+		return result, nil
+	}
+	return surgeFromValue(target.GetMaxSurge(), minReplicas)
+}
+
+// surgeOverrideValue returns the SurgeOverrideAnnotationKey value from the target
+// workload if present. Single reader of the annotation, shared by calculateSurge
+// and the surge-path event/log emission.
+func surgeOverrideValue(target Surger) (string, bool) {
+	ann := target.Obj().GetAnnotations()
+	if ann == nil {
+		return "", false
+	}
+	v, ok := ann[SurgeOverrideAnnotationKey]
+	return v, ok
+}
+
+// surgeFromValue resolves an int-or-percentage surge value against minReplicas.
+// An int is added directly; a percentage (a string ending in "%") is applied to
+// minReplicas and rounded up. A zero value yields errMaxSurgeZero; a negative value
+// yields errNegativeSurge; a string that is not a valid "<n>%" percentage yields
+// errInvalidPercentage.
+func surgeFromValue(surge intstr.IntOrString, minReplicas int32) (int32, error) {
+	if surge.Type == intstr.Int {
+		switch {
+		case surge.IntVal < 0:
+			return minReplicas, fmt.Errorf("%w: %d", errNegativeSurge, surge.IntVal)
+		case surge.IntVal == 0:
+			return minReplicas, errMaxSurgeZero
+		}
+		return minReplicas + surge.IntVal, nil
 	}
 
 	if surge.Type == intstr.String {
-		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
-		percentage, err := strconv.Atoi(percentageStr)
+		// A string surge value must be a percentage, e.g. "10%". Kubernetes stores a
+		// numeric maxSurge as an intstr Int (handled above), so a String type is always
+		// a percentage — reject a bare number like "10" as malformed.
+		if !strings.HasSuffix(surge.StrVal, "%") {
+			return minReplicas, fmt.Errorf("%w: %q is not a percentage (missing %% suffix)", errInvalidPercentage, surge.StrVal)
+		}
+		percentage, err := strconv.Atoi(strings.TrimSuffix(surge.StrVal, "%"))
 		if err != nil {
-			return minrepicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
+			return minReplicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
 		}
-		if percentage == 0 {
-			return minrepicas, errMaxSurgeZero
+		switch {
+		case percentage < 0:
+			return minReplicas, fmt.Errorf("%w: %q", errNegativeSurge, surge.StrVal)
+		case percentage == 0:
+			return minReplicas, errMaxSurgeZero
 		}
-		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
+		return minReplicas + int32(math.Ceil((float64(minReplicas)*float64(percentage))/100.0)), nil
 	}
 
 	// Unreachable for well-formed intstr values, but handle gracefully
-	return minrepicas, errMaxSurgeZero
+	return minReplicas, errMaxSurgeZero
 }

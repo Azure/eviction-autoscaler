@@ -550,6 +550,34 @@ surgeTarget = minReplicas + displaced
 
 where `displaced` is the number of PDB-selected pods currently running on cordoned nodes. `surgeTarget` is capped at `minReplicas + maxSurge` (the deployment's configured max surge). This means the surge is right-sized to exactly what is needed — no over-provisioning.
 
+#### Drain-Time Surge Cap Override
+
+The surge budget defaults to the target's rolling-update `maxSurge`. But rollout surge and **drain** surge are different operational events: a workload can legitimately want `maxSurge: 0` for **app rollouts** (serial, no extra pods during a version change) yet still want a small, bounded surge **during node maintenance**. With `maxSurge: 0` and no override, the workload gets **no** drain-time surge at all — `calculateSurge` returns an error and the controller cannot add replicas to relieve a PDB-blocked drain.
+
+To set a **drain-time surge cap** that is decoupled from the rollout `maxSurge`, annotate the **target workload** (Deployment or StatefulSet):
+
+| Annotation | Placed On | Value | Purpose |
+|---|---|---|---|
+| `eviction-autoscaler.azure.com/surge-override` | Deployment or StatefulSet | Int (e.g. `"3"`) or percentage (e.g. `"20%"`) | Drain-time surge cap, used **instead of** the target's rollout `maxSurge` |
+
+When present, the override **always wins** over `maxSurge` for drain-time surge, so a workload can keep `maxSurge: 0` for its rollout strategy yet still surge during a drain. It is a **cap, not the amount**: the actual surge stays demand-driven (`minReplicas + displaced`), so a drain larger than the cap simply proceeds in **waves**. The value is interpreted exactly like `maxSurge` — an integer is added to `minReplicas`; a percentage is applied to `minReplicas` and rounded up — so each workload can tune the batch size to its own capacity (e.g. a large `maxSurge: 0` deployment can pin a small absolute cap like `"10"` rather than a percentage that would scale up with replica count). A value of `0` (or `0%`) disables surge just like `maxSurge: 0`.
+
+When the override drives a surge, the controller emits a `DrainSurgeOverride` event on the target workload (and a log line) noting that the drain-time cap overrode the rollout `maxSurge`.
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  annotations:
+    eviction-autoscaler.azure.com/surge-override: "10"  # drain-time cap of 10 extra pods, even with maxSurge: 0
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 0        # rollout strategy still never surges
+      maxUnavailable: 1
+```
+
 #### Incremental Scale-Up
 
 As additional nodes are cordoned during a rolling drain, `displaced` grows and the controller tops the deployment up automatically on each reconcile.

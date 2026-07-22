@@ -14,6 +14,7 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -32,17 +33,21 @@ import (
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
-// SurgeOverrideAnnotationKey lets an operator override how much the eviction
-// autoscaler surges a target, independently of the target's own
-// spec.strategy.rollingUpdate.maxSurge. When set on the target workload it
-// ALWAYS takes precedence over maxSurge. The value is an int ("2") or a
-// percentage of minReplicas ("10%"), matching maxSurge semantics.
+// SurgeOverrideAnnotationKey sets a drain-time surge cap override on the target
+// workload: how much the eviction autoscaler may surge the target during a drain,
+// independently of the target's own spec.strategy.rollingUpdate.maxSurge (which
+// governs rollouts). When set it ALWAYS takes precedence over maxSurge for
+// drain-time surge. The value is an int ("2") or a percentage of minReplicas
+// ("10%"), matching maxSurge semantics.
 //
-// Motivation: safe-deployment guidance often mandates maxSurge=0 on the rollout
-// strategy (no extra pods created during an app update). But that also disables
-// the eviction autoscaler's drain-time surge for exactly those workloads. This
-// annotation decouples the two: keep maxSurge=0 for rollouts while still allowing
-// a bounded, drain-only surge that the autoscaler reverts when the drain finishes.
+// Motivation: rollout surge and drain surge are different operational events.
+// Safe-deployment guidance often mandates maxSurge=0 on the rollout strategy (no
+// extra pods created during an app update), which also disables the autoscaler's
+// drain-time surge for those workloads. This annotation decouples the two: keep
+// maxSurge=0 for rollouts while still allowing a bounded, workload-tuned surge
+// only during a drain, which the autoscaler reverts when the drain finishes. It
+// is a cap, not the amount: the actual surge stays demand-driven
+// (minReplicas + displaced), so larger drains proceed in waves.
 const SurgeOverrideAnnotationKey = "eviction-autoscaler.azure.com/surge-override"
 
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
@@ -227,6 +232,20 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
 
+		// Surface when the drain-time surge cap overrides the workload's rollout
+		// maxSurge, since we are deliberately surging a workload whose author set an
+		// explicit (often 0) rollout maxSurge. Emitted only when a surge actually
+		// fires; the Kubernetes event recorder aggregates repeats across reconciles.
+		if override, ok := surgeOverrideValue(target); ok {
+			maxSurge := target.GetMaxSurge()
+			msg := fmt.Sprintf("drain-time surge cap %q overrides rollout maxSurge %q for %s/%s",
+				override, maxSurge.String(), target.Obj().GetNamespace(), target.Obj().GetName())
+			logger.Info(msg, "surgeOverride", override, "rolloutMaxSurge", maxSurge.String(), "surgeTarget", surgeTarget)
+			if r.Recorder != nil {
+				r.Recorder.Event(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride", msg)
+			}
+		}
+
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
 
@@ -347,18 +366,28 @@ var (
 func calculateSurge(_ context.Context, target Surger, minReplicas int32) (int32, error) {
 	// An explicit surge-override annotation on the target always wins over maxSurge,
 	// so a workload can keep maxSurge=0 for its rollout strategy yet still surge on drain.
-	if ann := target.Obj().GetAnnotations(); ann != nil {
-		if override, ok := ann[SurgeOverrideAnnotationKey]; ok {
-			result, err := surgeFromValue(intstr.Parse(override), minReplicas)
-			if err != nil {
-				// Wrap so operators see the value came from the override annotation,
-				// not from the target's maxSurge.
-				return result, fmt.Errorf("surge-override annotation %q: %w", override, err)
-			}
-			return result, nil
+	if override, ok := surgeOverrideValue(target); ok {
+		result, err := surgeFromValue(intstr.Parse(override), minReplicas)
+		if err != nil {
+			// Wrap so operators see the value came from the override annotation,
+			// not from the target's maxSurge.
+			return result, fmt.Errorf("surge-override annotation %q: %w", override, err)
 		}
+		return result, nil
 	}
 	return surgeFromValue(target.GetMaxSurge(), minReplicas)
+}
+
+// surgeOverrideValue returns the SurgeOverrideAnnotationKey value from the target
+// workload if present. Single reader of the annotation, shared by calculateSurge
+// and the surge-path event/log emission.
+func surgeOverrideValue(target Surger) (string, bool) {
+	ann := target.Obj().GetAnnotations()
+	if ann == nil {
+		return "", false
+	}
+	v, ok := ann[SurgeOverrideAnnotationKey]
+	return v, ok
 }
 
 // surgeFromValue resolves an int-or-percentage surge value against minReplicas.

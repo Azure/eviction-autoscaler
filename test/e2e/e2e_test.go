@@ -1224,8 +1224,12 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, func() error {
 				probe := exec.Command("kubectl", "-n", testNs, "annotate", "deployment", "nginx-ds",
 					"ds-probe=1", "--overwrite")
-				if _, perr := utils.Run(probe); perr == nil {
+				out, perr := utils.Run(probe)
+				if perr == nil {
 					return fmt.Errorf("expected DS policy to block the deployment write, but it succeeded")
+				}
+				if !strings.Contains(string(out), "Deployment Safeguards: writes to Deployments are blocked") {
+					return fmt.Errorf("expected DS policy denial, got: %v", perr)
 				}
 				return nil
 			}, time.Minute, 2*time.Second).Should(Succeed())

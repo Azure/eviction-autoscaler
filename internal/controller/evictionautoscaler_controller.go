@@ -67,7 +67,7 @@ func recordPanic(controller, namespace string, target *string) {
 }
 
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	var panicTarget string
+	panicTarget := req.Name
 	defer recordPanic("evictionautoscaler", req.Namespace, &panicTarget)
 	logger := log.FromContext(ctx)
 

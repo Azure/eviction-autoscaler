@@ -36,7 +36,11 @@ const NodeNameIndex = "spec.nodeName"
 
 // Reconcile is the main loop of the controller. It will look for unschedulded nodes and for every pod on the node
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	defer recordPanic("node", req.Namespace, &req.Name)
+	namespace := req.Namespace
+	if namespace == "" {
+		namespace = "_cluster"
+	}
+	defer recordPanic("node", namespace, &req.Name)
 	logger := log.FromContext(ctx)
 
 	// Fetch the EvictionAutoScaler instance

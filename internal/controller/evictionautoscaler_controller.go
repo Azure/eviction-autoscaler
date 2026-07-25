@@ -56,6 +56,21 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// SurgeOverrideEnabled gates the drain-time surge-override annotation
+	// (SurgeOverrideAnnotationKey). When false (the default), the annotation is
+	// ignored and surge sizing falls through to the workload's rollout maxSurge,
+	// preserving today's behavior. It is a fleet-wide opt-in set via the
+	// SURGE_OVERRIDE_ENABLED controller env var, so Cosmic — not individual
+	// workload owners — decides whether drain-time surge overrides are honored.
+	SurgeOverrideEnabled bool
+	// SurgeOverrideMaxPercent bounds the free-form surge-override annotation: the
+	// override-resolved surge amount is capped at this percent of minReplicas
+	// (rounded up, floored at 1). Because the annotation bypasses API-server
+	// admission validation, this is a safety net against a fat-fingered value.
+	// Set via the SURGE_OVERRIDE_MAX_PERCENT env var (default 25); operators can
+	// raise it fleet-wide. A non-positive value disables the cap. The rollout
+	// maxSurge path is already admission-validated and is never capped here.
+	SurgeOverrideMaxPercent int32
 }
 
 const cooldown = 1 * time.Minute
@@ -196,7 +211,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
 	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
 	// we fall through to the cooldown/scale-down path — which is correct.
-	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
+	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, r.SurgeOverrideEnabled, r.SurgeOverrideMaxPercent)
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
@@ -236,7 +251,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// maxSurge, since we are deliberately surging a workload whose author set an
 		// explicit (often 0) rollout maxSurge. Emitted only when a surge actually
 		// fires; the Kubernetes event recorder aggregates repeats across reconciles.
-		if override, ok := surgeOverrideValue(target); ok {
+		if override, ok := surgeOverrideValue(target); ok && r.SurgeOverrideEnabled {
 			maxSurge := target.GetMaxSurge()
 			msg := fmt.Sprintf("drain-time surge cap %q overrides rollout maxSurge %q for %s/%s",
 				override, maxSurge.String(), target.Obj().GetNamespace(), target.Obj().GetName())
@@ -363,19 +378,47 @@ var (
 //   - errMaxSurgeZero: the surge amount resolves to 0 (explicitly set or not configured)
 //   - errInvalidPercentage: percentage string could not be parsed or lacks a "%" suffix
 //   - errNegativeSurge: the surge amount is negative
-func calculateSurge(_ context.Context, target Surger, minReplicas int32) (int32, error) {
+func calculateSurge(_ context.Context, target Surger, minReplicas int32, surgeOverrideEnabled bool, surgeOverrideMaxPercent int32) (int32, error) {
 	// An explicit surge-override annotation on the target always wins over maxSurge,
 	// so a workload can keep maxSurge=0 for its rollout strategy yet still surge on drain.
-	if override, ok := surgeOverrideValue(target); ok {
-		result, err := surgeFromValue(intstr.Parse(override), minReplicas)
-		if err != nil {
-			// Wrap so operators see the value came from the override annotation,
-			// not from the target's maxSurge.
-			return result, fmt.Errorf("surge-override annotation %q: %w", override, err)
+	// The annotation is only honored when the controller-level flag is enabled
+	// (fleet-wide opt-in); otherwise it is ignored and we fall through to maxSurge,
+	// preserving the controller's default behavior.
+	if surgeOverrideEnabled {
+		if override, ok := surgeOverrideValue(target); ok {
+			result, err := surgeFromValue(intstr.Parse(strings.TrimSpace(override)), minReplicas)
+			if err != nil {
+				// Wrap so operators see the value came from the override annotation,
+				// not from the target's maxSurge.
+				return result, fmt.Errorf("surge-override annotation %q: %w", override, err)
+			}
+			// The override annotation is free-form and bypasses API-server admission
+			// validation, so a fat-fingered value (e.g. "100" on a large deployment)
+			// could request an unbounded surge. Cap the override-resolved surge amount
+			// as a safety bound. The rollout maxSurge path below is already
+			// admission-validated and is left uncapped.
+			return capOverrideSurge(result, minReplicas, surgeOverrideMaxPercent), nil
 		}
-		return result, nil
 	}
 	return surgeFromValue(target.GetMaxSurge(), minReplicas)
+}
+
+// capOverrideSurge bounds the override-resolved surge target so the surge amount
+// (result - minReplicas) does not exceed maxPercent of minReplicas (rounded up,
+// floored at 1). A non-positive maxPercent disables the cap. Only the free-form
+// surge-override path is capped; the API-validated rollout maxSurge is not.
+func capOverrideSurge(result, minReplicas, maxPercent int32) int32 {
+	if maxPercent <= 0 {
+		return result
+	}
+	capAmount := int32(math.Ceil(float64(minReplicas) * float64(maxPercent) / 100.0))
+	if capAmount < 1 {
+		capAmount = 1
+	}
+	if surge := result - minReplicas; surge > capAmount {
+		return minReplicas + capAmount
+	}
+	return result
 }
 
 // surgeOverrideValue returns the SurgeOverrideAnnotationKey value from the target

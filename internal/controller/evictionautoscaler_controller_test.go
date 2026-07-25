@@ -355,10 +355,11 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 
 			recorder := record.NewFakeRecorder(10)
 			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client:   k8sClient,
-				Scheme:   k8sClient.Scheme(),
-				Filter:   &evictionTestFilter{},
-				Recorder: recorder,
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				Filter:               &evictionTestFilter{},
+				Recorder:             recorder,
+				SurgeOverrideEnabled: true,
 			}
 
 			node := &corev1.Node{
@@ -390,6 +391,169 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Eventually(recorder.Events).Should(Receive(&got))
 			Expect(got).To(ContainSubstring("DrainSurgeOverride"))
 			Expect(got).To(ContainSubstring("overrides rollout maxSurge"))
+		})
+
+		It("surges via the override without emitting an event when the recorder is disabled", func() {
+			By("setting maxSurge=0 and a surge-override annotation, with NO recorder wired")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			zeroSurge := intstr.FromInt32(0)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			// Recorder is nil (ENABLE_EVENT_RECORDING=false), but the feature flag is on.
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				Filter:               &evictionTestFilter{},
+				SurgeOverrideEnabled: true,
+			}
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "override-norec-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "override-norec-pod-", Namespace: namespace, Labels: map[string]string{"app": "example"}},
+				Spec:       corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "override-norec-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			// Nil recorder must not panic and surge must still fire.
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+		})
+
+		It("ignores the surge-override annotation when the feature flag is disabled", func() {
+			By("setting maxSurge=0 and a surge-override annotation, with the feature flag OFF")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			zeroSurge := intstr.FromInt32(0)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			recorder := record.NewFakeRecorder(10)
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				Filter:               &evictionTestFilter{},
+				Recorder:             recorder,
+				SurgeOverrideEnabled: false, // gate OFF: the annotation must be a no-op
+			}
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "override-off-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "override-off-pod-", Namespace: namespace, Labels: map[string]string{"app": "example"}},
+				Spec:       corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "override-off-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("falling through to maxSurge=0: Degraded set, no scale-up, no override event")
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			found := false
+			for _, c := range ea.Status.Conditions {
+				if c.Reason == "UnsupportedAutoscalerConfiguration" {
+					found = true
+					break
+				}
+			}
+			Expect(found).To(BeTrue(), "expected Degraded condition since the override is ignored and maxSurge=0")
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+			Expect(recorder.Events).ToNot(Receive(), "no DrainSurgeOverride event should fire when the flag is off")
+		})
+
+		It("reverts an override-driven surge once the drain completes (flag enabled)", func() {
+			By("setting maxSurge=0 and a surge-override annotation with the feature flag ON")
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			zeroSurge := intstr.FromInt32(0)
+			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
+			if dep.Annotations == nil {
+				dep.Annotations = map[string]string{}
+			}
+			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client:               k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				Filter:               &evictionTestFilter{},
+				SurgeOverrideEnabled: true,
+			}
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "override-revert-node-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{GenerateName: "override-revert-pod-", Namespace: namespace, Labels: map[string]string{"app": "example"}},
+				Spec:       corev1.PodSpec{NodeName: node.Name, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}}},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: "override-revert-pod", EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			By("surging up while the PDB blocks disruptions")
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+
+			By("completing the drain: PDB allows disruptions, surge reverts to original replicas")
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pdb)).To(Succeed())
+			pdb.Status.DisruptionsAllowed = 1
+			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			// Age the eviction beyond the cooldown so the revert (scale-down) gate is open.
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction.EvictionTime = metav1.NewTime(time.Now().Add(-2 * cooldown))
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
 		})
 
 		It("should surge by exactly displaced pod count when displaced is less than maxSurge", func() {

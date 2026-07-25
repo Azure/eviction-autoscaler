@@ -99,14 +99,14 @@ var _ = Describe("calculateSurge", func() {
 
 	It("adds an integer maxSurge to minReplicas", func() {
 		target := makeTarget(intstr.FromInt32(2))
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(5)))
 	})
 
 	It("returns errMaxSurgeZero when maxSurge is 0", func() {
 		target := makeTarget(intstr.FromInt32(0))
-		result, err := calculateSurge(ctx, target, 5)
+		result, err := calculateSurge(ctx, target, 5, true, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(5)))
 	})
@@ -114,7 +114,7 @@ var _ = Describe("calculateSurge", func() {
 	It("returns errMaxSurgeZero when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
 		target := &DeploymentWrapper{obj: dep}
-		result, err := calculateSurge(ctx, target, 4)
+		result, err := calculateSurge(ctx, target, 4, true, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(4)))
 	})
@@ -122,7 +122,7 @@ var _ = Describe("calculateSurge", func() {
 	It("computes 25% surge with ceiling (exact)", func() {
 		target := makeTarget(intstr.FromString("25%"))
 		// 4 * 25% = 1.0 → ceil(1.0) = 1 → 4+1 = 5
-		result, err := calculateSurge(ctx, target, 4)
+		result, err := calculateSurge(ctx, target, 4, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(5)))
 	})
@@ -130,7 +130,7 @@ var _ = Describe("calculateSurge", func() {
 	It("computes 25% surge with ceiling (fractional)", func() {
 		target := makeTarget(intstr.FromString("25%"))
 		// 3 * 25% = 0.75 → ceil(0.75) = 1 → 3+1 = 4
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(4)))
 	})
@@ -138,7 +138,7 @@ var _ = Describe("calculateSurge", func() {
 	It("computes 50% surge with ceiling", func() {
 		target := makeTarget(intstr.FromString("50%"))
 		// 3 * 50% = 1.5 → ceil(1.5) = 2 → 3+2 = 5
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(5)))
 	})
@@ -146,38 +146,38 @@ var _ = Describe("calculateSurge", func() {
 	It("computes 100% surge", func() {
 		target := makeTarget(intstr.FromString("100%"))
 		// 5 * 100% = 5 → ceil(5) = 5 → 5+5 = 10
-		result, err := calculateSurge(ctx, target, 5)
+		result, err := calculateSurge(ctx, target, 5, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(10)))
 	})
 
 	It("returns errInvalidPercentage for invalid percentage string", func() {
 		target := makeTarget(intstr.FromString("abc%"))
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
 	})
 
 	It("returns errInvalidPercentage for a string without a % suffix", func() {
 		target := makeTarget(intstr.FromString("10"))
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
 	})
 
 	It("returns errNegativeSurge for a negative int maxSurge", func() {
 		target := makeTarget(intstr.FromInt32(-1))
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
 	})
 
 	It("returns errNegativeSurge for a negative percentage", func() {
 		target := makeTarget(intstr.FromString("-10%"))
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
 	})
 
 	It("returns errMaxSurgeZero for 0% string", func() {
 		target := makeTarget(intstr.FromString("0%"))
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(3)))
 	})
@@ -200,14 +200,14 @@ var _ = Describe("calculateSurge", func() {
 
 	It("uses an integer surge-override even when maxSurge is 0", func() {
 		target := makeTargetAnn(intstr.FromInt32(0), "2")
-		result, err := calculateSurge(ctx, target, 5)
+		result, err := calculateSurge(ctx, target, 5, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(7)))
 	})
 
 	It("surge-override wins over a non-zero maxSurge", func() {
 		target := makeTargetAnn(intstr.FromInt32(5), "2")
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(5))) // 3 + override(2), NOT 3 + maxSurge(5)
 	})
@@ -215,7 +215,7 @@ var _ = Describe("calculateSurge", func() {
 	It("supports a percentage surge-override", func() {
 		target := makeTargetAnn(intstr.FromInt32(0), "10%")
 		// 10 * 10% = 1.0 → ceil = 1 → 10 + 1 = 11
-		result, err := calculateSurge(ctx, target, 10)
+		result, err := calculateSurge(ctx, target, 10, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(11)))
 	})
@@ -227,27 +227,118 @@ var _ = Describe("calculateSurge", func() {
 			},
 		}
 		target := &DeploymentWrapper{obj: dep}
-		result, err := calculateSurge(ctx, target, 4)
+		result, err := calculateSurge(ctx, target, 4, true, 0)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(7)))
 	})
 
 	It("returns errMaxSurgeZero for a zero surge-override", func() {
 		target := makeTargetAnn(intstr.FromInt32(2), "0")
-		result, err := calculateSurge(ctx, target, 3)
+		result, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
 		Expect(result).To(Equal(int32(3)))
 	})
 
 	It("returns errNegativeSurge for a negative surge-override", func() {
 		target := makeTargetAnn(intstr.FromInt32(2), "-1")
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errNegativeSurge)).To(BeTrue())
 	})
 
 	It("returns errInvalidPercentage for an unparseable surge-override", func() {
 		target := makeTargetAnn(intstr.FromInt32(2), "abc")
-		_, err := calculateSurge(ctx, target, 3)
+		_, err := calculateSurge(ctx, target, 3, true, 0)
 		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
+	})
+
+	// --- surge-override cap (SurgeOverrideMaxPercent) ---
+
+	It("caps an int surge-override that exceeds the max-percent bound", func() {
+		// override "100" on minReplicas 10; cap = ceil(10*25%) = 3 → 10+3 = 13
+		target := makeTargetAnn(intstr.FromInt32(0), "100")
+		result, err := calculateSurge(ctx, target, 10, true, 25)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(13)))
+	})
+
+	It("caps a percentage surge-override that exceeds the max-percent bound", func() {
+		// override "100%" on minReplicas 10 → surge 10; cap = ceil(10*25%) = 3 → 13
+		target := makeTargetAnn(intstr.FromInt32(0), "100%")
+		result, err := calculateSurge(ctx, target, 10, true, 25)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(13)))
+	})
+
+	It("does not cap an override within the max-percent bound", func() {
+		// override "2" on minReplicas 10; cap = 3; 2 <= 3 → 10+2 = 12
+		target := makeTargetAnn(intstr.FromInt32(0), "2")
+		result, err := calculateSurge(ctx, target, 10, true, 25)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(12)))
+	})
+
+	It("floors the cap at 1 when minReplicas is small", func() {
+		// minReplicas 1; cap = ceil(1*25%) = ceil(0.25) = 1 (floored) → override "5" capped to 1 → 2
+		target := makeTargetAnn(intstr.FromInt32(0), "5")
+		result, err := calculateSurge(ctx, target, 1, true, 25)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(2)))
+	})
+
+	It("does not cap when max-percent is non-positive (disabled)", func() {
+		// override "100" on minReplicas 10, cap disabled → 10+100 = 110
+		target := makeTargetAnn(intstr.FromInt32(0), "100")
+		result, err := calculateSurge(ctx, target, 10, true, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(110)))
+	})
+
+	It("trims surrounding whitespace on the override value", func() {
+		// "  2  " → parsed as 2; minReplicas 10 → 12
+		target := makeTargetAnn(intstr.FromInt32(0), "  2  ")
+		result, err := calculateSurge(ctx, target, 10, true, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(12)))
+	})
+
+	// --- surge-override feature-gate + rounding/boundary (maxPercent=0 isolates the cap) ---
+
+	It("ignores the surge-override annotation when the feature flag is disabled (maxSurge=0)", func() {
+		// flag off + annotation present → falls through to maxSurge(0) → errMaxSurgeZero
+		target := makeTargetAnn(intstr.FromInt32(0), "2")
+		result, err := calculateSurge(ctx, target, 5, false, 0)
+		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(result).To(Equal(int32(5)))
+	})
+
+	It("falls through to maxSurge when the flag is disabled even with an override present", func() {
+		// flag off + override "10" but maxSurge 3 → uses maxSurge(3), ignores override → 3+3 = 6
+		target := makeTargetAnn(intstr.FromInt32(3), "10")
+		result, err := calculateSurge(ctx, target, 3, false, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(6)))
+	})
+
+	It("rounds a percentage override up (33% of 10 → 4)", func() {
+		// 10 * 33% = 3.3 → ceil = 4 → 10 + 4 = 14 (cap disabled)
+		target := makeTargetAnn(intstr.FromInt32(0), "33%")
+		result, err := calculateSurge(ctx, target, 10, true, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(14)))
+	})
+
+	It("supports a minimal boundary override (1 with minReplicas 1)", func() {
+		target := makeTargetAnn(intstr.FromInt32(0), "1")
+		result, err := calculateSurge(ctx, target, 1, true, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(2)))
+	})
+
+	It("doubles replicas with a 100% override (cap disabled)", func() {
+		// 5 * 100% = 5 → 5 + 5 = 10
+		target := makeTargetAnn(intstr.FromInt32(0), "100%")
+		result, err := calculateSurge(ctx, target, 5, true, 0)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(10)))
 	})
 })

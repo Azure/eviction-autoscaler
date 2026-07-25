@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -195,12 +196,71 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
-	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Filter:   nsfilter,
-		Recorder: mgr.GetEventRecorderFor("eviction-autoscaler"),
-	}).SetupWithManager(mgr); err != nil {
+	// Parse SURGE_OVERRIDE_ENABLED environment variable (defaults to false if not set).
+	// Fleet-wide opt-in for honoring the drain-time surge-override annotation; when
+	// off, the annotation is a no-op and surge sizing falls through to maxSurge.
+	// Strictly validated to "true"/"false"/empty so a typo (e.g. "yes") fails fast at
+	// startup rather than silently disabling the feature.
+	surgeOverrideEnabled := false
+	switch v := os.Getenv("SURGE_OVERRIDE_ENABLED"); v {
+	case "", "false":
+		surgeOverrideEnabled = false
+	case "true":
+		surgeOverrideEnabled = true
+	default:
+		setupLog.Error(fmt.Errorf("invalid value %q for SURGE_OVERRIDE_ENABLED (must be \"true\" or \"false\")", v),
+			"Failed to parse SURGE_OVERRIDE_ENABLED env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("Surge override configuration", "surgeOverrideEnabled", surgeOverrideEnabled)
+
+	// Parse SURGE_OVERRIDE_MAX_PERCENT environment variable (defaults to 25 if not set).
+	// Bounds the free-form surge-override annotation as a fleet-wide safety net; must be
+	// a positive integer. Operators can raise it to allow larger drain-time surges.
+	surgeOverrideMaxPercent := int32(25)
+	if v := os.Getenv("SURGE_OVERRIDE_MAX_PERCENT"); v != "" {
+		p, err := strconv.Atoi(v)
+		if err != nil || p <= 0 {
+			setupLog.Error(fmt.Errorf("SURGE_OVERRIDE_MAX_PERCENT must be a positive integer, got %q", v),
+				"Failed to parse SURGE_OVERRIDE_MAX_PERCENT env variable")
+			os.Exit(1)
+		}
+		surgeOverrideMaxPercent = int32(p)
+	}
+	setupLog.Info("Surge override max percent configuration", "surgeOverrideMaxPercent", surgeOverrideMaxPercent)
+
+	// Parse ENABLE_EVENT_RECORDING environment variable (defaults to false if not set).
+	// Controls whether the controller emits Kubernetes events at all — an
+	// installation-time observability decision, orthogonal to feature flags. When off,
+	// the Recorder is left nil and the `if r.Recorder != nil` guards throughout the
+	// controller skip all event emission (structured logs + metrics remain the primary
+	// signal). Strictly validated to "true"/"false"/empty so a typo fails fast.
+	eventRecordingEnabled := false
+	switch v := os.Getenv("ENABLE_EVENT_RECORDING"); v {
+	case "", "false":
+		eventRecordingEnabled = false
+	case "true":
+		eventRecordingEnabled = true
+	default:
+		setupLog.Error(fmt.Errorf("invalid value %q for ENABLE_EVENT_RECORDING (must be \"true\" or \"false\")", v),
+			"Failed to parse ENABLE_EVENT_RECORDING env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("Event recording configuration", "eventRecordingEnabled", eventRecordingEnabled)
+
+	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Filter:                  nsfilter,
+		SurgeOverrideEnabled:    surgeOverrideEnabled,
+		SurgeOverrideMaxPercent: surgeOverrideMaxPercent,
+	}
+	// Only wire the event recorder when event recording is enabled; otherwise the
+	// nil Recorder disables all event emission via the existing guards.
+	if eventRecordingEnabled {
+		evictionAutoScalerReconciler.Recorder = mgr.GetEventRecorderFor("eviction-autoscaler")
+	}
+	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}

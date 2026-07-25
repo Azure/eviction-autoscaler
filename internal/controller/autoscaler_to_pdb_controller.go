@@ -42,6 +42,7 @@ type AutoscalerToPDBReconciler struct {
 // Reconcile is triggered when an HPA or ScaledObject changes. The request key is the
 // autoscaler's namespace/name. We resolve the target deployment from its scaleTargetRef.
 func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	defer recordPanic("autoscalertopdb", req.Namespace, &req.Name)
 	logger := log.FromContext(ctx)
 
 	// Gate: only act in namespaces where the eviction autoscaler is enabled.

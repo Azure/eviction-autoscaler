@@ -51,7 +51,24 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update
 
+// recordPanic counts a recovered reconcile panic against the namespace and target that caused
+// it, then re-panics so controller-runtime still handles it as before.
+func recordPanic(controller, namespace string, target *string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	targetName := ""
+	if target != nil {
+		targetName = *target
+	}
+	metrics.PanicCounter.WithLabelValues(namespace, targetName, controller).Inc()
+	panic(rec)
+}
+
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	var panicTarget string
+	defer recordPanic("evictionautoscaler", req.Namespace, &panicTarget)
 	logger := log.FromContext(ctx)
 
 	// Fetch the EvictionAutoScaler instance
@@ -90,6 +107,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	panicTarget = EvictionAutoScaler.Spec.TargetName
 	if EvictionAutoScaler.Spec.TargetName == "" {
 		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)

@@ -22,16 +22,18 @@ func panicCountFor(t *testing.T, namespace, target string) float64 {
 			continue
 		}
 		for _, metric := range family.GetMetric() {
-			var gotNamespace, gotTarget string
+			var gotNamespace, gotTarget, gotController string
 			for _, label := range metric.GetLabel() {
 				switch label.GetName() {
 				case "namespace":
 					gotNamespace = label.GetValue()
 				case "target_name":
 					gotTarget = label.GetValue()
+				case "controller":
+					gotController = label.GetValue()
 				}
 			}
-			if gotNamespace == namespace && gotTarget == target {
+			if gotNamespace == namespace && gotTarget == target && gotController == "evictionautoscaler" {
 				return metric.GetCounter().GetValue()
 			}
 		}

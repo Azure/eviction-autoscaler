@@ -40,6 +40,13 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// PDBFloorMutationEnabled is the fleet-wide master switch for the PDB-floor
+	// mutation feature. When false (the default) the controller never pins/mutates
+	// a partner PDB's minAvailable floor, regardless of per-namespace opt-in. Set
+	// via the ENABLE_PDB_FLOOR_MUTATION controller env var, validated and logged in
+	// main.go so a misconfiguration fails fast at startup rather than silently
+	// disabling the feature.
+	PDBFloorMutationEnabled bool
 }
 
 const cooldown = 1 * time.Minute
@@ -80,6 +87,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 					// Can't restore a snapshot we can't parse — do NOT block CR
 					// deletion on it. Log and proceed to drop the finalizer.
 					logger.Error(rerr, "failed to restore PDB on deletion; removing finalizer anyway to avoid a stuck CR", "pdb", pdb.Name)
+					metrics.PDBFloorRestoreFailureCounter.WithLabelValues(pdb.Namespace, pdb.Name, metrics.PDBFloorRestoreReasonDeletion).Inc()
 					r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
 						fmt.Sprintf("cannot restore PDB on EvictionAutoScaler deletion (%v); PDB may remain pinned and needs manual review", rerr))
 				} else if changed {
@@ -457,7 +465,7 @@ func equalStringSets(a, b []string) bool {
 // never silently rewrites a user-authored PDB the operator/namespace-owner has
 // not explicitly consented to.
 func (r *EvictionAutoScalerReconciler) pdbFloorMutationAllowed(ctx context.Context, namespace string) (bool, error) {
-	if !pdbFloorMutationEnabled {
+	if !r.PDBFloorMutationEnabled {
 		return false, nil
 	}
 	ns := &corev1.Namespace{}
@@ -607,6 +615,7 @@ func (r *EvictionAutoScalerReconciler) revertPDBFloor(ctx context.Context, eas *
 		// left in place as the fail-safe direction.
 		r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
 			fmt.Sprintf("cannot restore PDB: snapshot annotation %q missing while pinned floor is %d; leaving minAvailable in place", AnnotationOriginalPDBSpec, floor))
+		metrics.PDBFloorRestoreFailureCounter.WithLabelValues(pdb.Namespace, pdb.Name, metrics.PDBFloorRestoreReasonSnapshotMissing).Inc()
 		delete(pdb.Annotations, AnnotationPinnedFloor)
 		if err := r.Update(ctx, pdb); err != nil {
 			return err

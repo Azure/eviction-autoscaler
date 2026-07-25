@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -195,12 +196,56 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
-	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Filter:   nsfilter,
-		Recorder: mgr.GetEventRecorderFor("eviction-autoscaler"),
-	}).SetupWithManager(mgr); err != nil {
+	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set).
+	// Fleet-wide master opt-in for the PDB-floor mutation feature; when off, the
+	// controller never pins/mutates a partner PDB's minAvailable floor. Strictly
+	// validated to "true"/"false"/empty so a typo fails fast at startup rather than
+	// silently disabling the feature.
+	pdbFloorMutationEnabled := false
+	switch v := os.Getenv("ENABLE_PDB_FLOOR_MUTATION"); v {
+	case "", "false":
+		pdbFloorMutationEnabled = false
+	case "true":
+		pdbFloorMutationEnabled = true
+	default:
+		setupLog.Error(fmt.Errorf("invalid value %q for ENABLE_PDB_FLOOR_MUTATION (must be \"true\" or \"false\")", v),
+			"Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("PDB floor mutation configuration", "pdbFloorMutationEnabled", pdbFloorMutationEnabled)
+
+	// Parse ENABLE_EVENT_RECORDING environment variable (defaults to false if not set).
+	// Controls whether the controller emits Kubernetes events at all — an
+	// installation-time observability decision, orthogonal to feature flags. When off,
+	// the Recorder is left nil and the `if r.Recorder != nil` guards throughout the
+	// controller skip all event emission; structured logs and Prometheus metrics
+	// (e.g. eviction_autoscaler_pdb_floor_restore_failures_total) remain the primary
+	// signal. Strictly validated to "true"/"false"/empty so a typo fails fast.
+	eventRecordingEnabled := false
+	switch v := os.Getenv("ENABLE_EVENT_RECORDING"); v {
+	case "", "false":
+		eventRecordingEnabled = false
+	case "true":
+		eventRecordingEnabled = true
+	default:
+		setupLog.Error(fmt.Errorf("invalid value %q for ENABLE_EVENT_RECORDING (must be \"true\" or \"false\")", v),
+			"Failed to parse ENABLE_EVENT_RECORDING env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("Event recording configuration", "eventRecordingEnabled", eventRecordingEnabled)
+
+	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Filter:                  nsfilter,
+		PDBFloorMutationEnabled: pdbFloorMutationEnabled,
+	}
+	// Only wire the event recorder when event recording is enabled; otherwise the
+	// nil Recorder disables all event emission via the existing guards.
+	if eventRecordingEnabled {
+		evictionAutoScalerReconciler.Recorder = mgr.GetEventRecorderFor("eviction-autoscaler")
+	}
+	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}

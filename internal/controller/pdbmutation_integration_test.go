@@ -6,9 +6,11 @@ import (
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
@@ -31,7 +33,6 @@ var _ = Describe("PDB floor mutation", func() {
 		ns            string
 		nsName        types.NamespacedName
 		reconciler    *EvictionAutoScalerReconciler
-		prevEnabled   bool
 		selectorMatch = map[string]string{"app": "floor-test"}
 	)
 
@@ -44,9 +45,6 @@ var _ = Describe("PDB floor mutation", func() {
 	}
 
 	BeforeEach(func() {
-		prevEnabled = pdbFloorMutationEnabled
-		pdbFloorMutationEnabled = true
-
 		nsObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "floor",
@@ -61,14 +59,14 @@ var _ = Describe("PDB floor mutation", func() {
 		nsName = types.NamespacedName{Name: name, Namespace: ns}
 
 		reconciler = &EvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: k8sClient.Scheme(),
-			Filter: &evictionTestFilter{},
+			Client:                  k8sClient,
+			Scheme:                  k8sClient.Scheme(),
+			Filter:                  &evictionTestFilter{},
+			PDBFloorMutationEnabled: true,
 		}
 	})
 
 	AfterEach(func() {
-		pdbFloorMutationEnabled = prevEnabled
 	})
 
 	// createDeployment creates a deployment with the given replicas + maxSurge.
@@ -170,7 +168,7 @@ var _ = Describe("PDB floor mutation", func() {
 	})
 
 	It("does not touch the PDB when the feature is disabled", func() {
-		pdbFloorMutationEnabled = false
+		reconciler.PDBFloorMutationEnabled = false
 
 		createDeployment(5, intstr.FromInt32(2))
 		mu := intstr.FromInt32(1)
@@ -446,7 +444,7 @@ var _ = Describe("PDB floor mutation", func() {
 	})
 
 	It("cleans up an existing pin on scale-down even when the feature is disabled", func() {
-		pdbFloorMutationEnabled = false // operator turned the master flag off mid-drain
+		reconciler.PDBFloorMutationEnabled = false // operator turned the master flag off mid-drain
 
 		createDeployment(7, intstr.FromInt32(2))
 		origSpec := policyv1.PodDisruptionBudgetSpec{
@@ -541,10 +539,13 @@ var _ = Describe("PDB floor mutation", func() {
 		ea.Status.PinnedPDBFloor = ptr.To(int32(4))
 		Expect(k8sClient.Status().Update(ctx, ea)).To(Succeed())
 
+		before := testutil.ToFloat64(metrics.PDBFloorRestoreFailureCounter.WithLabelValues(ns, name, metrics.PDBFloorRestoreReasonSnapshotMissing))
+
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
 
-		// We cannot restore (snapshot gone), so the stricter floor stays, but we
+		// The restore-failure is surfaced as an (alertable) metric increment.
+		Expect(testutil.ToFloat64(metrics.PDBFloorRestoreFailureCounter.WithLabelValues(ns, name, metrics.PDBFloorRestoreReasonSnapshotMissing)) - before).To(Equal(float64(1)))
 		// stop claiming it: our marker annotation is removed, the finalizer is
 		// dropped, and the CR floor is cleared.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())

@@ -80,11 +80,6 @@ const (
 	// must be a Go duration string ("30m", "2h", ...).
 	envStaleMutationWindow = "PDB_MUTATION_STALE_WINDOW"
 
-	// envEnablePDBFloorMutation gates the whole feature. It is OFF by default
-	// because it mutates a (potentially user-authored) partner PDB; operators
-	// opt in fleet-wide by setting it to a truthy value ("true", "1").
-	envEnablePDBFloorMutation = "ENABLE_PDB_FLOOR_MUTATION"
-
 	// defaultStaleMutationWindow bounds how long a PDB may stay mutated before the
 	// backstop restores it unconditionally. Generous by default because a healthy
 	// drain reverts on its own well within it; this only catches orphaned
@@ -104,13 +99,9 @@ var staleMutationWindow = func() time.Duration {
 	return defaultStaleMutationWindow
 }()
 
-// pdbFloorMutationEnabled reports whether the PDB-floor mutation feature is
-// enabled. Resolved once at process start from envEnablePDBFloorMutation and
-// defaults to false. It is a var (not const) so tests can toggle it.
-var pdbFloorMutationEnabled = func() bool {
-	v, err := strconv.ParseBool(os.Getenv(envEnablePDBFloorMutation))
-	return err == nil && v
-}()
+// The ENABLE_PDB_FLOOR_MUTATION master switch is parsed, validated and logged in
+// main.go and threaded onto the reconciler as
+// EvictionAutoScalerReconciler.PDBFloorMutationEnabled — see pdbFloorMutationAllowed.
 
 // isMutated reports whether the PDB carries our original-spec snapshot annotation.
 func isMutated(pdb *policyv1.PodDisruptionBudget) bool {

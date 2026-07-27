@@ -38,6 +38,8 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// EnableUnitedDeploymentSurge gates OpenKruise UnitedDeployment surge support.
+	EnableUnitedDeploymentSurge bool
 }
 
 const cooldown = 1 * time.Minute
@@ -127,6 +129,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
 
+	// If the target resolves to a UnitedDeployment but the feature is disabled,
+	// treat it as unsupported rather than silently surging the wrong resource.
+	if strings.EqualFold(EvictionAutoScaler.Spec.TargetKind, unitedDeploymentKind) && !r.EnableUnitedDeploymentSurge {
+		logger.Info("UnitedDeployment surge is disabled; not surging", "targetname", EvictionAutoScaler.Spec.TargetName)
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnitedDeploymentSurgeDisabled", "UnitedDeployment surge is disabled (set ENABLE_UNITEDDEPLOYMENT_SURGE=true to enable)")
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
 	// Detect surge strategy based on KEDA, HPA, or plain deployment
 	surgeApplier, err := detectSurgeApplier(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target)
 	if err != nil {
@@ -193,11 +203,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
-		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
+		drain, countErr := computeCordonedDrainStats(ctx, r.Client, pdb)
 		if countErr != nil {
-			logger.Error(countErr, "failed to count displaced pods on cordoned nodes")
+			logger.Error(countErr, "failed to inspect displaced pods on cordoned nodes")
 			return ctrl.Result{}, countErr
 		}
+		displaced := drain.count
 
 		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
 		if surgeTarget > maxSurgeTarget {
@@ -207,14 +218,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// For a UnitedDeployment target, default the surge to land on the subset
 		// the drain is displacing (overridable via the surge-subset annotation).
-		if udWrapper, isUD := target.(*UnitedDeploymentWrapper); isUD {
-			subset, subsetErr := displacedSubsetOnCordoned(ctx, r.Client, pdb)
-			if subsetErr != nil {
-				logger.Error(subsetErr, "failed to determine displaced UnitedDeployment subset; falling back to dominant subset")
-			} else if subset != "" {
-				logger.Info("Routing UnitedDeployment surge to displaced subset", "pdb", pdb.Name, "subset", subset)
-				udWrapper.SetPreferredSurgeSubset(subset)
-			}
+		if udWrapper, isUD := target.(*UnitedDeploymentWrapper); isUD && drain.displacedSubset != "" {
+			logger.Info("Routing UnitedDeployment surge to displaced subset", "pdb", pdb.Name, "subset", drain.displacedSubset)
+			udWrapper.SetPreferredSurgeSubset(drain.displacedSubset)
 		}
 
 		if target.GetReplicas() >= surgeTarget {

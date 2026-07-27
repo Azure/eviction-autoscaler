@@ -132,6 +132,17 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// UnitedDeploymentSurgeFailureCounter tracks UnitedDeployment surge/revert
+	// failures that are handled without a hard error (snapshot guards, lost
+	// snapshot on revert). Labels: namespace, reason.
+	UnitedDeploymentSurgeFailureCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eviction_autoscaler_uniteddeployment_surge_failures_total",
+			Help: "Total number of UnitedDeployment surge/revert failures by reason",
+		},
+		[]string{"namespace", "reason"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -201,5 +212,6 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		UnitedDeploymentSurgeFailureCounter,
 	)
 }

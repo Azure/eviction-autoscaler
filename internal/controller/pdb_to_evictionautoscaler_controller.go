@@ -32,6 +32,9 @@ type PDBToEvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// EnableUnitedDeploymentSurge gates redirecting the surge target from a child
+	// Deployment to its owning OpenKruise UnitedDeployment.
+	EnableUnitedDeploymentSurge bool
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -298,15 +301,18 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 					if rsOwnerRef.Kind == "Deployment" {
 						logger.Info("Found Deployment owner", "deployment", rsOwnerRef.Name)
 						// The Deployment may itself be a subset child of an OpenKruise
-						// UnitedDeployment. If so, target the UD — scaling the child
-						// Deployment directly is reverted by the UD controller.
-						udName, udUID, isUD, e := r.unitedDeploymentOwner(ctx, pdb.Namespace, rsOwnerRef.Name)
-						if e != nil {
-							return "", "", "", e
-						}
-						if isUD {
-							logger.Info("Deployment is a UnitedDeployment subset; targeting the UnitedDeployment", "uniteddeployment", udName)
-							return udName, unitedDeploymentKind, udUID, nil
+						// UnitedDeployment. If so (and the feature is enabled), target
+						// the UD — scaling the child Deployment directly is reverted by
+						// the UD controller.
+						if r.EnableUnitedDeploymentSurge {
+							udName, udUID, isUD, e := r.unitedDeploymentOwner(ctx, pdb.Namespace, rsOwnerRef.Name)
+							if e != nil {
+								return "", "", "", e
+							}
+							if isUD {
+								logger.Info("Deployment is a UnitedDeployment subset; targeting the UnitedDeployment", "uniteddeployment", udName)
+								return udName, unitedDeploymentKind, udUID, nil
+							}
 						}
 						return rsOwnerRef.Name, deploymentKind, rsOwnerRef.UID, nil
 					}

@@ -200,18 +200,32 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 	return false
 }
 
-// countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned
-// (Unschedulable) nodes. It aggregates across all cordoned nodes, so simultaneous drains
-// are counted correctly.
-func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (int32, error) {
+// kruiseSubsetLabel is the label OpenKruise sets on UnitedDeployment subset pods.
+const kruiseSubsetLabel = "apps.kruise.io/subset-name"
+
+// cordonedDrainStats describes the pods a drain is displacing for a given PDB.
+type cordonedDrainStats struct {
+	// count is the number of PDB-selected pods on cordoned nodes.
+	count int32
+	// displacedSubset is the OpenKruise UnitedDeployment subset (by the
+	// apps.kruise.io/subset-name label) with the most displaced pods, or "" when
+	// no displaced pod carries a subset label (non-UD target, or nothing draining).
+	displacedSubset string
+}
+
+// computeCordonedDrainStats does a single pass over the PDB-selected pods and the
+// node list, returning both the displaced pod count and the dominant displaced
+// UnitedDeployment subset. Combining these avoids listing pods+nodes twice in the
+// reconcile hot path while a PDB is blocking evictions.
+func computeCordonedDrainStats(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (cordonedDrainStats, error) {
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
-		return 0, fmt.Errorf("invalid PDB selector: %w", err)
+		return cordonedDrainStats{}, fmt.Errorf("invalid PDB selector: %w", err)
 	}
 
 	var podList corev1.PodList
 	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
+		return cordonedDrainStats{}, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
 	}
 
 	// We use node cordon (Spec.Unschedulable) as the signal for "pods need to move".
@@ -221,64 +235,41 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 	// without needing to inspect nodes at all.
 	var nodeList corev1.NodeList
 	if err := c.List(ctx, &nodeList); err != nil {
-		return 0, fmt.Errorf("failed to list nodes: %w", err)
+		return cordonedDrainStats{}, fmt.Errorf("failed to list nodes: %w", err)
 	}
 	cordoned := make(map[string]bool, len(nodeList.Items))
 	for _, node := range nodeList.Items {
 		cordoned[node.Name] = node.Spec.Unschedulable
 	}
 
-	var count int32
-	for _, pod := range podList.Items {
-		if cordoned[pod.Spec.NodeName] {
-			count++
-		}
-	}
-	return count, nil
-}
-
-// kruiseSubsetLabel is the label OpenKruise sets on UnitedDeployment subset pods.
-const kruiseSubsetLabel = "apps.kruise.io/subset-name"
-
-// displacedSubsetOnCordoned returns the UnitedDeployment subset name with the
-// most PDB-selected pods sitting on cordoned nodes, i.e. the subset the drain is
-// displacing. Returns "" when no such pod carries a subset label (e.g. the
-// target is not a UnitedDeployment or no pods are on cordoned nodes).
-func displacedSubsetOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, error) {
-	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
-	if err != nil {
-		return "", fmt.Errorf("invalid PDB selector: %w", err)
-	}
-
-	var podList corev1.PodList
-	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
-		return "", fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
-	}
-
-	var nodeList corev1.NodeList
-	if err := c.List(ctx, &nodeList); err != nil {
-		return "", fmt.Errorf("failed to list nodes: %w", err)
-	}
-	cordoned := make(map[string]bool, len(nodeList.Items))
-	for _, node := range nodeList.Items {
-		cordoned[node.Name] = node.Spec.Unschedulable
-	}
-
-	counts := map[string]int32{}
+	var stats cordonedDrainStats
+	subsetCounts := map[string]int32{}
 	for _, pod := range podList.Items {
 		if !cordoned[pod.Spec.NodeName] {
 			continue
 		}
+		stats.count++
 		if subset := pod.Labels[kruiseSubsetLabel]; subset != "" {
-			counts[subset]++
+			subsetCounts[subset]++
 		}
 	}
 
-	best, bestN := "", int32(0)
-	for name, n := range counts {
+	var bestN int32
+	for name, n := range subsetCounts {
 		if n > bestN {
-			best, bestN = name, n
+			stats.displacedSubset, bestN = name, n
 		}
 	}
-	return best, nil
+	return stats, nil
+}
+
+// countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned
+// (Unschedulable) nodes. It aggregates across all cordoned nodes, so simultaneous drains
+// are counted correctly.
+func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (int32, error) {
+	stats, err := computeCordonedDrainStats(ctx, c, pdb)
+	if err != nil {
+		return 0, err
+	}
+	return stats.count, nil
 }

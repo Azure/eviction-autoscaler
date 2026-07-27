@@ -569,6 +569,10 @@ metadata:
 
 **Prerequisite:** OpenKruise must be installed in the cluster (the UnitedDeployment CRD must exist). The controller's RBAC includes `get;list;watch;update;patch` on `uniteddeployments` in the `apps.kruise.io` group.
 
+**Enabling:** UnitedDeployment surge is **off by default** and gated by the `ENABLE_UNITEDDEPLOYMENT_SURGE` environment variable on the controller (`true`/`false`, strictly validated at startup). When disabled, the controller neither redirects the surge target to the UnitedDeployment nor uses the UnitedDeployment surge strategy, preserving prior behavior for clusters that also run OpenKruise.
+
+**Observability:** UnitedDeployment surge/revert failures that are handled without a hard error (status not yet converged, a lost topology snapshot, or a best-effort scale-down on revert) increment the `eviction_autoscaler_uniteddeployment_surge_failures_total{namespace,reason}` counter.
+
 ### How Surge Sizing Works
 
 Eviction-autoscaler scales **to** a specific target rather than scaling **by** a fixed amount. The target is computed per reconcile:

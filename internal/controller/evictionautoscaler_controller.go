@@ -107,12 +107,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	panicTarget = EvictionAutoScaler.Spec.TargetName
 	if EvictionAutoScaler.Spec.TargetName == "" {
 		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
+	panicTarget = EvictionAutoScaler.Spec.TargetName
 
 	// StatefulSets are intentionally skipped — their ordered pod management
 	// semantics conflict with the eviction surge strategy.

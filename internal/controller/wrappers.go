@@ -3,6 +3,7 @@ package controllers
 import (
 	"fmt"
 
+	kruiseappsv1alpha1 "github.com/openkruise/kruise-api/apps/v1alpha1"
 	v1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -101,6 +102,8 @@ func GetSurger(kind string) (Surger, error) {
 		return &DeploymentWrapper{obj: &v1.Deployment{}}, nil
 	} else if kind == statefulSetKind {
 		return &StatefulSetWrapper{obj: &v1.StatefulSet{}}, nil
+	} else if kind == unitedDeploymentKind {
+		return &UnitedDeploymentWrapper{obj: &kruiseappsv1alpha1.UnitedDeployment{}}, nil
 	} else {
 		return nil, fmt.Errorf("unknown target kind %s", kind) //be good to enforce this with admission policy
 	}

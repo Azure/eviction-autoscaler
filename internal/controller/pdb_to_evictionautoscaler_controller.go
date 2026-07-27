@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
@@ -31,6 +32,9 @@ type PDBToEvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// EnableUnitedDeploymentSurge gates redirecting the surge target from a child
+	// Deployment to its owning OpenKruise UnitedDeployment.
+	EnableUnitedDeploymentSurge bool
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -93,7 +97,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			return ctrl.Result{}, err
 		}
 
-		deploymentName, _, e := r.discoverDeployment(ctx, &pdb)
+		deploymentName, targetKind, _, e := r.discoverDeployment(ctx, &pdb)
 		if e != nil {
 			return reconcile.Result{}, e
 		}
@@ -129,7 +133,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			},
 			Spec: types.EvictionAutoScalerSpec{
 				TargetName: deploymentName,
-				TargetKind: deploymentKind,
+				TargetKind: targetKind,
 			},
 		}
 
@@ -192,7 +196,7 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		logger.Info("Adding owner reference to PDB - controller taking control back",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 
-		deploymentName, deploymentUID, err := r.discoverDeployment(ctx, pdb)
+		deploymentName, targetKind, deploymentUID, err := r.discoverDeployment(ctx, pdb)
 		if err != nil {
 			logger.Error(err, "Failed to get deployment",
 				"namespace", pdb.Namespace, "name", deploymentName)
@@ -202,9 +206,16 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		controller := true
 		blockOwnerDeletion := true
 
+		ownerAPIVersion := "apps/v1"
+		ownerKind := ResourceTypeDeployment
+		if strings.EqualFold(targetKind, unitedDeploymentKind) {
+			ownerAPIVersion = "apps.kruise.io/v1alpha1"
+			ownerKind = "UnitedDeployment"
+		}
+
 		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         "apps/v1",
-			Kind:               ResourceTypeDeployment,
+			APIVersion:         ownerAPIVersion,
+			Kind:               ownerKind,
 			Name:               deploymentName,
 			UID:                deploymentUID,
 			Controller:         &controller,
@@ -249,26 +260,26 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 		Complete(r)
 }
 
-func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, k8s_types.UID, error) {
+func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (string, string, k8s_types.UID, error) {
 	logger := log.FromContext(ctx)
 
 	// Convert PDB label selector to Kubernetes selector
 	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
 	if err != nil {
-		return "", "", fmt.Errorf("error converting label selector: %v", err)
+		return "", "", "", fmt.Errorf("error converting label selector: %v", err)
 	}
 	logger.Info("PDB Selector", "selector", pdb.Spec.Selector)
 
 	podList := &corev1.PodList{}
 	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace, LabelSelector: selector})
 	if err != nil {
-		return "", "", fmt.Errorf("error listing pods: %v", err)
+		return "", "", "", fmt.Errorf("error listing pods: %v", err)
 	}
 	logger.Info("Number of pods found", "count", len(podList.Items))
 
 	if len(podList.Items) == 0 {
 		// TODO instead of an error which leads to a backoff retry quietly for a while then error?
-		return "", "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
+		return "", "", "", fmt.Errorf("no pods found matching the PDB selector %s; leaky pdb(?!)", pdb.Name)
 	}
 
 	// Iterate through each pod
@@ -279,7 +290,7 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 				replicaSet := &appsv1.ReplicaSet{}
 				err = r.Get(ctx, k8s_types.NamespacedName{Name: ownerRef.Name, Namespace: pdb.Namespace}, replicaSet)
 				if apierrors.IsNotFound(err) {
-					return "", "", fmt.Errorf("error fetching ReplicaSet: %v", err)
+					return "", "", "", fmt.Errorf("error fetching ReplicaSet: %v", err)
 				}
 
 				// Log ReplicaSet details
@@ -289,7 +300,21 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 				for _, rsOwnerRef := range replicaSet.OwnerReferences {
 					if rsOwnerRef.Kind == "Deployment" {
 						logger.Info("Found Deployment owner", "deployment", rsOwnerRef.Name)
-						return rsOwnerRef.Name, rsOwnerRef.UID, nil
+						// The Deployment may itself be a subset child of an OpenKruise
+						// UnitedDeployment. If so (and the feature is enabled), target
+						// the UD — scaling the child Deployment directly is reverted by
+						// the UD controller.
+						if r.EnableUnitedDeploymentSurge {
+							udName, udUID, isUD, e := r.unitedDeploymentOwner(ctx, pdb.Namespace, rsOwnerRef.Name)
+							if e != nil {
+								return "", "", "", e
+							}
+							if isUD {
+								logger.Info("Deployment is a UnitedDeployment subset; targeting the UnitedDeployment", "uniteddeployment", udName)
+								return udName, unitedDeploymentKind, udUID, nil
+							}
+						}
+						return rsOwnerRef.Name, deploymentKind, rsOwnerRef.UID, nil
 					}
 				}
 				// no replicaset owner just move on and see if any other pods have have something.
@@ -308,5 +333,23 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 		}
 	}
 	logger.Info("No Deployment owner found")
-	return "", "", errOwnerNotFound
+	return "", "", "", errOwnerNotFound
+}
+
+// unitedDeploymentOwner reports whether the named Deployment is a subset child of
+// an OpenKruise UnitedDeployment and, if so, returns the UD's name and UID.
+func (r *PDBToEvictionAutoScalerReconciler) unitedDeploymentOwner(ctx context.Context, namespace, deploymentName string) (string, k8s_types.UID, bool, error) {
+	dep := &appsv1.Deployment{}
+	if err := r.Get(ctx, k8s_types.NamespacedName{Name: deploymentName, Namespace: namespace}, dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("error fetching Deployment %s: %v", deploymentName, err)
+	}
+	for _, ref := range dep.OwnerReferences {
+		if ref.Kind == "UnitedDeployment" {
+			return ref.Name, ref.UID, true, nil
+		}
+	}
+	return "", "", false, nil
 }

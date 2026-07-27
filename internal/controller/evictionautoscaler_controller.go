@@ -38,6 +38,8 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+	// EnableUnitedDeploymentSurge gates OpenKruise UnitedDeployment surge support.
+	EnableUnitedDeploymentSurge bool
 }
 
 const cooldown = 1 * time.Minute
@@ -46,6 +48,8 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
+// +kubebuilder:rbac:groups=apps.kruise.io,resources=uniteddeployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps.kruise.io,resources=uniteddeployments/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
@@ -125,6 +129,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
 
+	// If the target resolves to a UnitedDeployment but the feature is disabled,
+	// treat it as unsupported rather than silently surging the wrong resource.
+	if strings.EqualFold(EvictionAutoScaler.Spec.TargetKind, unitedDeploymentKind) && !r.EnableUnitedDeploymentSurge {
+		logger.Info("UnitedDeployment surge is disabled; not surging", "targetname", EvictionAutoScaler.Spec.TargetName)
+		degraded(&EvictionAutoScaler.Status.Conditions, "UnitedDeploymentSurgeDisabled", "UnitedDeployment surge is disabled (set ENABLE_UNITEDDEPLOYMENT_SURGE=true to enable)")
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
 	// Detect surge strategy based on KEDA, HPA, or plain deployment
 	surgeApplier, err := detectSurgeApplier(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target)
 	if err != nil {
@@ -191,16 +203,24 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
-		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
+		drain, countErr := computeCordonedDrainStats(ctx, r.Client, pdb)
 		if countErr != nil {
-			logger.Error(countErr, "failed to count displaced pods on cordoned nodes")
+			logger.Error(countErr, "failed to inspect displaced pods on cordoned nodes")
 			return ctrl.Result{}, countErr
 		}
+		displaced := drain.count
 
 		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
 		if surgeTarget > maxSurgeTarget {
 			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
 			surgeTarget = maxSurgeTarget
+		}
+
+		// For a UnitedDeployment target, default the surge to land on the subset
+		// the drain is displacing (overridable via the surge-subset annotation).
+		if udWrapper, isUD := target.(*UnitedDeploymentWrapper); isUD && drain.displacedSubset != "" {
+			logger.Info("Routing UnitedDeployment surge to displaced subset", "pdb", pdb.Name, "subset", drain.displacedSubset)
+			udWrapper.SetPreferredSurgeSubset(drain.displacedSubset)
 		}
 
 		if target.GetReplicas() >= surgeTarget {

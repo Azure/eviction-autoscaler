@@ -57,6 +57,14 @@ var errUnsupportedAutoscalerConfig = errors.New("unsupported autoscaler configur
 func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
 	logger := log.FromContext(ctx)
 
+	// UnitedDeployment: surge through the UD's own spec. Scaling a child Deployment
+	// directly is reverted by the UD controller, so we use a dedicated applier that
+	// clamps the UD topology. HPA/KEDA never target UnitedDeployments.
+	if strings.EqualFold(targetKind, unitedDeploymentKind) {
+		logger.Info("Target is a UnitedDeployment, using UnitedDeployment surge strategy", "target", targetName)
+		return &UnitedDeploymentSurgeApplier{client: c, target: target}, nil
+	}
+
 	// HPA and KEDA only target Deployments; skip autoscaler detection for other kinds.
 	if strings.EqualFold(targetKind, ResourceTypeDeployment) {
 		// Check for KEDA ScaledObject targeting this workload

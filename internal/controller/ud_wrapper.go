@@ -1,0 +1,323 @@
+package controllers
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	kruiseappsv1alpha1 "github.com/openkruise/kruise-api/apps/v1alpha1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+)
+
+const unitedDeploymentKind = "uniteddeployment"
+
+// Surge-guard sentinels. Both are transient/recoverable: the reconciler should
+// requeue (and record a failure metric) rather than degrade permanently.
+var (
+	// errStatusNotConverged means status.subsetReplicas has not caught up to
+	// spec.replicas, so we cannot safely snapshot per-subset baselines yet.
+	errStatusNotConverged = errors.New("uniteddeployment status not converged with spec")
+	// errSnapshotLostDuringSurge means a surge is active but the topology
+	// snapshot is missing; re-capturing would baseline off the surged state.
+	errSnapshotLostDuringSurge = errors.New("uniteddeployment surge snapshot lost during active surge")
+)
+
+// SurgeSubsetAnnotationKey lets a workload owner choose which UnitedDeployment
+// subset absorbs the drain-time surge, i.e. WHERE the surge lands. Value is a
+// subset name (e.g. "regular" for on-demand, "spot" for spot capacity). When
+// absent, the wrapper defaults to the subset with the most current replicas.
+const SurgeSubsetAnnotationKey = "eviction-autoscaler.azure.com/surge-subset"
+
+// udSurgeSnapshotAnnotationKey stores the pre-surge UnitedDeployment topology so
+// the exact original per-subset config (nil/remainder or "15%") and total can be
+// restored on revert. Single source of truth for restore; also makes ApplySurge
+// idempotent (surge amounts are always computed from the snapshot baseline).
+const udSurgeSnapshotAnnotationKey = "eviction-autoscaler.azure.com/ud-surge-snapshot"
+
+// udSurgeSnapshot is the JSON captured on the UD at first surge.
+type udSurgeSnapshot struct {
+	Total       int32            `json:"total"`          // original spec.replicas
+	Original    map[string]string `json:"original"`      // subset name -> original .Replicas ("" == nil/remainder)
+	Baseline    map[string]int32 `json:"baseline"`       // subset name -> live replicas at snapshot (from status)
+	SurgeSubset string           `json:"surgeSubset"`    // subset chosen to absorb the surge
+}
+
+// UnitedDeploymentWrapper adapts an OpenKruise UnitedDeployment to the Surger
+// interface. Surging a UD by scaling its child Deployment directly does not work
+// — the UD controller reverts it — so we surge through the UD's own spec: raise
+// spec.replicas and route the delta to a chosen subset (pinning the others to
+// absolute counts so percentage subsets don't grow with the new total). The UD
+// controller then propagates the surge and does not fight it.
+type UnitedDeploymentWrapper struct {
+	obj *kruiseappsv1alpha1.UnitedDeployment
+	// preferredSurgeSubset is the subset whose pods are being displaced by the
+	// current drain (the subset the reconciler computed from pods on cordoned
+	// nodes). It is the default landing subset unless overridden by the
+	// surge-subset annotation. Empty when the reconciler could not determine it.
+	preferredSurgeSubset string
+}
+
+var _ Surger = &UnitedDeploymentWrapper{}
+
+func (u *UnitedDeploymentWrapper) Obj() client.Object {
+	return u.obj
+}
+
+// GetReplicas returns the UD's total desired replicas. When spec.replicas is
+// nil (Kruise allows this — the UnitedDeployment controller fills it from the
+// subset allocation), the true total is the sum of the live per-subset counts,
+// NOT 1; defaulting to 1 would make the surge delta massively over-provision.
+func (u *UnitedDeploymentWrapper) GetReplicas() int32 {
+	if u.obj.Spec.Replicas == nil {
+		return u.statusReplicaSum()
+	}
+	return *u.obj.Spec.Replicas
+}
+
+// statusReplicaSum totals the live per-subset replica counts from status.
+func (u *UnitedDeploymentWrapper) statusReplicaSum() int32 {
+	var sum int32
+	for _, n := range u.obj.Status.SubsetReplicas {
+		sum += n
+	}
+	return sum
+}
+
+// isStatusConverged reports whether status.subsetReplicas has caught up to
+// spec.replicas. We surge by pinning every subset to an absolute count taken
+// from status; if status has not converged (mid-rollout, just created, transient
+// lag) a healthy subset could be understated and get scaled DOWN. Callers must
+// refuse to snapshot/surge until this returns true.
+func (u *UnitedDeploymentWrapper) isStatusConverged() bool {
+	if u.obj.Spec.Replicas == nil {
+		// Total is derived from status itself, so it is converged by definition.
+		return true
+	}
+	return u.statusReplicaSum() == *u.obj.Spec.Replicas
+}
+
+// GetMaxSurge reads the maxSurge from the UD's deploymentTemplate rolling-update
+// strategy (the same knob a plain Deployment uses). Defaults to 0 when unset.
+func (u *UnitedDeploymentWrapper) GetMaxSurge() intstr.IntOrString {
+	dt := u.obj.Spec.Template.DeploymentTemplate
+	if dt != nil && dt.Spec.Strategy.RollingUpdate != nil && dt.Spec.Strategy.RollingUpdate.MaxSurge != nil {
+		return *dt.Spec.Strategy.RollingUpdate.MaxSurge
+	}
+	return intstr.FromInt(0)
+}
+
+// SetReplicas surges the UD to a new total by routing the delta onto the chosen
+// surge subset. A snapshot MUST already exist (see PrepareSurge) — the surge
+// amount is always derived from the snapshot baseline, so re-applying the same
+// total yields the same spec (idempotent). Without a snapshot this is a no-op,
+// so a lost snapshot can never cause a re-baseline off an already-surged state.
+func (u *UnitedDeploymentWrapper) SetReplicas(newTotal int32) {
+	snap, ok := u.readSnapshot()
+	if !ok {
+		// PrepareSurge must run first. Refuse to surge without a baseline rather
+		// than capturing one from a possibly-already-surged object.
+		return
+	}
+	u.obj = u.obj.DeepCopy() // don't mutate the cache
+
+	delta := newTotal - snap.Total
+	total := newTotal
+	u.obj.Spec.Replicas = &total
+
+	// Pin every subset to an absolute count; the surge subset additionally
+	// carries the delta. Absolute values make the totals reconcile exactly and
+	// stop percentage/remainder subsets from drifting with the new total.
+	for i := range u.obj.Spec.Topology.Subsets {
+		s := &u.obj.Spec.Topology.Subsets[i]
+		base, hasBase := snap.Baseline[s.Name]
+		if !hasBase {
+			continue
+		}
+		want := base
+		if s.Name == snap.SurgeSubset {
+			want = base + delta
+		}
+		v := intstr.FromInt(int(want))
+		s.Replicas = &v
+	}
+}
+
+// PrepareSurge captures the pre-surge topology snapshot on first surge, applying
+// the safety guards that make the surge correct and reversible. It must be called
+// before SetReplicas. Returns:
+//   - errStatusNotConverged when status.subsetReplicas has not caught up to
+//     spec.replicas (surging now could scale a healthy subset down);
+//   - errSnapshotLostDuringSurge when a surge is already active but the snapshot
+//     annotation is gone (re-capturing would baseline off the surged state).
+func (u *UnitedDeploymentWrapper) PrepareSurge() error {
+	u.obj = u.obj.DeepCopy()
+	if _, ok := u.readSnapshot(); ok {
+		return nil // snapshot already present — surge in flight, keep it
+	}
+	if u.hasAnnotation(EvictionSurgeReplicasAnnotationKey) {
+		return errSnapshotLostDuringSurge
+	}
+	if !u.isStatusConverged() {
+		return errStatusNotConverged
+	}
+	snap := u.captureSnapshot()
+	return u.writeSnapshot(snap)
+}
+
+// RestoreOriginal reverts the UD to its pre-surge topology using the snapshot,
+// then clears the snapshot annotation. No-op when nothing was snapshotted.
+func (u *UnitedDeploymentWrapper) RestoreOriginal() {
+	u.obj = u.obj.DeepCopy()
+	snap, ok := u.readSnapshot()
+	if !ok {
+		return
+	}
+
+	total := snap.Total
+	u.obj.Spec.Replicas = &total
+	for i := range u.obj.Spec.Topology.Subsets {
+		s := &u.obj.Spec.Topology.Subsets[i]
+		orig, hasOrig := snap.Original[s.Name]
+		if !hasOrig {
+			continue
+		}
+		if orig == "" {
+			s.Replicas = nil // controller-managed remainder
+			continue
+		}
+		v := intstr.Parse(orig)
+		s.Replicas = &v
+	}
+	u.RemoveAnnotation(udSurgeSnapshotAnnotationKey)
+}
+
+// ForceScaleDown is a best-effort recovery when the topology snapshot is lost
+// while a surge is active: it lowers spec.replicas to the floor and drops the
+// absolute per-subset pins (nil) so the UnitedDeployment controller redistributes
+// — ensuring the UD is not left stuck at the surged replica count.
+func (u *UnitedDeploymentWrapper) ForceScaleDown(replicas int32) {
+	u.obj = u.obj.DeepCopy()
+	r := replicas
+	u.obj.Spec.Replicas = &r
+	for i := range u.obj.Spec.Topology.Subsets {
+		u.obj.Spec.Topology.Subsets[i].Replicas = nil
+	}
+}
+
+// captureSnapshot records the current topology + live per-subset counts.
+func (u *UnitedDeploymentWrapper) captureSnapshot() udSurgeSnapshot {
+	snap := udSurgeSnapshot{
+		Total:    u.GetReplicas(),
+		Original: map[string]string{},
+		Baseline: map[string]int32{},
+	}
+	for _, s := range u.obj.Spec.Topology.Subsets {
+		if s.Replicas == nil {
+			snap.Original[s.Name] = ""
+		} else {
+			snap.Original[s.Name] = s.Replicas.String()
+		}
+	}
+	// Live per-subset counts come from status.subsetReplicas.
+	for name, n := range u.obj.Status.SubsetReplicas {
+		snap.Baseline[name] = n
+	}
+	// Fallback: any subset missing from status baselines gets 0 so it is still pinned.
+	for _, s := range u.obj.Spec.Topology.Subsets {
+		if _, ok := snap.Baseline[s.Name]; !ok {
+			snap.Baseline[s.Name] = 0
+		}
+	}
+	snap.SurgeSubset = u.resolveSurgeSubset(snap.Baseline)
+	return snap
+}
+
+// SetPreferredSurgeSubset records the drain-displaced subset so it becomes the
+// default landing subset for the surge (still overridable by the surge-subset
+// annotation). Ignored once a snapshot already exists, so an in-flight surge
+// keeps its originally chosen subset.
+func (u *UnitedDeploymentWrapper) SetPreferredSurgeSubset(name string) {
+	u.preferredSurgeSubset = name
+}
+
+// resolveSurgeSubset picks the subset that absorbs the surge, in priority order:
+// (1) an explicit, valid surge-subset annotation (operator override, e.g. route
+// to spot for cost); (2) the drain-displaced subset the reconciler detected;
+// (3) fallback to the subset with the most current replicas (dominant).
+func (u *UnitedDeploymentWrapper) resolveSurgeSubset(baseline map[string]int32) string {
+	if ann := u.obj.GetAnnotations(); ann != nil {
+		if want := ann[SurgeSubsetAnnotationKey]; want != "" {
+			if u.hasSubset(want) {
+				return want
+			}
+		}
+	}
+	if u.preferredSurgeSubset != "" && u.hasSubset(u.preferredSurgeSubset) {
+		return u.preferredSurgeSubset
+	}
+	best, bestN := "", int32(-1)
+	for _, s := range u.obj.Spec.Topology.Subsets {
+		if n := baseline[s.Name]; n > bestN {
+			best, bestN = s.Name, n
+		}
+	}
+	return best
+}
+
+func (u *UnitedDeploymentWrapper) hasSubset(name string) bool {
+	for _, s := range u.obj.Spec.Topology.Subsets {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (u *UnitedDeploymentWrapper) readSnapshot() (udSurgeSnapshot, bool) {
+	ann := u.obj.GetAnnotations()
+	if ann == nil {
+		return udSurgeSnapshot{}, false
+	}
+	raw, ok := ann[udSurgeSnapshotAnnotationKey]
+	if !ok || raw == "" {
+		return udSurgeSnapshot{}, false
+	}
+	var snap udSurgeSnapshot
+	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
+		return udSurgeSnapshot{}, false
+	}
+	return snap, true
+}
+
+func (u *UnitedDeploymentWrapper) writeSnapshot(snap udSurgeSnapshot) error {
+	b, err := json.Marshal(snap)
+	if err != nil {
+		// Do not swallow: a lost snapshot would silently disable revert.
+		return fmt.Errorf("marshalling UnitedDeployment surge snapshot: %w", err)
+	}
+	u.AddAnnotation(udSurgeSnapshotAnnotationKey, string(b))
+	return nil
+}
+
+func (u *UnitedDeploymentWrapper) hasAnnotation(key string) bool {
+	ann := u.obj.GetAnnotations()
+	if ann == nil {
+		return false
+	}
+	_, ok := ann[key]
+	return ok
+}
+
+func (u *UnitedDeploymentWrapper) AddAnnotation(key, value string) {
+	if u.obj.Annotations == nil {
+		u.obj.Annotations = make(map[string]string)
+	}
+	u.obj.Annotations[key] = value
+}
+
+func (u *UnitedDeploymentWrapper) RemoveAnnotation(key string) {
+	if u.obj.Annotations != nil {
+		delete(u.obj.Annotations, key)
+	}
+}

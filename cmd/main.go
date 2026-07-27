@@ -28,6 +28,7 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	kruiseappsv1alpha1 "github.com/openkruise/kruise-api/apps/v1alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -53,6 +54,7 @@ func init() {
 
 	utilruntime.Must(appsv1.AddToScheme(scheme))
 	utilruntime.Must(kedav1alpha1.AddToScheme(scheme))
+	utilruntime.Must(kruiseappsv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -195,10 +197,27 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
+	// Parse ENABLE_UNITEDDEPLOYMENT_SURGE (defaults to false if not set).
+	// When false, the controller ignores OpenKruise UnitedDeployment ownership:
+	// it neither redirects the surge target to the UD nor uses the UD surge
+	// strategy, preserving the pre-UD-support behavior for operators who opt out.
+	udSurgeStr := os.Getenv("ENABLE_UNITEDDEPLOYMENT_SURGE")
+	enableUnitedDeploymentSurge := false
+	if udSurgeStr != "" {
+		var err error
+		enableUnitedDeploymentSurge, err = strconv.ParseBool(strings.TrimSpace(udSurgeStr))
+		if err != nil {
+			setupLog.Error(err, "Failed to parse ENABLE_UNITEDDEPLOYMENT_SURGE env variable")
+			os.Exit(1)
+		}
+	}
+	setupLog.Info("UnitedDeployment surge configuration", "enableUnitedDeploymentSurge", enableUnitedDeploymentSurge)
+
 	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		Filter:                      nsfilter,
+		EnableUnitedDeploymentSurge: enableUnitedDeploymentSurge,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
@@ -230,9 +249,10 @@ func main() {
 	}
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
+		Client:                      mgr.GetClient(),
+		Scheme:                      mgr.GetScheme(),
+		Filter:                      nsfilter,
+		EnableUnitedDeploymentSurge: enableUnitedDeploymentSurge,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

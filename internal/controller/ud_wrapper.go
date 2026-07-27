@@ -38,6 +38,11 @@ type udSurgeSnapshot struct {
 // controller then propagates the surge and does not fight it.
 type UnitedDeploymentWrapper struct {
 	obj *kruiseappsv1alpha1.UnitedDeployment
+	// preferredSurgeSubset is the subset whose pods are being displaced by the
+	// current drain (the subset the reconciler computed from pods on cordoned
+	// nodes). It is the default landing subset unless overridden by the
+	// surge-subset annotation. Empty when the reconciler could not determine it.
+	preferredSurgeSubset string
 }
 
 var _ Surger = &UnitedDeploymentWrapper{}
@@ -154,18 +159,28 @@ func (u *UnitedDeploymentWrapper) captureSnapshot() udSurgeSnapshot {
 	return snap
 }
 
-// resolveSurgeSubset picks the subset that absorbs the surge: an explicit
-// surge-subset annotation if valid, otherwise the subset with the most current
-// replicas (the dominant, typically on-demand, subset).
+// SetPreferredSurgeSubset records the drain-displaced subset so it becomes the
+// default landing subset for the surge (still overridable by the surge-subset
+// annotation). Ignored once a snapshot already exists, so an in-flight surge
+// keeps its originally chosen subset.
+func (u *UnitedDeploymentWrapper) SetPreferredSurgeSubset(name string) {
+	u.preferredSurgeSubset = name
+}
+
+// resolveSurgeSubset picks the subset that absorbs the surge, in priority order:
+// (1) an explicit, valid surge-subset annotation (operator override, e.g. route
+// to spot for cost); (2) the drain-displaced subset the reconciler detected;
+// (3) fallback to the subset with the most current replicas (dominant).
 func (u *UnitedDeploymentWrapper) resolveSurgeSubset(baseline map[string]int32) string {
 	if ann := u.obj.GetAnnotations(); ann != nil {
 		if want := ann[SurgeSubsetAnnotationKey]; want != "" {
-			for _, s := range u.obj.Spec.Topology.Subsets {
-				if s.Name == want {
-					return want
-				}
+			if u.hasSubset(want) {
+				return want
 			}
 		}
+	}
+	if u.preferredSurgeSubset != "" && u.hasSubset(u.preferredSurgeSubset) {
+		return u.preferredSurgeSubset
 	}
 	best, bestN := "", int32(-1)
 	for _, s := range u.obj.Spec.Topology.Subsets {
@@ -174,6 +189,15 @@ func (u *UnitedDeploymentWrapper) resolveSurgeSubset(baseline map[string]int32) 
 		}
 	}
 	return best
+}
+
+func (u *UnitedDeploymentWrapper) hasSubset(name string) bool {
+	for _, s := range u.obj.Spec.Topology.Subsets {
+		if s.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (u *UnitedDeploymentWrapper) readSnapshot() (udSurgeSnapshot, bool) {

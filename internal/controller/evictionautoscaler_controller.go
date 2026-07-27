@@ -205,6 +205,18 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			surgeTarget = maxSurgeTarget
 		}
 
+		// For a UnitedDeployment target, default the surge to land on the subset
+		// the drain is displacing (overridable via the surge-subset annotation).
+		if udWrapper, isUD := target.(*UnitedDeploymentWrapper); isUD {
+			subset, subsetErr := displacedSubsetOnCordoned(ctx, r.Client, pdb)
+			if subsetErr != nil {
+				logger.Error(subsetErr, "failed to determine displaced UnitedDeployment subset; falling back to dominant subset")
+			} else if subset != "" {
+				logger.Info("Routing UnitedDeployment surge to displaced subset", "pdb", pdb.Name, "subset", subset)
+				udWrapper.SetPreferredSurgeSubset(subset)
+			}
+		}
+
 		if target.GetReplicas() >= surgeTarget {
 			//we've scaled up but pdb is still blockign may just be waiting for new pods to become ready
 			logger.Info("Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting",

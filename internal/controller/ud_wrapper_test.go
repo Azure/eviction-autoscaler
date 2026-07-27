@@ -130,3 +130,34 @@ func TestUDWrapper_GetMaxSurgeFromDeploymentTemplate(t *testing.T) {
 		t.Fatalf("GetMaxSurge = %v, want \"10%%\"", ms)
 	}
 }
+
+func TestUDWrapper_SurgeDefaultsToPreferredDisplacedSubset(t *testing.T) {
+	w := &UnitedDeploymentWrapper{obj: makeTestUD()}
+	w.SetPreferredSurgeSubset("spot") // drain is displacing spot pods
+	w.SetReplicas(118)                // surge by 6
+
+	ud := w.Obj().(*kruiseappsv1alpha1.UnitedDeployment)
+	// Surge lands on the displaced (spot) subset, not the dominant (regular) one.
+	if s := subsetRepl(ud, "spot"); s == nil || s.IntValue() != 23 {
+		t.Fatalf("spot replicas = %v, want 23", s)
+	}
+	if r := subsetRepl(ud, "regular"); r == nil || r.IntValue() != 95 {
+		t.Fatalf("regular replicas = %v, want 95", r)
+	}
+}
+
+func TestUDWrapper_AnnotationOverridesPreferredSubset(t *testing.T) {
+	ud := makeTestUD()
+	ud.Annotations = map[string]string{SurgeSubsetAnnotationKey: "regular"}
+	w := &UnitedDeploymentWrapper{obj: ud}
+	w.SetPreferredSurgeSubset("spot") // displaced subset is spot...
+	w.SetReplicas(118)                // ...but annotation forces regular
+
+	got := w.Obj().(*kruiseappsv1alpha1.UnitedDeployment)
+	if r := subsetRepl(got, "regular"); r == nil || r.IntValue() != 101 {
+		t.Fatalf("regular replicas = %v, want 101", r)
+	}
+	if s := subsetRepl(got, "spot"); s == nil || s.IntValue() != 17 {
+		t.Fatalf("spot replicas = %v, want 17", s)
+	}
+}

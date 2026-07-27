@@ -13,6 +13,7 @@
 - [Networking](#networking)
 - [Usage](#usage)
   - [Surge Annotations](#surge-annotations)
+  - [UnitedDeployment Surge](#uniteddeployment-surge)
   - [How Surge Sizing Works](#how-surge-sizing-works)
 
 ## Introduction
@@ -32,6 +33,7 @@ Your app might also experience issues for unrelated reasons, and a maintenance e
 - **Eviction-autoscaler Controller**: Watches eviction-autoscale resources. If there a recent eviction singals and the PDB's AllowedDisruotions is zero, it triggers a surge in the corresponding deployment. Once evitions have stopped for some cooldown period and allowed diruptions has rised above zero it scales down.
 - **HPA-aware surge**: When an HPA targets the deployment, the controller surges by temporarily raising the HPA's `minReplicas` instead of mutating deployment replicas directly. This prevents the HPA from immediately scaling the deployment back down during a surge. On revert, the original `minReplicas` floor is restored.
 - **KEDA-aware surge**: When a KEDA ScaledObject targets the deployment, the controller surges by temporarily raising the ScaledObject's `minReplicaCount`. The same pattern applies — annotations on the ScaledObject track the surge state and original value for safe revert.
+- **UnitedDeployment-aware surge**: When the PDB-protected pods belong to an OpenKruise [UnitedDeployment](https://openkruise.io/docs/user-manuals/uniteddeployment/), the controller surges the UnitedDeployment's own `spec.replicas` and routes the extra replicas to a chosen subset (pinning the other subsets to absolute counts). Scaling the subset's child Deployment directly does not work — the UnitedDeployment controller reverts it — so the surge goes through the owner the platform controls. By default the surge lands on the subset the drain is displacing; set the `eviction-autoscaler.azure.com/surge-subset` annotation on the UnitedDeployment to force a specific subset (e.g. route surge onto spot capacity for cost). The original per-subset topology is snapshotted for exact restore on revert.
 - **PDB Controller** (Optional): Automatically creates eviction-autoscalers Custom Resources for existing PDBs. When an HPA or KEDA ScaledObject targets the deployment, PDB `minAvailable` is set from the autoscaler's min replicas floor rather than `deployment.spec.replicas`.
 - **Autoscaler-to-PDB Controller** (Optional): Watches HPA and KEDA ScaledObject changes and updates PDB `minAvailable` to track the autoscaler's min replicas floor, even when deployment replicas don't change.
 - **Deployment Controller** (Optional): Creates PDBs for deployments that don't already have them and keeps min available matching the deployments replicas (not counting any surged in by eviction autoscaler). Defers to the Autoscaler-to-PDB controller when an HPA or KEDA ScaledObject is present.
@@ -524,6 +526,9 @@ During a surge, the eviction autoscaler places annotations on the **autoscaler o
 | `evictionSurgeReplicas` | HPA or ScaledObject | Surged replica count (e.g., `"3"`) | Marks that a surge is active |
 | `eviction-autoscaler.azure.com/original-min-replicas` | HPA or ScaledObject | Pre-surge min replicas (e.g., `"1"`) | Stores the original value for safe revert |
 | `evictionSurgeReplicas` | Deployment | Surged replica count | Only used when **no** HPA/KEDA is present |
+| `evictionSurgeReplicas` | UnitedDeployment | Surged replica count | Marks that a UnitedDeployment surge is active |
+| `eviction-autoscaler.azure.com/ud-surge-snapshot` | UnitedDeployment | JSON topology snapshot | Stores the pre-surge per-subset config + total for exact revert |
+| `eviction-autoscaler.azure.com/surge-subset` | UnitedDeployment | Subset name (e.g. `"spot"`) | **User-set** (optional): forces which subset absorbs the surge; overrides the displaced-subset default |
 
 These annotations are managed automatically by the controller. They are set atomically with the `minReplicas`/`minReplicaCount` change during surge and removed during revert. You should not modify them manually.
 
@@ -539,6 +544,30 @@ kubectl get scaledobject <name> -n <namespace> -o jsonpath='{.metadata.annotatio
 # Check the original minReplicas that will be restored on revert
 kubectl get hpa <name> -n <namespace> -o jsonpath='{.metadata.annotations.eviction-autoscaler\.azure\.com/original-min-replicas}'
 ```
+
+### UnitedDeployment Surge
+
+When the PDB-protected pods belong to an OpenKruise UnitedDeployment, the controller resolves the target through the pod → ReplicaSet → child Deployment → UnitedDeployment owner chain and surges the UnitedDeployment's own `spec.replicas`, routing the delta to a single subset while pinning the others to absolute counts.
+
+**Where the surge lands (subset selection):**
+
+1. If the `eviction-autoscaler.azure.com/surge-subset` annotation is set on the UnitedDeployment to a valid subset name, that subset absorbs the surge (operator override — e.g. always surge onto `spot` for cost).
+2. Otherwise, the surge lands on the subset the current drain is displacing (the subset with the most pods on cordoned nodes).
+3. If neither can be determined, it falls back to the subset with the most replicas.
+
+The `surge-subset` annotation is the only surge annotation you may set yourself; `evictionSurgeReplicas` and `ud-surge-snapshot` are managed by the controller and restored/removed on revert.
+
+```yaml
+apiVersion: apps.kruise.io/v1alpha1
+kind: UnitedDeployment
+metadata:
+  name: my-app
+  annotations:
+    # Optional: force drain-time surge onto the "spot" subset.
+    eviction-autoscaler.azure.com/surge-subset: "spot"
+```
+
+**Prerequisite:** OpenKruise must be installed in the cluster (the UnitedDeployment CRD must exist). The controller's RBAC includes `get;list;watch;update;patch` on `uniteddeployments` in the `apps.kruise.io` group.
 
 ### How Surge Sizing Works
 

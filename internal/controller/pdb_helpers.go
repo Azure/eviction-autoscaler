@@ -236,3 +236,49 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 	}
 	return count, nil
 }
+
+// kruiseSubsetLabel is the label OpenKruise sets on UnitedDeployment subset pods.
+const kruiseSubsetLabel = "apps.kruise.io/subset-name"
+
+// displacedSubsetOnCordoned returns the UnitedDeployment subset name with the
+// most PDB-selected pods sitting on cordoned nodes, i.e. the subset the drain is
+// displacing. Returns "" when no such pod carries a subset label (e.g. the
+// target is not a UnitedDeployment or no pods are on cordoned nodes).
+func displacedSubsetOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.PodDisruptionBudget) (string, error) {
+	selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+	if err != nil {
+		return "", fmt.Errorf("invalid PDB selector: %w", err)
+	}
+
+	var podList corev1.PodList
+	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
+		return "", fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
+	}
+
+	var nodeList corev1.NodeList
+	if err := c.List(ctx, &nodeList); err != nil {
+		return "", fmt.Errorf("failed to list nodes: %w", err)
+	}
+	cordoned := make(map[string]bool, len(nodeList.Items))
+	for _, node := range nodeList.Items {
+		cordoned[node.Name] = node.Spec.Unschedulable
+	}
+
+	counts := map[string]int32{}
+	for _, pod := range podList.Items {
+		if !cordoned[pod.Spec.NodeName] {
+			continue
+		}
+		if subset := pod.Labels[kruiseSubsetLabel]; subset != "" {
+			counts[subset]++
+		}
+	}
+
+	best, bestN := "", int32(0)
+	for name, n := range counts {
+		if n > bestN {
+			best, bestN = name, n
+		}
+	}
+	return best, nil
+}

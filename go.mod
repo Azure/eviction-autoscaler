@@ -84,6 +84,7 @@ require (
 
 require (
 	github.com/go-logr/logr v1.4.3
+	github.com/openkruise/kruise-api v1.8.0
 	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/lo v1.52.0
 	go.uber.org/zap v1.27.1

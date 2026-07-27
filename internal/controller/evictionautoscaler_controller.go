@@ -46,6 +46,8 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
+// +kubebuilder:rbac:groups=apps.kruise.io,resources=uniteddeployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps.kruise.io,resources=uniteddeployments/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch

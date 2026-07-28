@@ -341,25 +341,22 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
 		})
 
-		It("should emit a DrainSurgeOverride event when the surge-override annotation drives the surge", func() {
-			By("setting maxSurge=0 and a surge-override annotation on the deployment")
+		It("should emit a DrainSurgeOverride event when the fleet zero-maxSurge override drives the surge", func() {
+			By("setting maxSurge=0 with the fleet zero-maxSurge override on")
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			zeroSurge := intstr.FromInt32(0)
 			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
-			if dep.Annotations == nil {
-				dep.Annotations = map[string]string{}
-			}
-			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
 			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
 
 			recorder := record.NewFakeRecorder(10)
 			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				Filter:               &evictionTestFilter{},
-				Recorder:             recorder,
-				SurgeOverrideEnabled: true,
+				Client:                  k8sClient,
+				Scheme:                  k8sClient.Scheme(),
+				Filter:                  &evictionTestFilter{},
+				Recorder:                recorder,
+				OverrideZeroMaxSurge:    true,
+				SurgeOverrideMaxPercent: 25,
 			}
 
 			node := &corev1.Node{
@@ -390,27 +387,24 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			var got string
 			Eventually(recorder.Events).Should(Receive(&got))
 			Expect(got).To(ContainSubstring("DrainSurgeOverride"))
-			Expect(got).To(ContainSubstring("overrides rollout maxSurge"))
+			Expect(got).To(ContainSubstring("rollout maxSurge"))
 		})
 
 		It("surges via the override without emitting an event when the recorder is disabled", func() {
-			By("setting maxSurge=0 and a surge-override annotation, with NO recorder wired")
+			By("setting maxSurge=0 with the override on and NO recorder wired")
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			zeroSurge := intstr.FromInt32(0)
 			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
-			if dep.Annotations == nil {
-				dep.Annotations = map[string]string{}
-			}
-			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
 			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
 
 			// Recorder is nil (ENABLE_EVENT_RECORDING=false), but the feature flag is on.
 			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				Filter:               &evictionTestFilter{},
-				SurgeOverrideEnabled: true,
+				Client:                  k8sClient,
+				Scheme:                  k8sClient.Scheme(),
+				Filter:                  &evictionTestFilter{},
+				OverrideZeroMaxSurge:    true,
+				SurgeOverrideMaxPercent: 25,
 			}
 
 			node := &corev1.Node{
@@ -438,16 +432,12 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
 		})
 
-		It("ignores the surge-override annotation when the feature flag is disabled", func() {
-			By("setting maxSurge=0 and a surge-override annotation, with the feature flag OFF")
+		It("does not surge a maxSurge=0 workload when the override is disabled", func() {
+			By("setting maxSurge=0 with the zero-maxSurge override OFF")
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			zeroSurge := intstr.FromInt32(0)
 			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
-			if dep.Annotations == nil {
-				dep.Annotations = map[string]string{}
-			}
-			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
 			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
 
 			recorder := record.NewFakeRecorder(10)
@@ -456,7 +446,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				Scheme:               k8sClient.Scheme(),
 				Filter:               &evictionTestFilter{},
 				Recorder:             recorder,
-				SurgeOverrideEnabled: false, // gate OFF: the annotation must be a no-op
+				OverrideZeroMaxSurge: false, // gate OFF: the annotation must be a no-op
 			}
 
 			node := &corev1.Node{
@@ -496,23 +486,20 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(recorder.Events).ToNot(Receive(), "no DrainSurgeOverride event should fire when the flag is off")
 		})
 
-		It("reverts an override-driven surge once the drain completes (flag enabled)", func() {
-			By("setting maxSurge=0 and a surge-override annotation with the feature flag ON")
+		It("reverts a zero-maxSurge override surge once the drain completes", func() {
+			By("setting maxSurge=0 with the zero-maxSurge override ON")
 			dep := &appsv1.Deployment{}
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			zeroSurge := intstr.FromInt32(0)
 			dep.Spec.Strategy.RollingUpdate.MaxSurge = &zeroSurge
-			if dep.Annotations == nil {
-				dep.Annotations = map[string]string{}
-			}
-			dep.Annotations[SurgeOverrideAnnotationKey] = "2"
 			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
 
 			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client:               k8sClient,
-				Scheme:               k8sClient.Scheme(),
-				Filter:               &evictionTestFilter{},
-				SurgeOverrideEnabled: true,
+				Client:                  k8sClient,
+				Scheme:                  k8sClient.Scheme(),
+				Filter:                  &evictionTestFilter{},
+				OverrideZeroMaxSurge:    true,
+				SurgeOverrideMaxPercent: 25,
 			}
 
 			node := &corev1.Node{

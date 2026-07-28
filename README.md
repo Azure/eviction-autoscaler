@@ -251,8 +251,8 @@ Eviction autoscaler provides flexible namespace-level control with two operation
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
-- **`SURGE_OVERRIDE_ENABLED`**: Enable the drain-time surge-override annotation (`eviction-autoscaler.azure.com/surge-override`) fleet-wide (default: `false`). When `false`, the annotation is ignored and surge sizing falls through to the target's rollout `maxSurge`. Must be `true` or `false`.
-- **`SURGE_OVERRIDE_MAX_PERCENT`**: Safety cap bounding the surge-override annotation, as a percentage of `minReplicas` (default: `25`). The override-resolved surge amount is capped at this percent of `minReplicas` (rounded up). Must be a positive integer. Only applies when `SURGE_OVERRIDE_ENABLED=true`.
+- **`OVERRIDE_ZERO_MAXSURGE`**: When enabled, lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain, using a fleet-wide percentage instead of refusing to surge (default: `false`). When `false`, such a workload cannot surge and the autoscaler degrades, as before. Must be `true` or `false`.
+- **`SURGE_OVERRIDE_MAX_PERCENT`**: The fleet-wide drain surge applied when `OVERRIDE_ZERO_MAXSURGE=true` and a workload's `maxSurge` resolves to 0, as a percentage of `minReplicas` (default: `25`; e.g. set to `10` at install time). The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves. Must be a positive integer.
 - **`ENABLE_EVENT_RECORDING`**: Enable emission of Kubernetes events by the controller (default: `false`). An installation-time observability decision, orthogonal to feature flags — a single switch for all controller events (e.g. `DrainSurgeOverride`). When `false`, no events are emitted; structured logs and metrics remain the primary signal. Must be `true` or `false`.
 
 #### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
@@ -553,35 +553,31 @@ surgeTarget = minReplicas + displaced
 
 where `displaced` is the number of PDB-selected pods currently running on cordoned nodes. `surgeTarget` is capped at `minReplicas + maxSurge` (the deployment's configured max surge). This means the surge is right-sized to exactly what is needed — no over-provisioning.
 
-#### Drain-Time Surge Cap Override
+#### Zero-maxSurge Drain Override
 
-The surge budget defaults to the target's rolling-update `maxSurge`. But rollout surge and **drain** surge are different operational events: a workload can legitimately want `maxSurge: 0` for **app rollouts** (serial, no extra pods during a version change) yet still want a small, bounded surge **during node maintenance**. With `maxSurge: 0` and no override, the workload gets **no** drain-time surge at all — `calculateSurge` returns an error and the controller cannot add replicas to relieve a PDB-blocked drain.
+Drain surge normally comes from the target's rolling-update `maxSurge`. But safe-deployment guidance often mandates `maxSurge: 0` on the rollout strategy (serial rollouts, no extra pods during a version change), and a `Recreate` strategy has no surge either. With `maxSurge: 0` and nothing else, such a workload gets **no** drain-time surge — `calculateSurge` returns an error and the controller cannot add replicas to relieve a PDB-blocked drain.
 
-To set a **drain-time surge cap** that is decoupled from the rollout `maxSurge`, first enable the feature on the controller (see the note below), then annotate the **target workload** (Deployment or StatefulSet):
+The **zero-maxSurge override** is a fleet-wide setting that lets the controller surge these workloads during a drain. It applies **only** when the target's `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy); workloads with a non-zero `maxSurge` are unaffected and keep using their own `maxSurge`.
 
-| Annotation | Placed On | Value | Purpose |
-|---|---|---|---|
-| `eviction-autoscaler.azure.com/surge-override` | Deployment or StatefulSet | Int (e.g. `"3"`) or percentage (e.g. `"20%"`) | Drain-time surge cap, used **instead of** the target's rollout `maxSurge` |
+It is configured entirely on the controller — there is **no per-workload annotation** — so the platform operator, not individual workload owners, decides whether it applies:
 
-> **This feature is off by default and must be enabled fleet-wide on the controller** via `SURGE_OVERRIDE_ENABLED=true` (see [Environment Variables](#environment-variables)). While it is disabled, the annotation is a **no-op** — surge sizing falls through to the target's rollout `maxSurge` exactly as before. This ensures the platform operator, not individual workload owners, decides whether drain-time surge overrides are honored.
+- **`OVERRIDE_ZERO_MAXSURGE`** (`true`/`false`, default `false`) — the fleet-wide opt-in. Off by default, preserving today's degrade behavior.
+- **`SURGE_OVERRIDE_MAX_PERCENT`** (positive integer, default `25`) — the drain surge as a percent of `minReplicas`, applied when the override fires (e.g. set to `10` at install time).
 
-When present (and the feature is enabled), the override **always wins** over `maxSurge` for drain-time surge, so a workload can keep `maxSurge: 0` for its rollout strategy yet still surge during a drain. It is a **cap, not the amount**: the actual surge stays demand-driven (`minReplicas + displaced`), so a drain larger than the cap simply proceeds in **waves**. The value is interpreted exactly like `maxSurge` — an integer is added to `minReplicas`; a percentage is applied to `minReplicas` and rounded up — so each workload can tune the batch size to its own capacity (e.g. a large `maxSurge: 0` deployment can pin a small absolute cap like `"10"` rather than a percentage that would scale up with replica count). A value of `0` (or `0%`) disables surge just like `maxSurge: 0`.
-
-Because the annotation is free-form and bypasses API-server admission validation, the override-resolved surge amount is bounded by a controller-level safety cap, **`SURGE_OVERRIDE_MAX_PERCENT`** (default `25`, i.e. 25% of `minReplicas`, rounded up); operators can raise it fleet-wide to allow larger drain-time surges. Only the free-form override path is capped — the rollout `maxSurge` path is already validated by the API server and is never capped.
-
-When the override drives a surge, the controller always logs a structured line noting that the drain-time cap overrode the rollout `maxSurge`, and — when event recording is enabled (`ENABLE_EVENT_RECORDING=true`, see [Environment Variables](#environment-variables)) — also emits a `DrainSurgeOverride` event on the target workload.
+The surge stays **demand-driven**: the actual scale-up is `minReplicas + displaced`, capped at this percentage of `minReplicas`, so a drain larger than the cap simply proceeds in **waves**. When the override drives a surge, the controller logs a structured line and — when event recording is enabled (`ENABLE_EVENT_RECORDING=true`) — emits a `DrainSurgeOverride` event on the target workload.
 
 ```yaml
+# No workload annotation is required. Enable fleet-wide on the controller:
+#   OVERRIDE_ZERO_MAXSURGE=true
+#   SURGE_OVERRIDE_MAX_PERCENT=10
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: my-app
-  annotations:
-    eviction-autoscaler.azure.com/surge-override: "10"  # drain-time cap of 10 extra pods, even with maxSurge: 0
 spec:
   strategy:
     rollingUpdate:
-      maxSurge: 0        # rollout strategy still never surges
+      maxSurge: 0        # rollout never surges; drains still get the fleet override
       maxUnavailable: 1
 ```
 

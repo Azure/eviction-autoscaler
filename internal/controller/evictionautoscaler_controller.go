@@ -313,7 +313,7 @@ func (r *EvictionAutoScalerReconciler) recordDrainSurgeOverride(ctx context.Cont
 		"surgeOverrideMaxPercent", r.SurgeOverrideMaxPercent, "maxSurgeTarget", maxSurgeTarget)
 	if r.Recorder != nil {
 		r.Recorder.Eventf(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride",
-			"maxSurge resolved to 0; overriding drain-time surge to %d (%d%% of minReplicas %d)",
+			"maxSurge resolved to 0; overriding drain-time max replicas to %d (%d%% of minReplicas %d)",
 			maxSurgeTarget, r.SurgeOverrideMaxPercent, minReplicas)
 	}
 }

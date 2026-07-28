@@ -220,9 +220,9 @@ func main() {
 	surgeOverrideMaxPercent := 0
 	if raw := os.Getenv("SURGE_OVERRIDE_MAX_PERCENT"); raw != "" {
 		v, err := strconv.Atoi(raw)
-		if err != nil || v <= 0 {
+		if err != nil || v < 0 {
 			setupLog.Error(
-				fmt.Errorf("invalid value %q for SURGE_OVERRIDE_MAX_PERCENT (must be a positive integer)", raw),
+				fmt.Errorf("invalid value %q for SURGE_OVERRIDE_MAX_PERCENT (must be a non-negative integer)", raw),
 				"invalid surge override percent")
 			os.Exit(1)
 		}

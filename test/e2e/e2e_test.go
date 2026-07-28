@@ -63,6 +63,9 @@ func init() {
 const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
+// projectImage is the locally built controller image loaded into the Kind cluster.
+const projectImage = "evictionautoscaler:e2etest"
+
 var cleanEnv = true
 
 var _ = Describe("controller", Ordered, func() {
@@ -113,7 +116,7 @@ var _ = Describe("controller", Ordered, func() {
 			var err error
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = "evictionautoscaler:e2etest"
+			var projectimage = projectImage
 
 			By("building the manager(Operator) image")
 			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))
@@ -679,7 +682,7 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("reinstalling eviction-autoscaler with enabled_by_default=true (enabledByDefault=true)")
 			// Use the same image that was built in the first test
-			projectimage := "evictionautoscaler:e2etest"
+			projectimage := projectImage
 			imgParts := strings.Split(projectimage, ":")
 			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
 			repo := imgParts[0]
@@ -1688,7 +1691,7 @@ var _ = Describe("controller", Ordered, func() {
 			_, _ = utils.Run(cmd)
 			time.Sleep(10 * time.Second)
 
-			projectimage := "evictionautoscaler:e2etest"
+			projectimage := projectImage
 			imgParts := strings.Split(projectimage, ":")
 			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
 			repo := imgParts[0]
@@ -1854,7 +1857,7 @@ var _ = Describe("controller", Ordered, func() {
 			time.Sleep(10 * time.Second)
 
 			By("installing eviction-autoscaler with kube-system (AKS-owned) in actionedNamespaces")
-			projectimage := "evictionautoscaler:e2etest"
+			projectimage := projectImage
 			imgParts := strings.Split(projectimage, ":")
 			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
 			repo := imgParts[0]

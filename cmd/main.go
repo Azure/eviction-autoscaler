@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -47,6 +48,22 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+// parseStrictBool reads a feature-flag env var that must be exactly "true", "false", or
+// unset (treated as false). Any other value fails fast so a typo like "yes" can't
+// silently disable a feature the operator believes is enabled.
+func parseStrictBool(name string) bool {
+	switch v := os.Getenv(name); v {
+	case "", "false":
+		return false
+	case "true":
+		return true
+	default:
+		setupLog.Error(fmt.Errorf("invalid value %q for %s (must be \"true\" or \"false\")", v, name), "invalid feature flag")
+		os.Exit(1)
+		return false // unreachable
+	}
+}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -195,11 +212,42 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
-	if err = (&controllers.EvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
-	}).SetupWithManager(mgr); err != nil {
+	// Parse SURGE_OVERRIDE_MAX_PERCENT (default 0 = disabled). When set to a positive
+	// integer this opts the whole fleet in to the zero-maxSurge override: workloads whose
+	// maxSurge resolves to 0 (explicit maxSurge: 0, Recreate strategy, or unset) are surged
+	// by SURGE_OVERRIDE_MAX_PERCENT% of minReplicas during a drain instead of degrading.
+	// Left unset (0) the override is disabled, preserving prior behavior.
+	surgeOverrideMaxPercent := 0
+	if raw := os.Getenv("SURGE_OVERRIDE_MAX_PERCENT"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil || v <= 0 {
+			setupLog.Error(fmt.Errorf("invalid value %q for SURGE_OVERRIDE_MAX_PERCENT (must be a positive integer)", raw), "invalid surge override percent")
+			os.Exit(1)
+		}
+		surgeOverrideMaxPercent = v
+	}
+
+	// Parse ENABLE_EVENT_RECORDING (strict bool, default false). Wires the event recorder
+	// so features can emit Kubernetes events (e.g. DrainSurgeOverride). Off by default;
+	// structured logs + metrics remain the primary observability path.
+	eventRecordingEnabled := parseStrictBool("ENABLE_EVENT_RECORDING")
+
+	setupLog.Info("Surge override configuration",
+		"surgeOverrideMaxPercent", surgeOverrideMaxPercent,
+		"surgeOverrideEnabled", surgeOverrideMaxPercent > 0,
+		"eventRecordingEnabled", eventRecordingEnabled)
+
+	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Filter:                  nsfilter,
+		SurgeOverrideMaxPercent: surgeOverrideMaxPercent,
+	}
+	if eventRecordingEnabled {
+		evictionAutoScalerReconciler.Recorder = mgr.GetEventRecorderFor("eviction-autoscaler")
+	}
+
+	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
 		os.Exit(1)
 	}

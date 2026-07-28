@@ -41,6 +41,10 @@ spec:
             value: {{ .Values.controllerConfig.namespaces.enabledByDefault | quote }}
           - name: ACTIONED_NAMESPACES
             value: {{ join "," .Values.controllerConfig.namespaces.actionedNamespaces | quote }}
+          - name: SURGE_OVERRIDE_MAX_PERCENT
+            value: {{ .Values.controllerConfig.surgeOverride.maxPercent | quote }}
+          - name: ENABLE_EVENT_RECORDING
+            value: {{ .Values.controllerConfig.eventRecording.enabled | quote }}
         command:
         - /manager
         args:

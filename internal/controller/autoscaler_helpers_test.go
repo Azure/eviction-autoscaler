@@ -82,8 +82,6 @@ var _ = Describe("ResolveMinReplicas", func() {
 })
 
 var _ = Describe("calculateSurge", func() {
-	ctx := context.Background()
-
 	makeTarget := func(surge intstr.IntOrString) Surger {
 		dep := &appsv1.Deployment{
 			Spec: appsv1.DeploymentSpec{
@@ -99,68 +97,129 @@ var _ = Describe("calculateSurge", func() {
 
 	It("adds an integer maxSurge to minReplicas", func() {
 		target := makeTarget(intstr.FromInt32(2))
-		result, err := calculateSurge(ctx, target, 3)
+		result, overridden, err := calculateSurge(target, 3, 0)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(5)))
 	})
 
 	It("returns errMaxSurgeZero when maxSurge is 0", func() {
 		target := makeTarget(intstr.FromInt32(0))
-		result, err := calculateSurge(ctx, target, 5)
+		result, overridden, err := calculateSurge(target, 5, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(5)))
 	})
 
 	It("returns errMaxSurgeZero when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
 		target := &DeploymentWrapper{obj: dep}
-		result, err := calculateSurge(ctx, target, 4)
+		result, overridden, err := calculateSurge(target, 4, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(4)))
 	})
 
 	It("computes 25% surge with ceiling (exact)", func() {
 		target := makeTarget(intstr.FromString("25%"))
 		// 4 * 25% = 1.0 → ceil(1.0) = 1 → 4+1 = 5
-		result, err := calculateSurge(ctx, target, 4)
+		result, overridden, err := calculateSurge(target, 4, 0)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(5)))
 	})
 
 	It("computes 25% surge with ceiling (fractional)", func() {
 		target := makeTarget(intstr.FromString("25%"))
 		// 3 * 25% = 0.75 → ceil(0.75) = 1 → 3+1 = 4
-		result, err := calculateSurge(ctx, target, 3)
+		result, overridden, err := calculateSurge(target, 3, 0)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(4)))
 	})
 
 	It("computes 50% surge with ceiling", func() {
 		target := makeTarget(intstr.FromString("50%"))
 		// 3 * 50% = 1.5 → ceil(1.5) = 2 → 3+2 = 5
-		result, err := calculateSurge(ctx, target, 3)
+		result, overridden, err := calculateSurge(target, 3, 0)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(5)))
 	})
 
 	It("computes 100% surge", func() {
 		target := makeTarget(intstr.FromString("100%"))
 		// 5 * 100% = 5 → ceil(5) = 5 → 5+5 = 10
-		result, err := calculateSurge(ctx, target, 5)
+		result, overridden, err := calculateSurge(target, 5, 0)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(10)))
 	})
 
 	It("returns errInvalidPercentage for invalid percentage string", func() {
 		target := makeTarget(intstr.FromString("abc%"))
-		_, err := calculateSurge(ctx, target, 3)
+		_, _, err := calculateSurge(target, 3, 0)
 		Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
 	})
 
 	It("returns errMaxSurgeZero for 0% string", func() {
 		target := makeTarget(intstr.FromString("0%"))
-		result, err := calculateSurge(ctx, target, 3)
+		result, overridden, err := calculateSurge(target, 3, 0)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+		Expect(overridden).To(BeFalse())
 		Expect(result).To(Equal(int32(3)))
+	})
+
+	Context("with SURGE_OVERRIDE_MAX_PERCENT set to a positive percent", func() {
+		It("overrides an integer maxSurge of 0 using the configured percent", func() {
+			target := makeTarget(intstr.FromInt32(0))
+			// 20 * 25% = 5 → ceil(5) = 5 → 20+5 = 25
+			result, overridden, err := calculateSurge(target, 20, 25)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(overridden).To(BeTrue())
+			Expect(result).To(Equal(int32(25)))
+		})
+
+		It("overrides when no RollingUpdate strategy is set (Recreate/unset)", func() {
+			dep := &appsv1.Deployment{}
+			target := &DeploymentWrapper{obj: dep}
+			// 10 * 10% = 1 → 10+1 = 11
+			result, overridden, err := calculateSurge(target, 10, 10)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(overridden).To(BeTrue())
+			Expect(result).To(Equal(int32(11)))
+		})
+
+		It("floors the override at 1 replica when the percent rounds to 0", func() {
+			target := makeTarget(intstr.FromInt32(0))
+			// 1 * 25% = 0.25 → ceil = 1 (floor) → 1+1 = 2
+			result, overridden, err := calculateSurge(target, 1, 25)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(overridden).To(BeTrue())
+			Expect(result).To(Equal(int32(2)))
+		})
+
+		It("does not touch a non-zero maxSurge", func() {
+			target := makeTarget(intstr.FromInt32(2))
+			result, overridden, err := calculateSurge(target, 10, 25)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(overridden).To(BeFalse())
+			Expect(result).To(Equal(int32(12)))
+		})
+
+		It("still surfaces an invalid percentage string rather than overriding", func() {
+			target := makeTarget(intstr.FromString("abc%"))
+			_, overridden, err := calculateSurge(target, 3, 25)
+			Expect(errors.Is(err, errInvalidPercentage)).To(BeTrue())
+			Expect(overridden).To(BeFalse())
+		})
+
+		It("does not override a zero maxSurge when the percent knob is 0 (disabled)", func() {
+			target := makeTarget(intstr.FromInt32(0))
+			result, overridden, err := calculateSurge(target, 20, 0)
+			Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
+			Expect(overridden).To(BeFalse())
+			Expect(result).To(Equal(int32(20)))
+		})
 	})
 })

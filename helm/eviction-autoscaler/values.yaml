@@ -52,6 +52,22 @@ controllerConfig:
   pdb:
     create: true
 
+  # Drain-time surge override (fleet-wide, install-time opt-in)
+  surgeOverride:
+    # Percent of minReplicas used as the drain-time surge amount when a workload's rollout
+    # maxSurge resolves to 0 (explicit maxSurge: 0, a Recreate strategy, or an unset
+    # RollingUpdate). Set to a positive integer to opt the whole fleet in: such workloads
+    # are surged during a drain by ceil(maxPercent * minReplicas / 100) (floored at 1)
+    # instead of the controller degrading. Left at 0 (default) the override is disabled and
+    # the controller keeps today's behavior of degrading on a zero maxSurge.
+    maxPercent: 0
+
+  # Kubernetes event recording (install-time observability opt-in)
+  eventRecording:
+    # When true, the controller emits Kubernetes events (e.g. DrainSurgeOverride).
+    # Off by default; structured logs + metrics remain the primary observability path.
+    enabled: false
+
 
 
 # ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)

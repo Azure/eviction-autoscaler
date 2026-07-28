@@ -14,6 +14,7 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
+	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -38,6 +39,15 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
+
+	// SurgeOverrideMaxPercent is a fleet-wide, install-time knob. When set to a positive
+	// percent it opts the whole fleet in to the zero-maxSurge override: workloads whose
+	// maxSurge resolves to 0 (explicit maxSurge: 0, a Recreate strategy, or an unset
+	// RollingUpdate) are surged by SurgeOverrideMaxPercent% of minReplicas during a drain
+	// (ceil(percent * minReplicas / 100), floored at 1) instead of degrading. When 0
+	// (default) the override is disabled and the controller keeps today's behavior of
+	// degrading on a zero maxSurge.
+	SurgeOverrideMaxPercent int
 }
 
 const cooldown = 1 * time.Minute
@@ -178,7 +188,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
 	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
 	// we fall through to the cooldown/scale-down path — which is correct.
-	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas)
+	maxSurgeTarget, overrideApplied, surgeErr := calculateSurge(target, EvictionAutoScaler.Status.MinReplicas, r.SurgeOverrideMaxPercent)
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
@@ -213,6 +223,21 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 
 		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+
+		// The workload's maxSurge resolved to 0 and the fleet-wide override raised the
+		// drain-time ceiling. Surface it so operators can see we scaled a workload whose
+		// author pinned maxSurge: 0. The event only fires when ENABLE_EVENT_RECORDING wired
+		// a Recorder.
+		if overrideApplied {
+			logger.Info("Zero-maxSurge override raised drain-time surge ceiling",
+				"pdb", pdb.Name, "target", EvictionAutoScaler.Spec.TargetName,
+				"surgeOverrideMaxPercent", r.SurgeOverrideMaxPercent, "maxSurgeTarget", maxSurgeTarget)
+			if r.Recorder != nil {
+				r.Recorder.Eventf(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride",
+					"maxSurge resolved to 0; overriding drain-time surge to %d (%d%% of minReplicas %d)",
+					maxSurgeTarget, r.SurgeOverrideMaxPercent, EvictionAutoScaler.Status.MinReplicas)
+			}
+		}
 
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
@@ -323,32 +348,68 @@ var (
 	errInvalidPercentage = errors.New("invalid surge percentage")
 )
 
-// calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge).
-// Returns a sentinel error to distinguish:
-//   - errMaxSurgeZero: maxSurge resolves to 0 (explicitly set or not configured)
+// calculateSurge returns the maximum replica count after surge (minReplicas + maxSurge)
+// and whether the zero-maxSurge install override supplied that ceiling.
+//
+// The workload's own maxSurge is always tried first. When it resolves to 0 — an explicit
+// maxSurge: 0, a Recreate strategy, or an unset RollingUpdate — and surgeOverridePercent
+// is set to a positive value at install time, the controller substitutes a drain-time
+// surge of surgeOverridePercent% of minReplicas (rounded up, floored at 1) instead of
+// returning errMaxSurgeZero. Workloads with a non-zero maxSurge are untouched and keep
+// their own value; the override never caps an admission-validated maxSurge.
+//
+// The returned error distinguishes:
+//   - errMaxSurgeZero: maxSurge resolves to 0 and the override is disabled (percent <= 0)
 //   - errInvalidPercentage: percentage string could not be parsed
-func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, error) {
+func calculateSurge(target Surger, minReplicas int32, surgeOverridePercent int) (int32, bool, error) {
+	surgeTarget, err := surgeFromValue(target.GetMaxSurge(), minReplicas)
+	if err == nil {
+		return surgeTarget, false, nil
+	}
 
-	surge := target.GetMaxSurge()
+	// maxSurge resolved to 0. The override only fires when the install-time percent knob
+	// is set to a positive value; a genuinely invalid percentage still surfaces as an error.
+	if errors.Is(err, errMaxSurgeZero) && surgeOverridePercent > 0 {
+		return minReplicas + drainSurgeOverrideAmount(minReplicas, surgeOverridePercent), true, nil
+	}
+
+	return minReplicas, false, err
+}
+
+// surgeFromValue converts a maxSurge int-or-string into an absolute replica count
+// (minReplicas + surge). A zero value yields errMaxSurgeZero; a string that is not a
+// valid "<n>%" percentage yields errInvalidPercentage.
+func surgeFromValue(surge intstr.IntOrString, minReplicas int32) (int32, error) {
 	if surge.Type == intstr.Int {
 		if surge.IntVal == 0 {
-			return minrepicas, errMaxSurgeZero
+			return minReplicas, errMaxSurgeZero
 		}
-		return minrepicas + surge.IntVal, nil
+		return minReplicas + surge.IntVal, nil
 	}
 
 	if surge.Type == intstr.String {
 		percentageStr := strings.TrimSuffix(surge.StrVal, "%")
 		percentage, err := strconv.Atoi(percentageStr)
 		if err != nil {
-			return minrepicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
+			return minReplicas, fmt.Errorf("%w: %q: %w", errInvalidPercentage, surge.StrVal, err)
 		}
 		if percentage == 0 {
-			return minrepicas, errMaxSurgeZero
+			return minReplicas, errMaxSurgeZero
 		}
-		return minrepicas + int32(math.Ceil((float64(minrepicas)*float64(percentage))/100.0)), nil
+		return minReplicas + int32(math.Ceil((float64(minReplicas)*float64(percentage))/100.0)), nil
 	}
 
 	// Unreachable for well-formed intstr values, but handle gracefully
-	return minrepicas, errMaxSurgeZero
+	return minReplicas, errMaxSurgeZero
+}
+
+// drainSurgeOverrideAmount returns the extra replicas to add during a drain when the
+// zero-maxSurge override fires: ceil(percent * minReplicas / 100), floored at 1 so the
+// override always yields at least one surge replica.
+func drainSurgeOverrideAmount(minReplicas int32, percent int) int32 {
+	amount := int32(math.Ceil(float64(minReplicas) * float64(percent) / 100.0))
+	if amount < 1 {
+		amount = 1
+	}
+	return amount
 }

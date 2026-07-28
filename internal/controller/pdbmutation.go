@@ -49,9 +49,10 @@ import (
 )
 
 const (
-	// AnnotationOriginalPDBSpec stores the JSON-serialized partner PDB spec to
-	// restore on revert (snapshot S). Its presence is the single source of truth
-	// for "this PDB is mutated by us".
+	// AnnotationOriginalPDBSpec stores the JSON snapshot of the partner's original
+	// disruption fields (minAvailable/maxUnavailable) to restore on revert
+	// (snapshot S). Its presence is the single source of truth for "this PDB is
+	// mutated by us".
 	AnnotationOriginalPDBSpec = "eviction-autoscaler.azure.com/original-pdb-spec"
 
 	// AnnotationMutatedAt stores the RFC3339 timestamp of the first mutation.
@@ -142,17 +143,34 @@ func pdbCarriesFloor(pdb *policyv1.PodDisruptionBudget, floor int32) bool {
 	return ma.Type == intstr.Int && ma.IntVal == floor
 }
 
-// snapshotPDBSpec captures the PDB's current spec as the restore snapshot S and
-// stamps the mutation time (only stamped on the first snapshot, so the stale
-// window measures from the original mutation, not from a mid-drain refresh).
+// pdbFloorSnapshot is the restore snapshot S: only the two mutually-exclusive
+// disruption fields the controller ever mutates. Storing just these — instead of
+// the whole PodDisruptionBudgetSpec — keeps the annotation small and, more
+// importantly, means restore never reverts a partner's concurrent change to a
+// field we don't manage (Selector, UnhealthyPodEvictionPolicy): our re-snapshot
+// guard (pdbCarriesFloor) only detects changes to the floor fields, so a partner
+// edit to another field while our pin is intact would otherwise be silently
+// rolled back on restore.
+type pdbFloorSnapshot struct {
+	MinAvailable   *intstr.IntOrString `json:"minAvailable,omitempty"`
+	MaxUnavailable *intstr.IntOrString `json:"maxUnavailable,omitempty"`
+}
+
+// snapshotPDBSpec captures the partner's disruption fields as the restore
+// snapshot S and stamps the mutation time (only stamped on the first snapshot, so
+// the stale window measures from the original mutation, not a mid-drain refresh).
 //
 // Callers must only invoke this when the current spec is the partner's intent
 // (i.e. not already our pinned floor), otherwise S would capture our own
 // mutation. The reconcile loop guarantees this via pdbCarriesFloor.
 func snapshotPDBSpec(pdb *policyv1.PodDisruptionBudget) error {
-	specBytes, err := json.Marshal(pdb.Spec)
+	snap := pdbFloorSnapshot{
+		MinAvailable:   pdb.Spec.MinAvailable,
+		MaxUnavailable: pdb.Spec.MaxUnavailable,
+	}
+	specBytes, err := json.Marshal(snap)
 	if err != nil {
-		return fmt.Errorf("snapshotPDBSpec: marshal spec: %w", err)
+		return fmt.Errorf("snapshotPDBSpec: marshal snapshot: %w", err)
 	}
 	if pdb.Annotations == nil {
 		pdb.Annotations = map[string]string{}
@@ -199,19 +217,25 @@ func pinnedFloorFromPDB(pdb *policyv1.PodDisruptionBudget) (int32, bool) {
 	return int32(f), true
 }
 
-// restorePDBSpec restores the snapshotted spec S onto the PDB and clears our
-// annotations. Returns false (no change) if the PDB is not mutated. Returns an
+// restorePDBSpec restores the snapshotted disruption fields S onto the PDB and
+// clears our annotations. Only minAvailable/maxUnavailable are written — the
+// only fields we mutate — so a partner's concurrent edits to other spec fields
+// are preserved. Returns false (no change) if the PDB is not mutated. Returns an
 // error only if the snapshot is corrupt — the caller should surface it so the
 // mutated spec is left in place for an operator rather than silently dropped.
 func restorePDBSpec(pdb *policyv1.PodDisruptionBudget) (bool, error) {
 	if !isMutated(pdb) {
 		return false, nil
 	}
-	var origSpec policyv1.PodDisruptionBudgetSpec
-	if err := json.Unmarshal([]byte(pdb.Annotations[AnnotationOriginalPDBSpec]), &origSpec); err != nil {
+	var snap pdbFloorSnapshot
+	if err := json.Unmarshal([]byte(pdb.Annotations[AnnotationOriginalPDBSpec]), &snap); err != nil {
 		return false, fmt.Errorf("restorePDBSpec: unmarshal snapshot: %w", err)
 	}
-	pdb.Spec = origSpec
+	// Write both fields so the partner's original (min- OR max-based) disruption
+	// budget is restored exactly; they are mutually exclusive, so at most one is
+	// non-nil in a valid snapshot.
+	pdb.Spec.MinAvailable = snap.MinAvailable
+	pdb.Spec.MaxUnavailable = snap.MaxUnavailable
 	delete(pdb.Annotations, AnnotationOriginalPDBSpec)
 	delete(pdb.Annotations, AnnotationMutatedAt)
 	delete(pdb.Annotations, AnnotationPinnedFloor)

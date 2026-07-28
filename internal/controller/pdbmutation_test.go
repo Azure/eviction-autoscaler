@@ -172,6 +172,30 @@ var _ = Describe("snapshot + restore round-trip", func() {
 		Expect(changed).To(BeFalse())
 	})
 
+	It("preserves a partner's concurrent change to a non-floor field on restore", func() {
+		orig := pdbWithMaxUnavailable(intstr.FromInt32(1))
+		orig.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "old"}}
+
+		Expect(snapshotPDBSpec(orig)).To(Succeed())
+		pinPDBFloor(orig, 101)
+		Expect(pdbCarriesFloor(orig, 101)).To(BeTrue())
+
+		// Partner edits a non-floor field (selector) mid-drain while our floor pin
+		// is intact. The re-snapshot guard keys on the floor fields, so this does
+		// NOT re-snapshot — the surgical restore must not revert it.
+		orig.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"app": "new"}}
+
+		changed, err := restorePDBSpec(orig)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(changed).To(BeTrue())
+		// Disruption budget restored to the partner's original...
+		Expect(orig.Spec.MinAvailable).To(BeNil())
+		Expect(orig.Spec.MaxUnavailable).NotTo(BeNil())
+		Expect(orig.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+		// ...but the partner's newer selector is preserved, not reverted.
+		Expect(orig.Spec.Selector.MatchLabels).To(HaveKeyWithValue("app", "new"))
+	})
+
 	It("returns an error for a corrupt snapshot", func() {
 		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
 		pdb.Annotations = map[string]string{AnnotationOriginalPDBSpec: "{not-json"}

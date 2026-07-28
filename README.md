@@ -607,7 +607,7 @@ of pods required healthy.
 
 | Item | Where | Purpose |
 |---|---|---|
-| `eviction-autoscaler.azure.com/original-pdb-spec` | PDB annotation | JSON snapshot of the partner's spec, restored on revert |
+| `eviction-autoscaler.azure.com/original-pdb-spec` | PDB annotation | JSON snapshot of the partner's original disruption fields (`minAvailable`/`maxUnavailable`), restored on revert |
 | `eviction-autoscaler.azure.com/mutated-at` | PDB annotation | Mutation timestamp, used by the stale-window backstop |
 | `eviction-autoscaler.azure.com/pinned-floor` | PDB annotation | The pinned floor `F` (durable copy, survives a lost CR status write) |
 | `pinnedPDBFloor` | EvictionAutoScaler `.status` | The absolute floor `F`, captured once and held for the drain |

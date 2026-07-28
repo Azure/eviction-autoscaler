@@ -40,8 +40,12 @@ type deploymentConfig struct {
 	Namespace      string
 	Replicas       int32
 	MaxUnavailable int
-	Annotations    map[string]string
-	CPURequest     string // optional, e.g. "10m"
+	// MaxSurge, when non-nil, pins the rollout's rollingUpdate.maxSurge. Use a pointer so
+	// that leaving it unset preserves Kubernetes' default (25%); set it to 0 to exercise
+	// the zero-maxSurge path.
+	MaxSurge    *int
+	Annotations map[string]string
+	CPURequest  string // optional, e.g. "10m"
 }
 
 // createDeployment creates a deployment with the given configuration
@@ -51,6 +55,11 @@ func createDeployment(cfg deploymentConfig) error {
 		maxUnavailable = "0"
 	} else {
 		maxUnavailable = fmt.Sprintf("%d", cfg.MaxUnavailable)
+	}
+
+	var maxSurge string
+	if cfg.MaxSurge != nil {
+		maxSurge = fmt.Sprintf("%d", *cfg.MaxSurge)
 	}
 
 	tmpl := `apiVersion: apps/v1
@@ -70,6 +79,9 @@ spec:
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: {{.MaxUnavailable}}
+{{- if .MaxSurge}}
+      maxSurge: {{.MaxSurge}}
+{{- end}}
   selector:
     matchLabels:
       app: {{.Name}}
@@ -98,6 +110,7 @@ spec:
 		Namespace      string
 		Replicas       int32
 		MaxUnavailable string
+		MaxSurge       string
 		Annotations    map[string]string
 		CPURequest     string
 	}{
@@ -105,6 +118,7 @@ spec:
 		Namespace:      cfg.Namespace,
 		Replicas:       cfg.Replicas,
 		MaxUnavailable: maxUnavailable,
+		MaxSurge:       maxSurge,
 		Annotations:    cfg.Annotations,
 		CPURequest:     cfg.CPURequest,
 	}

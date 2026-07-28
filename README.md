@@ -154,6 +154,7 @@ az k8s-extension create \
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
+- `controllerConfig.surgeOverride.maxPercent` - Fleet-wide, install-time percent used to override a zero drain-time surge (default: 0, disabled). See [Zero-maxSurge override](#zero-maxsurge-override) below.
 
 **Common Configuration Combinations:**
 
@@ -239,6 +240,57 @@ If you want a PDB for such a deployment, you can either:
 - Manually create and manage the PDB yourself
 
 This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
+
+### Zero-maxSurge Override
+
+During a drain, eviction-autoscaler surges a workload by its rollout `maxSurge` so evicted pods have somewhere to land. When a workload's `maxSurge` resolves to `0` — an explicit `maxSurge: 0`, a `Recreate` strategy, or an unset `RollingUpdate` — there is no headroom to surge and the controller degrades instead of scaling up.
+
+The **zero-maxSurge override** is a fleet-wide, install-time knob that lets the controller surge such workloads anyway. It is controlled by a single percent value and is **disabled by default**:
+
+- `controllerConfig.surgeOverride.maxPercent` (env `SURGE_OVERRIDE_MAX_PERCENT`) — a positive integer percent. Default `0` (disabled).
+
+When set to a positive percent, any workload whose `maxSurge` resolves to `0` is surged during a drain by `ceil(maxPercent × minReplicas / 100)` replicas (floored at 1) instead of degrading. Workloads with a non-zero `maxSurge` are never affected — the override only supplies a ceiling where there was none, and never caps an admission-validated `maxSurge`. Left at `0`, the controller keeps today's behavior and degrades on a zero `maxSurge`.
+
+For example, to surge zero-`maxSurge` workloads by 25% of their min replicas during a drain:
+
+```bash
+az k8s-extension create \
+    ... \
+    --configuration-settings controllerConfig.surgeOverride.maxPercent=25
+```
+
+#### How the surge amount is computed
+
+During a drain the controller raises the workload's replica ceiling to `minReplicas + surge`, where:
+
+- For a **non-zero `maxSurge`**, `surge` is the workload's own `maxSurge` (an integer is used as-is; a percentage is `ceil(maxSurge% × minReplicas / 100)`). The override never touches these workloads.
+- For a **zero `maxSurge`** with the override enabled, `surge = ceil(maxPercent × minReplicas / 100)`, floored at `1` so at least one extra pod is always added.
+
+Worked examples with `maxPercent = 25`:
+
+| Workload `maxSurge` | `minReplicas` | Override applies? | Surge added | Scaled-up target |
+|---|---|---|---|---|
+| `2` (integer)   | 10 | no  | 2 (workload's own) | 12 |
+| `50%`           | 10 | no  | 5 (`ceil(50% × 10)`) | 15 |
+| `0`             | 20 | yes | 5 (`ceil(25% × 20)`) | 25 |
+| `0`             | 10 | yes | 3 (`ceil(25% × 10) = 2.5 → 3`) | 13 |
+| `0`             | 1  | yes | 1 (`ceil(25% × 1) = 0.25 → 1`, floored) | 2 |
+| `Recreate` / unset `RollingUpdate` | 8 | yes | 2 (`ceil(25% × 8)`) | 10 |
+| `0`             | 20 | **no** (`maxPercent=0`) | — (degrades, no scale-up) | — |
+
+How `maxPercent` changes the surge for a `maxSurge: 0` workload with `minReplicas = 12`:
+
+| `maxPercent` | Surge added | Scaled-up target |
+|---|---|---|
+| `0`   | disabled — controller degrades | — |
+| `10`  | 2 (`ceil(10% × 12) = 1.2 → 2`) | 14 |
+| `25`  | 3 (`ceil(25% × 12) = 3.0`) | 15 |
+| `50`  | 6 (`ceil(50% × 12) = 6.0`) | 18 |
+| `100` | 12 (`ceil(100% × 12)`) | 24 |
+
+The scaled-up replicas are reverted back to `minReplicas` once the drain completes and the PDB again allows disruptions.
+
+> **Note:** Optionally set `controllerConfig.eventRecording.enabled=true` (env `ENABLE_EVENT_RECORDING`) to emit a `DrainSurgeOverride` Kubernetes event whenever the override raises the surge ceiling for a workload.
 
 ### Namespace Control: enabled_by_default Configuration
 

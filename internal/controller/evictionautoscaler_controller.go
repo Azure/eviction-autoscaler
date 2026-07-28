@@ -226,18 +226,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// The workload's maxSurge resolved to 0 and the fleet-wide override raised the
 		// drain-time ceiling. Surface it so operators can see we scaled a workload whose
-		// author pinned maxSurge: 0. The event only fires when ENABLE_EVENT_RECORDING wired
-		// a Recorder.
-		if overrideApplied {
-			logger.Info("Zero-maxSurge override raised drain-time surge ceiling",
-				"pdb", pdb.Name, "target", EvictionAutoScaler.Spec.TargetName,
-				"surgeOverrideMaxPercent", r.SurgeOverrideMaxPercent, "maxSurgeTarget", maxSurgeTarget)
-			if r.Recorder != nil {
-				r.Recorder.Eventf(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride",
-					"maxSurge resolved to 0; overriding drain-time surge to %d (%d%% of minReplicas %d)",
-					maxSurgeTarget, r.SurgeOverrideMaxPercent, EvictionAutoScaler.Status.MinReplicas)
-			}
-		}
+		// author pinned maxSurge: 0.
+		r.recordDrainSurgeOverride(ctx, overrideApplied, pdb, target, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Status.MinReplicas, maxSurgeTarget)
 
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
@@ -308,6 +298,24 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+}
+
+// recordDrainSurgeOverride emits a structured log (and, when a Recorder is wired via
+// ENABLE_EVENT_RECORDING, a DrainSurgeOverride event) when the zero-maxSurge install
+// override raised the drain-time surge ceiling for a workload. It is a no-op unless the
+// override actually supplied the ceiling.
+func (r *EvictionAutoScalerReconciler) recordDrainSurgeOverride(ctx context.Context, overrideApplied bool, pdb *policyv1.PodDisruptionBudget, target Surger, targetName string, minReplicas, maxSurgeTarget int32) {
+	if !overrideApplied {
+		return
+	}
+	log.FromContext(ctx).Info("Zero-maxSurge override raised drain-time surge ceiling",
+		"pdb", pdb.Name, "target", targetName,
+		"surgeOverrideMaxPercent", r.SurgeOverrideMaxPercent, "maxSurgeTarget", maxSurgeTarget)
+	if r.Recorder != nil {
+		r.Recorder.Eventf(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride",
+			"maxSurge resolved to 0; overriding drain-time surge to %d (%d%% of minReplicas %d)",
+			maxSurgeTarget, r.SurgeOverrideMaxPercent, minReplicas)
+	}
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {

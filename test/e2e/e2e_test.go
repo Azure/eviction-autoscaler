@@ -1665,6 +1665,182 @@ var _ = Describe("controller", Ordered, func() {
 			deleteDeployment(depName, aksNs)
 		})
 
+		// Test: zero-maxSurge install override. A deployment pinned to maxSurge=0 would
+		// normally degrade during a drain (no headroom to surge). With
+		// controllerConfig.surgeOverride.maxPercent set to a positive percent, the
+		// controller instead surges it by ceil(percent * minReplicas / 100) (floored at 1).
+		It("should surge a zero-maxSurge deployment when surgeOverride.maxPercent is set", func() {
+			ctx := context.Background()
+			testNs := "test-surge-override"
+			depName := "nginx-zero-surge"
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd) // ignore error if already uncordoned
+			}
+
+			By("reinstalling eviction-autoscaler with surgeOverride.maxPercent=25")
+			cmd = exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+			time.Sleep(10 * time.Second)
+
+			projectimage := "evictionautoscaler:e2etest"
+			imgParts := strings.Split(projectimage, ":")
+			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+			repo := imgParts[0]
+			tag := imgParts[1]
+			helmArgs := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				"--set", "controllerConfig.namespaces.enabledByDefault=true",
+				"--set", "controllerConfig.surgeOverride.maxPercent=25",
+			}
+			cmd = exec.Command("helm", helmArgs...)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("waiting for the controller deployment to be ready")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler", "--namespace", namespace, "--timeout=300s")
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating test namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica, maxUnavailable=0 and maxSurge=0")
+			zeroSurge := 0
+			err = createDeployment(deploymentConfig{
+				Name:           depName,
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+				MaxSurge:       &zeroSurge,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment(depName, testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+			fmt.Printf("%s pod running on node %s\n", depName, nodeName)
+
+			By("cordoning the node to trigger the eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the zero-maxSurge deployment is surged to 2 replicas via the override")
+			// minReplicas=1, maxPercent=25 => ceil(0.25*1)=1 (floored) => surge ceiling = 2.
+			// Without the override a maxSurge=0 deployment would degrade and stay at 1.
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas < 2 {
+					return fmt.Errorf("expected deployment to surge to 2 replicas, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; !ok {
+					return fmt.Errorf("expected evictionSurgeReplicas annotation to be set")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the EvictionAutoScaler did not go Degraded for the zero-maxSurge target")
+			var eas types.EvictionAutoScaler
+			err = clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &eas)
+			Expect(err).NotTo(HaveOccurred())
+			for _, cond := range eas.Status.Conditions {
+				if cond.Type == "Degraded" && cond.Status == v1.ConditionTrue {
+					Fail(fmt.Sprintf("EvictionAutoScaler unexpectedly Degraded: %s", cond.Message))
+				}
+			}
+
+			By("draining the node to trigger evictions")
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+			drain := func() error {
+				var podList corev1.PodList
+				if err := clientset.List(ctx, &podList, client.InNamespace(testNs),
+					client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+					return err
+				}
+				for _, p := range podList.Items {
+					if err := evictionClient.PolicyV1().Evictions(p.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: p.ObjectMeta,
+					}); err != nil {
+						return fmt.Errorf("failed to evict %s: %w", p.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment reverts to 1 replica and the surge annotation is removed")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
+					return fmt.Errorf("expected deployment to revert to 1 replica, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations["evictionSurgeReplicas"]; ok {
+					return fmt.Errorf("expected evictionSurgeReplicas annotation to be removed")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning the node")
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("cleaning up surge override test resources")
+			deleteDeployment(depName, testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
+
 		It("should reject an AKS-owned namespace in actionedNamespaces and refuse to start", func() {
 			ctx := context.Background()
 			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))

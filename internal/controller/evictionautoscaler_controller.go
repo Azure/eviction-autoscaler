@@ -39,20 +39,18 @@ type EvictionAutoScalerReconciler struct {
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
 	Filter   filter
-	// OverrideZeroMaxSurge lets the controller surge a workload whose maxSurge
+	// ZeroSurgeOverride lets the controller surge a workload whose maxSurge
 	// resolves to 0 — an explicit maxSurge: 0 (common under safe-deployment
-	// guidance) or a Recreate strategy. When false (the default), such a workload
-	// cannot surge and the autoscaler degrades — today's behavior. It is a
-	// fleet-wide opt-in set via the OVERRIDE_ZERO_MAXSURGE controller env var, so
-	// Cosmic — not individual workload owners — decides whether it applies.
-	OverrideZeroMaxSurge bool
-	// SurgeOverrideMaxPercent is the fleet-wide drain surge, as a percent of
-	// minReplicas (rounded up, floored at 1), applied only when OverrideZeroMaxSurge
-	// is on and the workload's maxSurge resolves to 0. The actual surge stays
-	// demand-driven (minReplicas + displaced) and is capped at this amount, so
-	// larger drains proceed in waves. Set via the SURGE_OVERRIDE_MAX_PERCENT env var
-	// (default 25); a non-positive value disables the override.
-	SurgeOverrideMaxPercent int32
+	// guidance) or a Recreate strategy — which otherwise cannot surge and would
+	// degrade. When non-nil, its value is applied as the drain surge for such
+	// workloads: an int-or-percentage resolved against minReplicas, mirroring
+	// Kubernetes' own maxSurge semantics — e.g. "25%" (rounded up) or an absolute
+	// "10". The actual surge stays demand-driven (minReplicas + displaced) and is
+	// capped at this amount, so larger drains proceed in waves. It is a fleet-wide,
+	// install-time knob (the ZERO_SURGE_OVERRIDE controller env var); nil (the
+	// default) preserves today's degrade-on-zero behavior, so Cosmic — not
+	// individual workload owners — decides whether it applies.
+	ZeroSurgeOverride *intstr.IntOrString
 }
 
 const cooldown = 1 * time.Minute
@@ -193,7 +191,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
 	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
 	// we fall through to the cooldown/scale-down path — which is correct.
-	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, r.OverrideZeroMaxSurge, r.SurgeOverrideMaxPercent)
+	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, r.ZeroSurgeOverride)
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
@@ -234,7 +232,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// rollout maxSurge. Emitted only when a surge actually fires; the Kubernetes
 		// event recorder aggregates repeats across reconciles.
 		maxSurge := target.GetMaxSurge()
-		if r.OverrideZeroMaxSurge && isZeroSurge(maxSurge) {
+		if r.ZeroSurgeOverride != nil && isZeroSurge(maxSurge) {
 			msg := fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
 				target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String())
 			logger.Info(msg, "surgeTarget", surgeTarget)
@@ -355,24 +353,46 @@ var (
 
 // calculateSurge returns the maximum replica count after surge (minReplicas + surge).
 // The surge amount is normally taken from the target's maxSurge. When maxSurge
-// resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy) and the fleet-wide
-// OverrideZeroMaxSurge flag is on, a fleet drain surge of zeroMaxSurgePercent of
-// minReplicas is applied instead of refusing to surge.
+// resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy) and a fleet-wide
+// zeroSurgeOverride is configured, that override — an int-or-percentage resolved
+// against minReplicas — is applied instead of refusing to surge.
 // The underlying error unwraps to a sentinel:
 //   - errMaxSurgeZero: the surge amount resolves to 0 and no override applies
 //   - errInvalidPercentage: percentage string could not be parsed or lacks a "%" suffix
 //   - errNegativeSurge: the surge amount is negative
-func calculateSurge(_ context.Context, target Surger, minReplicas int32, overrideZeroMaxSurge bool, zeroMaxSurgePercent int32) (int32, error) {
+func calculateSurge(_ context.Context, target Surger, minReplicas int32, zeroSurgeOverride *intstr.IntOrString) (int32, error) {
 	result, err := surgeFromValue(target.GetMaxSurge(), minReplicas)
-	// When the workload cannot surge on its own (maxSurge resolves to 0) and the
-	// fleet-wide override is enabled, substitute a fleet drain surge of
-	// zeroMaxSurgePercent of minReplicas. The actual surge stays demand-driven
+	// When the workload cannot surge on its own (maxSurge resolves to 0) and a
+	// fleet-wide override is configured, substitute the override surge (an
+	// int-or-percentage of minReplicas). The actual surge stays demand-driven
 	// (minReplicas + displaced) and is capped at this amount, so larger drains
 	// proceed in waves.
-	if errors.Is(err, errMaxSurgeZero) && overrideZeroMaxSurge && zeroMaxSurgePercent > 0 {
-		return surgeFromValue(intstr.FromString(fmt.Sprintf("%d%%", zeroMaxSurgePercent)), minReplicas)
+	if errors.Is(err, errMaxSurgeZero) && zeroSurgeOverride != nil {
+		return surgeFromValue(*zeroSurgeOverride, minReplicas)
 	}
 	return result, err
+}
+
+// ParseZeroSurgeOverride parses the fleet-wide zero-maxSurge override value (the
+// ZERO_SURGE_OVERRIDE controller env var). The value is an int-or-percentage
+// resolved against minReplicas at drain time, mirroring Kubernetes maxSurge — e.g.
+// "25%" or an absolute "10". An empty string, or a value that resolves to zero
+// ("0"/"0%"), returns (nil, nil) so the feature stays off; a negative or malformed
+// value returns an error so startup fails fast rather than misbehaving mid-drain.
+func ParseZeroSurgeOverride(raw string) (*intstr.IntOrString, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	v := intstr.Parse(raw)
+	// Validate against a representative base so a bad percentage/negative surfaces
+	// now rather than on the first drain; the base value itself is irrelevant.
+	switch _, err := surgeFromValue(v, 100); {
+	case errors.Is(err, errMaxSurgeZero):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
 }
 
 // isZeroSurge reports whether a maxSurge value resolves to no surge — an int 0 or

@@ -196,41 +196,19 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
-	// Parse OVERRIDE_ZERO_MAXSURGE environment variable (defaults to false if not set).
-	// Fleet-wide opt-in: when on, a workload whose maxSurge resolves to 0 (an explicit
-	// maxSurge: 0 or a Recreate strategy) is surged by SURGE_OVERRIDE_MAX_PERCENT of
-	// minReplicas during a drain instead of being unable to surge. When off, such a
-	// workload degrades as today. Strictly validated to "true"/"false"/empty so a typo
-	// (e.g. "yes") fails fast at startup rather than silently disabling the feature.
-	overrideZeroMaxSurge := false
-	switch v := os.Getenv("OVERRIDE_ZERO_MAXSURGE"); v {
-	case "", "false":
-		overrideZeroMaxSurge = false
-	case "true":
-		overrideZeroMaxSurge = true
-	default:
-		setupLog.Error(fmt.Errorf("invalid value %q for OVERRIDE_ZERO_MAXSURGE (must be \"true\" or \"false\")", v),
-			"Failed to parse OVERRIDE_ZERO_MAXSURGE env variable")
+	// Parse ZERO_SURGE_OVERRIDE environment variable (unset/empty ⇒ feature off).
+	// Fleet-wide, install-time knob: when set, a workload whose maxSurge resolves to
+	// 0 (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate) is
+	// surged by this value during a drain instead of degrading. The value is an
+	// int-or-percentage, mirroring Kubernetes maxSurge — "25%" of minReplicas
+	// (rounded up) or an absolute "10". A value that resolves to zero ("0"/"0%")
+	// leaves the feature off; a negative or malformed value fails fast at startup.
+	zeroSurgeOverride, zsErr := controllers.ParseZeroSurgeOverride(os.Getenv("ZERO_SURGE_OVERRIDE"))
+	if zsErr != nil {
+		setupLog.Error(zsErr, "Failed to parse ZERO_SURGE_OVERRIDE env variable")
 		os.Exit(1)
 	}
-	setupLog.Info("Zero-maxSurge override configuration", "overrideZeroMaxSurge", overrideZeroMaxSurge)
-
-	// Parse SURGE_OVERRIDE_MAX_PERCENT environment variable (defaults to 25 if not set).
-	// The fleet-wide drain surge, as a percent of minReplicas, applied when
-	// OVERRIDE_ZERO_MAXSURGE is on and a workload's maxSurge resolves to 0. Must be a
-	// positive integer (e.g. set to 10 at install time). The actual surge stays
-	// demand-driven and is capped at this amount, so larger drains proceed in waves.
-	surgeOverrideMaxPercent := int32(25)
-	if v := os.Getenv("SURGE_OVERRIDE_MAX_PERCENT"); v != "" {
-		p, err := strconv.Atoi(v)
-		if err != nil || p <= 0 {
-			setupLog.Error(fmt.Errorf("SURGE_OVERRIDE_MAX_PERCENT must be a positive integer, got %q", v),
-				"Failed to parse SURGE_OVERRIDE_MAX_PERCENT env variable")
-			os.Exit(1)
-		}
-		surgeOverrideMaxPercent = int32(p)
-	}
-	setupLog.Info("Surge override max percent configuration", "surgeOverrideMaxPercent", surgeOverrideMaxPercent)
+	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
 	// Parse ENABLE_EVENT_RECORDING environment variable (defaults to false if not set).
 	// Controls whether the controller emits Kubernetes events at all — an
@@ -255,8 +233,7 @@ func main() {
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		Filter:                  nsfilter,
-		OverrideZeroMaxSurge:    overrideZeroMaxSurge,
-		SurgeOverrideMaxPercent: surgeOverrideMaxPercent,
+		ZeroSurgeOverride:       zeroSurgeOverride,
 	}
 	// Only wire the event recorder when event recording is enabled; otherwise the
 	// nil Recorder disables all event emission via the existing guards.

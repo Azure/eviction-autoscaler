@@ -355,8 +355,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				Scheme:                  k8sClient.Scheme(),
 				Filter:                  &evictionTestFilter{},
 				Recorder:                recorder,
-				OverrideZeroMaxSurge:    true,
-				SurgeOverrideMaxPercent: 25,
+				ZeroSurgeOverride:       overridePercent("25%"),
 			}
 
 			node := &corev1.Node{
@@ -403,8 +402,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				Client:                  k8sClient,
 				Scheme:                  k8sClient.Scheme(),
 				Filter:                  &evictionTestFilter{},
-				OverrideZeroMaxSurge:    true,
-				SurgeOverrideMaxPercent: 25,
+				ZeroSurgeOverride:       overridePercent("25%"),
 			}
 
 			node := &corev1.Node{
@@ -446,7 +444,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				Scheme:               k8sClient.Scheme(),
 				Filter:               &evictionTestFilter{},
 				Recorder:             recorder,
-				OverrideZeroMaxSurge: false, // gate OFF: the annotation must be a no-op
+				ZeroSurgeOverride:    nil, // no override configured: must be a no-op
 			}
 
 			node := &corev1.Node{
@@ -498,8 +496,7 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				Client:                  k8sClient,
 				Scheme:                  k8sClient.Scheme(),
 				Filter:                  &evictionTestFilter{},
-				OverrideZeroMaxSurge:    true,
-				SurgeOverrideMaxPercent: 25,
+				ZeroSurgeOverride:       overridePercent("25%"),
 			}
 
 			node := &corev1.Node{

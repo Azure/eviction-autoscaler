@@ -252,7 +252,6 @@ Eviction autoscaler provides flexible namespace-level control with two operation
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
 - **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves.
-- **`ENABLE_EVENT_RECORDING`**: Enable emission of Kubernetes events by the controller (default: `false`). An installation-time observability decision, orthogonal to feature flags — a single switch for all controller events (e.g. `DrainSurgeOverride`). When `false`, no events are emitted; structured logs and metrics remain the primary signal. Must be `true` or `false`.
 
 #### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
 
@@ -562,7 +561,7 @@ It is configured entirely on the controller — there is **no per-workload annot
 
 - **`ZERO_SURGE_OVERRIDE`** — a single knob whose value is the drain surge applied when the override fires. It is an **int-or-percentage**, mirroring Kubernetes' own `maxSurge`: `"25%"` (a percent of `minReplicas`, rounded up) or `"10"` (an absolute number of extra pods). Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature **off** (default), preserving today's degrade behavior. A negative or malformed value fails fast at startup. Set it (e.g. `"10%"`) at install time to enable.
 
-The surge stays **demand-driven**: the actual scale-up is `minReplicas + displaced`, capped at `minReplicas +` the override value, so a drain larger than the cap simply proceeds in **waves**. When the override drives a surge, the controller logs a structured line and — when event recording is enabled (`ENABLE_EVENT_RECORDING=true`) — emits a `DrainSurgeOverride` event on the target workload.
+The surge stays **demand-driven**: the actual scale-up is `minReplicas + displaced`, capped at `minReplicas +` the override value, so a drain larger than the cap simply proceeds in **waves**. When the override drives a surge, the controller emits a structured log line. Workloads whose rollout `maxSurge` resolves to 0 are also tracked by the `eviction_autoscaler_zero_maxsurge_workloads` metric (labels `namespace`, `name`), so operators can see how many such workloads exist in the cluster.
 
 ```yaml
 # No workload annotation is required. Enable fleet-wide on the controller:

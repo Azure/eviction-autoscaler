@@ -33,6 +33,19 @@ var (
 		[]string{"namespace", "can_create_pdb"},
 	)
 
+	// ZeroMaxSurgeWorkloadGauge tracks workloads whose rollout maxSurge resolves to 0
+	// (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate), set to
+	// 1 per such workload and 0 otherwise, so the series sum is the count of maxSurge:0
+	// workloads currently seen in the cluster.
+	// Labels: namespace, name
+	ZeroMaxSurgeWorkloadGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_zero_maxsurge_workloads",
+			Help: "Workloads whose rollout maxSurge resolves to 0, seen by the eviction autoscaler",
+		},
+		[]string{"namespace", "name"},
+	)
+
 	// PDBGauge tracks the number of PDBs seen by the controller
 	// Labels: namespace, created_by_us (true/false)
 	PDBGauge = prometheus.NewGaugeVec(
@@ -191,6 +204,7 @@ func init() {
 	// Register metrics with controller-runtime's registry
 	ctrlmetrics.Registry.MustRegister(
 		DeploymentGauge,
+		ZeroMaxSurgeWorkloadGauge,
 		PDBGauge,
 		EvictionCounter,
 		BlockedEvictionCounter,

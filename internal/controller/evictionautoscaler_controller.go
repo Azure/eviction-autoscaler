@@ -14,7 +14,6 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -135,6 +134,15 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
+	// Track whether this workload's rollout maxSurge resolves to 0 (an explicit
+	// maxSurge: 0, a Recreate strategy, or an unset RollingUpdate). Set per reconcile
+	// so the series sum reflects the current count of maxSurge:0 workloads in the cluster.
+	if isZeroSurge(target.GetMaxSurge()) {
+		metrics.ZeroMaxSurgeWorkloadGauge.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(1)
+	} else {
+		metrics.ZeroMaxSurgeWorkloadGauge.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(0)
+	}
+
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
 
@@ -188,14 +196,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		"evictionTime", EvictionAutoScaler.Spec.LastEviction.EvictionTime)
 	metrics.EvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace).Inc()
 
-	// surgeTarget = minReplicas + displaced, capped at minReplicas + maxSurge.
-	// If displaced == 0 the formula yields minReplicas, so no scale-up fires and
-	// we fall through to the cooldown/scale-down path — which is correct.
+	// calculateSurge returns the surge ceiling: minReplicas + maxSurge, or — when maxSurge
+	// resolves to 0 and ZeroSurgeOverride is set — minReplicas + the override. surgeTarget
+	// below is demand-driven (minReplicas + displaced), clamped to this ceiling.
 	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, r.ZeroSurgeOverride)
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
-			// Surge resolves to 0 (maxSurge=0/unset or a zero override) — can't surge, degrade.
+			// maxSurge resolves to 0 and no ZeroSurgeOverride set — nothing to surge, degrade.
 			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		default:
@@ -229,16 +237,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// Surface when the fleet-wide zero-maxSurge override drives a surge — we are
 		// deliberately surging a workload whose author set an explicit (often 0)
-		// rollout maxSurge. Emitted only when a surge actually fires; the Kubernetes
-		// event recorder aggregates repeats across reconciles.
+		// rollout maxSurge. Logged only when a surge actually fires.
 		maxSurge := target.GetMaxSurge()
 		if r.ZeroSurgeOverride != nil && isZeroSurge(maxSurge) {
-			msg := fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
-				target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String())
-			logger.Info(msg, "surgeTarget", surgeTarget)
-			if r.Recorder != nil {
-				r.Recorder.Event(target.Obj(), corev1.EventTypeNormal, "DrainSurgeOverride", msg)
-			}
+			logger.Info(fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
+				target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String()), "surgeTarget", surgeTarget)
 		}
 
 		// Track blocked eviction if the PDB is blocking the eviction

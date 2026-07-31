@@ -137,11 +137,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Track whether this workload's rollout maxSurge resolves to 0 (an explicit
 	// maxSurge: 0, a Recreate strategy, or an unset RollingUpdate). Set per reconcile
 	// so the series sum reflects the current count of maxSurge:0 workloads in the cluster.
-	if isZeroSurge(target.GetMaxSurge()) {
-		metrics.ZeroMaxSurgeWorkloadGauge.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(1)
-	} else {
-		metrics.ZeroMaxSurgeWorkloadGauge.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(0)
-	}
+	recordZeroMaxSurge(target, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName)
 
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
@@ -238,11 +234,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Surface when the fleet-wide zero-maxSurge override drives a surge — we are
 		// deliberately surging a workload whose author set an explicit (often 0)
 		// rollout maxSurge. Logged only when a surge actually fires.
-		maxSurge := target.GetMaxSurge()
-		if r.ZeroSurgeOverride != nil && isZeroSurge(maxSurge) {
-			logger.Info(fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
-				target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String()), "surgeTarget", surgeTarget)
-		}
+		r.logZeroSurgeOverride(ctx, target, surgeTarget)
 
 		// Track blocked eviction if the PDB is blocking the eviction
 		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
@@ -384,18 +376,39 @@ func calculateSurge(_ context.Context, target Surger, minReplicas int32, zeroSur
 // value returns an error so startup fails fast rather than misbehaving mid-drain.
 func ParseZeroSurgeOverride(raw string) (*intstr.IntOrString, error) {
 	if raw == "" {
-		return nil, nil
+		return nil, nil //nolint:nilnil // a nil pointer signals the override is disabled; not an error
 	}
 	v := intstr.Parse(raw)
 	// Validate against a representative base so a bad percentage/negative surfaces
 	// now rather than on the first drain; the base value itself is irrelevant.
 	switch _, err := surgeFromValue(v, 100); {
 	case errors.Is(err, errMaxSurgeZero):
-		return nil, nil
+		return nil, nil //nolint:nilnil // a value that resolves to zero disables the override; not an error
 	case err != nil:
 		return nil, err
 	}
 	return &v, nil
+}
+
+// recordZeroMaxSurge sets the zero-maxSurge workload gauge for the target: 1 when its
+// rollout maxSurge resolves to 0 (an explicit maxSurge: 0, a Recreate strategy, or an
+// unset RollingUpdate), else 0 — so the series sum is the cluster-wide count.
+func recordZeroMaxSurge(target Surger, namespace, name string) {
+	value := 0.0
+	if isZeroSurge(target.GetMaxSurge()) {
+		value = 1
+	}
+	metrics.ZeroMaxSurgeWorkloadGauge.WithLabelValues(namespace, name).Set(value)
+}
+
+// logZeroSurgeOverride emits a structured log when the fleet-wide zero-maxSurge override
+// drives a surge — i.e. the target's rollout maxSurge resolves to 0 and an override is set.
+func (r *EvictionAutoScalerReconciler) logZeroSurgeOverride(ctx context.Context, target Surger, surgeTarget int32) {
+	maxSurge := target.GetMaxSurge()
+	if r.ZeroSurgeOverride != nil && isZeroSurge(maxSurge) {
+		log.FromContext(ctx).Info(fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
+			target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String()), "surgeTarget", surgeTarget)
+	}
 }
 
 // isZeroSurge reports whether a maxSurge value resolves to no surge — an int 0 or

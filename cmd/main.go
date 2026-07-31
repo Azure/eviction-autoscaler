@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -214,6 +215,22 @@ func main() {
 	}
 	setupLog.Info("PDB floor mutation configuration", "pdbFloorMutationEnabled", pdbFloorMutationEnabled)
 
+	// Parse PDB_MUTATION_STALE_WINDOW (defaults to DefaultStaleMutationWindow if unset).
+	// Bounds how long a PDB may stay mutated before the backstop restores it. Strictly
+	// validated — a malformed or non-positive duration fails fast at startup, matching
+	// ENABLE_PDB_FLOOR_MUTATION, rather than silently falling back to the default.
+	staleMutationWindow := controllers.DefaultStaleMutationWindow
+	if v := os.Getenv("PDB_MUTATION_STALE_WINDOW"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			setupLog.Error(fmt.Errorf("invalid value %q for PDB_MUTATION_STALE_WINDOW (must be a positive Go duration, e.g. \"2h\")", v),
+				"Failed to parse PDB_MUTATION_STALE_WINDOW env variable")
+			os.Exit(1)
+		}
+		staleMutationWindow = d
+	}
+	setupLog.Info("PDB mutation stale window configuration", "staleMutationWindow", staleMutationWindow)
+
 	// Parse ENABLE_EVENT_RECORDING environment variable (defaults to false if not set).
 	// Controls whether the controller emits Kubernetes events at all — an
 	// installation-time observability decision, orthogonal to feature flags. When off,
@@ -239,6 +256,7 @@ func main() {
 		Scheme:                  mgr.GetScheme(),
 		Filter:                  nsfilter,
 		PDBFloorMutationEnabled: pdbFloorMutationEnabled,
+		StaleMutationWindow:     staleMutationWindow,
 	}
 	// Only wire the event recorder when event recording is enabled; otherwise the
 	// nil Recorder disables all event emission via the existing guards.

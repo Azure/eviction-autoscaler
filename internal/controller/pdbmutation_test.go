@@ -32,34 +32,31 @@ var _ = Describe("isMutated", func() {
 })
 
 var _ = Describe("isMutationStale", func() {
-	var origWindow time.Duration
-	BeforeEach(func() { origWindow = staleMutationWindow; staleMutationWindow = time.Hour })
-	AfterEach(func() { staleMutationWindow = origWindow })
-
+	const window = time.Hour
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	It("is false for an unmutated PDB", func() {
-		Expect(isMutationStale(pdbWithMaxUnavailable(intstr.FromInt32(1)), now)).To(BeFalse())
+		Expect(isMutationStale(pdbWithMaxUnavailable(intstr.FromInt32(1)), now, window)).To(BeFalse())
 	})
 	It("is true when mutated with no timestamp", func() {
 		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
 		pdb.Annotations = map[string]string{AnnotationOriginalPDBSpec: "{}"}
-		Expect(isMutationStale(pdb, now)).To(BeTrue())
+		Expect(isMutationStale(pdb, now, window)).To(BeTrue())
 	})
 	It("is true when the timestamp is malformed", func() {
 		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
 		pdb.Annotations = map[string]string{AnnotationOriginalPDBSpec: "{}", AnnotationMutatedAt: "not-a-time"}
-		Expect(isMutationStale(pdb, now)).To(BeTrue())
+		Expect(isMutationStale(pdb, now, window)).To(BeTrue())
 	})
 	It("is false within the window", func() {
 		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
 		pdb.Annotations = map[string]string{AnnotationOriginalPDBSpec: "{}", AnnotationMutatedAt: now.Add(-30 * time.Minute).Format(time.RFC3339)}
-		Expect(isMutationStale(pdb, now)).To(BeFalse())
+		Expect(isMutationStale(pdb, now, window)).To(BeFalse())
 	})
 	It("is true beyond the window", func() {
 		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
 		pdb.Annotations = map[string]string{AnnotationOriginalPDBSpec: "{}", AnnotationMutatedAt: now.Add(-2 * time.Hour).Format(time.RFC3339)}
-		Expect(isMutationStale(pdb, now)).To(BeTrue())
+		Expect(isMutationStale(pdb, now, window)).To(BeTrue())
 	})
 })
 

@@ -47,6 +47,10 @@ type EvictionAutoScalerReconciler struct {
 	// main.go so a misconfiguration fails fast at startup rather than silently
 	// disabling the feature.
 	PDBFloorMutationEnabled bool
+	// StaleMutationWindow bounds how long a PDB may stay mutated before the backstop
+	// restores it unconditionally. Set from PDB_MUTATION_STALE_WINDOW in main.go
+	// (defaulting to DefaultStaleMutationWindow); a zero value disables the backstop.
+	StaleMutationWindow time.Duration
 }
 
 const cooldown = 1 * time.Minute
@@ -132,7 +136,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Stale-window backstop: restore any PDB we left mutated longer than the
 	// stale window (e.g. the CR was force-deleted without the finalizer running).
-	if isMutationStale(pdb, time.Now()) {
+	if isMutationStale(pdb, time.Now(), r.StaleMutationWindow) {
 		logger.Info("PDB floor mutation is stale, restoring partner spec", "pdb", pdb.Name)
 		if err := r.revertPDBFloor(ctx, EvictionAutoScaler, pdb); err != nil {
 			return ctrl.Result{}, err
@@ -244,7 +248,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		}
 		if allowed {
 			logger.Info("Re-pinning PDB floor after partner change", "pdb", pdb.Name, "floor", pinnedFloor)
-			if _, _, err := r.ensurePDBFloor(ctx, EvictionAutoScaler, pdb, true); err != nil {
+			if _, _, err := r.ensurePDBFloor(ctx, EvictionAutoScaler, pdb); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -307,9 +311,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 		// Pin an absolute PDB floor before surging so the surge headroom converts
 		// into DisruptionsAllowed instead of being absorbed by a floor that tracks
-		// the surged replica count. Captured pre-surge (DesiredHealthy) and held.
-		// Requires the master flag AND the namespace opt-in; only a first capture
-		// at baseline replicas.
+		// the surged replica count. The floor is derived from the partner's PDB spec
+		// at the baseline replica count (Status.MinReplicas) and held for the whole
+		// drain. Requires the master flag AND the namespace opt-in.
 		var floor int32
 		var pinned bool
 		allowed, allowErr := r.pdbFloorMutationAllowed(ctx, EvictionAutoScaler.Namespace)
@@ -317,9 +321,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, allowErr
 		}
 		if allowed {
-			atBaseline := target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas
 			var pinErr error
-			floor, pinned, pinErr = r.ensurePDBFloor(ctx, EvictionAutoScaler, pdb, atBaseline)
+			floor, pinned, pinErr = r.ensurePDBFloor(ctx, EvictionAutoScaler, pdb)
 			if pinErr != nil {
 				logger.Error(pinErr, "failed to pin PDB floor before surge", "pdb", pdb.Name)
 				return ctrl.Result{}, pinErr
@@ -523,19 +526,19 @@ func calculateSurge(_ context.Context, target Surger, minrepicas int32) (int32, 
 // ensurePDBFloor pins the target PDB to an absolute minAvailable floor for the
 // duration of a drain so the surge headroom converts into DisruptionsAllowed.
 //
-// The floor F is captured once — from the PDB's pre-surge DesiredHealthy — and
-// then persisted on the CR status by the caller; on subsequent reconciles F is
-// read back from the status so it is never recomputed against surged replicas.
+// The floor F is captured once — derived from the partner's PDB spec at the
+// baseline replica count (Status.MinReplicas) — and then persisted on the CR
+// status by the caller; on subsequent reconciles F is read back from the status
+// so it is never recomputed against surged replicas.
 // The partner's current spec is snapshotted onto the PDB (so a mid-drain partner
 // change is preserved for revert) and the PDB is re-pinned whenever it no longer
 // carries F (partner-overwrite protection). A restore finalizer is added so the
 // partner PDB is restored even if the CR is deleted mid-drain.
 //
 // Returns the pinned floor, or (0,false,nil) if there is nothing safe to pin
-// (floor resolves to <= 0, or a first capture is requested when the target is
-// not at its baseline replica count), in which case the caller should not
-// record a floor.
-func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, atBaseline bool) (int32, bool, error) {
+// (the PDB expresses no availability requirement at baseline, so F resolves to
+// <= 0), in which case the caller should not record a floor.
+func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) (int32, bool, error) {
 	var floor int32
 	pinnedFloor, hasPinnedFloor := pinnedFloorFromPDB(pdb)
 	switch {
@@ -546,17 +549,23 @@ func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *
 	case eas.Status.PinnedPDBFloor != nil:
 		floor = *eas.Status.PinnedPDBFloor
 	default:
-		// First capture. DesiredHealthy is only the partner's true floor when the
-		// target is at its baseline replica count; if replicas are already surged
-		// (e.g. an overlapping drain), DesiredHealthy for a percentage PDB would be
-		// inflated. Refuse to capture an inflated floor.
-		if !atBaseline {
-			return 0, false, nil
+		// First capture: derive the floor synchronously from the partner's PDB spec
+		// at the baseline replica count (Status.MinReplicas). This mirrors what the
+		// built-in controller writes to Status.DesiredHealthy, but without depending
+		// on that asynchronously-populated field — which can lag or read 0 at the
+		// moment of the first surge and silently skip the pin. MinReplicas is held
+		// stable across the surge, so the derived floor stays correct even once
+		// replicas inflate.
+		// Limitation: for an autoscaler running above its min (MinReplicas < live
+		// replicas), the floor reflects the min rather than the elevated count.
+		dh, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
+		if err != nil {
+			return 0, false, err
 		}
-		floor = pdb.Status.DesiredHealthy
+		floor = dh
 	}
 	if floor <= 0 {
-		// Nothing to protect (e.g. DesiredHealthy not yet populated) — skip.
+		// PDB expresses no availability requirement at baseline — nothing to protect.
 		return 0, false, nil
 	}
 
@@ -585,6 +594,35 @@ func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *
 	return floor, true, nil
 }
 
+// desiredHealthyAt computes a PDB's desired-healthy count at a given replica count,
+// mirroring the built-in disruption controller: minAvailable (an int, or a percentage
+// of replicas rounded up), or replicas minus maxUnavailable (percentage rounded up),
+// clamped at zero. It lets the pinned floor be derived synchronously from the PDB spec
+// plus the baseline replica count, instead of the asynchronously-populated
+// Status.DesiredHealthy. A PDB expressing no budget yields 0.
+func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (int32, error) {
+	switch {
+	case spec.MaxUnavailable != nil:
+		maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MaxUnavailable, int(replicas), true)
+		if err != nil {
+			return 0, fmt.Errorf("resolving maxUnavailable: %w", err)
+		}
+		desired := int(replicas) - maxUnavailable
+		if desired < 0 {
+			desired = 0
+		}
+		return int32(desired), nil
+	case spec.MinAvailable != nil:
+		minAvailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MinAvailable, int(replicas), true)
+		if err != nil {
+			return 0, fmt.Errorf("resolving minAvailable: %w", err)
+		}
+		return int32(minAvailable), nil
+	default:
+		return 0, nil
+	}
+}
+
 // recordPDBWarning emits a Warning event on the PDB if an event recorder is
 // configured. Nil-safe so tests (and any setup without a recorder) don't panic.
 func (r *EvictionAutoScalerReconciler) recordPDBWarning(pdb *policyv1.PodDisruptionBudget, reason, message string) {
@@ -596,6 +634,13 @@ func (r *EvictionAutoScalerReconciler) recordPDBWarning(pdb *policyv1.PodDisrupt
 // revertPDBFloor restores the partner's PDB spec, removes the restore finalizer
 // and clears the persisted floor (in memory — the caller persists it via a
 // status update). Safe to call when nothing is pinned.
+//
+// It issues up to two writes across two objects — a PDB Update (restore or, in the
+// snapshot-missing path, marker cleanup) and a CR Update to drop the finalizer.
+// Each is idempotent, so a partial failure is safe and converges on the next
+// reconcile: restorePDBSpec returns (false, nil) once the snapshot annotation is
+// already cleared, and RemoveFinalizer is a no-op once the finalizer is gone — so a
+// conflict on either write simply re-runs without leaving the PDB or CR inconsistent.
 func (r *EvictionAutoScalerReconciler) revertPDBFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
 	changed, err := restorePDBSpec(pdb)
 	if err != nil {

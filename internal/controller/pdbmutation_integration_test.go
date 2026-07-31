@@ -63,6 +63,7 @@ var _ = Describe("PDB floor mutation", func() {
 			Scheme:                  k8sClient.Scheme(),
 			Filter:                  &evictionTestFilter{},
 			PDBFloorMutationEnabled: true,
+			StaleMutationWindow:     DefaultStaleMutationWindow,
 		}
 	})
 
@@ -163,6 +164,47 @@ var _ = Describe("PDB floor mutation", func() {
 		// CR carries the finalizer and the persisted floor.
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
 		Expect(controllerutil.ContainsFinalizer(ea, PDBFloorFinalizer)).To(BeTrue())
+		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
+		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
+	})
+
+	It("pins the floor derived from the PDB spec even when DesiredHealthy is stale (0)", func() {
+		createDeployment(5, intstr.FromInt32(2))
+
+		mu := intstr.FromInt32(1)
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MaxUnavailable: &mu,
+				Selector:       &metav1.LabelSelector{MatchLabels: selectorMatch},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		// DesiredHealthy still 0 (PDB controller hasn't reconciled) — the floor must
+		// still be derived synchronously from spec (maxUnavailable:1 at 5 replicas = 4).
+		setPDBStatus(pdb, 0, 5, 0, 5)
+
+		cordonWithPods(2)
+
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       v1.EvictionAutoScalerSpec{TargetName: name, TargetKind: "deployment"},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		ea.Spec.LastEviction = v1.Eviction{PodName: "p", EvictionTime: metav1.Now()}
+		Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
 		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
 		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
 	})

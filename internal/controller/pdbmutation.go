@@ -17,11 +17,13 @@ so it stops tracking surged replicas), never the number of pods required healthy
 
 Model (see the reconcile wiring in evictionautoscaler_controller.go):
 
-  - Floor F: captured ONCE at first mutation from pdb.Status.DesiredHealthy at
-    the pre-surge DisruptionsAllowed==0 moment. Held constant for the whole drain
-    and persisted on the EvictionAutoScaler CR status (Status.PinnedPDBFloor) so a
-    partner stripping the PDB annotations cannot lose it. Never recomputed, so it
-    is immune to surge inflation.
+  - Floor F: captured ONCE at first mutation, derived from the partner's PDB spec
+    at the baseline replica count (EvictionAutoScaler Status.MinReplicas) — the
+    same value the built-in controller writes to Status.DesiredHealthy, but
+    computed synchronously so it is immune to that field lagging or reading 0.
+    Held constant for the whole drain and persisted on the EvictionAutoScaler CR
+    status (Status.PinnedPDBFloor) so a partner stripping the PDB annotations
+    cannot lose it. Never recomputed, so it is immune to surge inflation.
   - Snapshot S: the partner's PDB spec to restore, stored on the PDB itself in an
     annotation so restore works even if the CR is deleted. Re-captured from the
     live spec whenever the partner changes the PDB mid-drain, so S always tracks
@@ -40,7 +42,6 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"time"
 
@@ -77,28 +78,14 @@ const (
 	// the CR is deleted.
 	PDBFloorFinalizer = "eviction-autoscaler.azure.com/pdb-floor-restore"
 
-	// envStaleMutationWindow overrides the stale window without rebuilding. Value
-	// must be a Go duration string ("30m", "2h", ...).
-	envStaleMutationWindow = "PDB_MUTATION_STALE_WINDOW"
-
-	// defaultStaleMutationWindow bounds how long a PDB may stay mutated before the
+	// DefaultStaleMutationWindow bounds how long a PDB may stay mutated before the
 	// backstop restores it unconditionally. Generous by default because a healthy
 	// drain reverts on its own well within it; this only catches orphaned
-	// mutations (e.g. the CR deleted without the finalizer running).
-	defaultStaleMutationWindow = 2 * time.Hour
+	// mutations (e.g. the CR deleted without the finalizer running). Overridable at
+	// install time via PDB_MUTATION_STALE_WINDOW (parsed/validated in main.go and
+	// threaded onto EvictionAutoScalerReconciler.StaleMutationWindow).
+	DefaultStaleMutationWindow = 2 * time.Hour
 )
-
-// staleMutationWindow is resolved once at process start from the environment,
-// falling back to defaultStaleMutationWindow. It is a var (not const) so tests
-// can override it directly.
-var staleMutationWindow = func() time.Duration {
-	if v := os.Getenv(envStaleMutationWindow); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			return d
-		}
-	}
-	return defaultStaleMutationWindow
-}()
 
 // The ENABLE_PDB_FLOOR_MUTATION master switch is parsed, validated and logged in
 // main.go and threaded onto the reconciler as
@@ -113,11 +100,11 @@ func isMutated(pdb *policyv1.PodDisruptionBudget) bool {
 	return ok
 }
 
-// isMutationStale reports whether a mutated PDB's timestamp is older than
-// staleMutationWindow. Returns false for unmutated PDBs. Returns true if the
-// timestamp annotation is missing or malformed — restoring is the safe action
-// for a mutation we can no longer reason about.
-func isMutationStale(pdb *policyv1.PodDisruptionBudget, now time.Time) bool {
+// isMutationStale reports whether a mutated PDB's timestamp is older than the
+// given window. Returns false for unmutated PDBs. Returns true if the timestamp
+// annotation is missing or malformed — restoring is the safe action for a
+// mutation we can no longer reason about.
+func isMutationStale(pdb *policyv1.PodDisruptionBudget, now time.Time, window time.Duration) bool {
 	if !isMutated(pdb) {
 		return false
 	}
@@ -129,7 +116,7 @@ func isMutationStale(pdb *policyv1.PodDisruptionBudget, now time.Time) bool {
 	if err != nil {
 		return true
 	}
-	return now.Sub(at) > staleMutationWindow
+	return now.Sub(at) > window
 }
 
 // pdbCarriesFloor reports whether the PDB's spec currently is our pinned floor:

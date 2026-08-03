@@ -251,7 +251,7 @@ Eviction autoscaler provides flexible namespace-level control with two operation
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
-- **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves.
+- **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves. **Note:** workloads that omit `maxSurge` entirely (or omit the strategy altogether) are _not_ affected — Kubernetes defaults those to `25%` at admission time, so they already have a non-zero surge and the override does not apply.
 
 #### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
 
@@ -557,24 +557,79 @@ Drain surge normally comes from the target's rolling-update `maxSurge`. But safe
 
 The **zero-maxSurge override** is a fleet-wide setting that lets the controller surge these workloads during a drain. It applies **only** when the target's `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy); workloads with a non-zero `maxSurge` are unaffected and keep using their own `maxSurge`.
 
+> **Important:** Workloads that _omit_ `maxSurge` (or omit the strategy altogether) are **not** treated as zero-surge. Kubernetes defaults an unset RollingUpdate strategy to `maxSurge: 25%` at admission time, so those workloads already have a non-zero surge and the override does not fire.
+
 It is configured entirely on the controller — there is **no per-workload annotation** — so the platform operator, not individual workload owners, decides whether it applies:
 
 - **`ZERO_SURGE_OVERRIDE`** — a single knob whose value is the drain surge applied when the override fires. It is an **int-or-percentage**, mirroring Kubernetes' own `maxSurge`: `"25%"` (a percent of `minReplicas`, rounded up) or `"10"` (an absolute number of extra pods). Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature **off** (default), preserving today's degrade behavior. A negative or malformed value fails fast at startup. Set it (e.g. `"10%"`) at install time to enable.
 
 The surge stays **demand-driven**: the actual scale-up is `minReplicas + displaced`, capped at `minReplicas +` the override value, so a drain larger than the cap simply proceeds in **waves**. When the override drives a surge, the controller emits a structured log line. Workloads whose rollout `maxSurge` resolves to 0 are also tracked by the `eviction_autoscaler_zero_maxsurge_workloads` metric (labels `namespace`, `name`), so operators can see how many such workloads exist in the cluster.
 
+**When does the override apply?**
+
+| Deployment strategy | maxSurge value | Kubernetes effective surge | Override applies? |
+|---|---|---|---|
+| `RollingUpdate` | `maxSurge: 0` | 0 | ✅ Yes |
+| `RollingUpdate` | `maxSurge: 5` | 5 | ❌ No (non-zero) |
+| `RollingUpdate` | `maxSurge: 25%` | 25% of replicas | ❌ No (non-zero) |
+| `RollingUpdate` | _(omitted)_ | 25% (k8s default) | ❌ No (default is non-zero) |
+| `Recreate` | _(n/a)_ | 0 | ✅ Yes |
+| _(strategy omitted entirely)_ | _(omitted)_ | 25% (k8s default) | ❌ No (default is non-zero) |
+
+**Examples:**
+
 ```yaml
-# No workload annotation is required. Enable fleet-wide on the controller:
+# Example 1: Explicit maxSurge: 0 — override WILL apply during drains.
+# The rollout never surges, but eviction-autoscaler can still add pods.
 #   ZERO_SURGE_OVERRIDE=10%   # or an absolute count, e.g. ZERO_SURGE_OVERRIDE=5
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: my-app
+  name: safe-deploy-app
 spec:
   strategy:
     rollingUpdate:
       maxSurge: 0        # rollout never surges; drains still get the fleet override
       maxUnavailable: 1
+```
+
+```yaml
+# Example 2: Recreate strategy — override WILL apply during drains.
+# Recreate has no rolling-update concept at all.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recreate-app
+spec:
+  strategy:
+    type: Recreate
+```
+
+```yaml
+# Example 3: maxSurge omitted — override will NOT apply.
+# Kubernetes defaults this to RollingUpdate with maxSurge: 25%, which is non-zero.
+# The eviction-autoscaler uses that 25% for drain surge sizing.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-strategy-app
+spec:
+  replicas: 4
+  # strategy not specified — k8s defaults to RollingUpdate, maxSurge: 25%
+```
+
+```yaml
+# Example 4: Explicit non-zero maxSurge — override will NOT apply.
+# The eviction-autoscaler uses the workload's own maxSurge (5) for drain surge.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-surge-app
+spec:
+  strategy:
+    rollingUpdate:
+      maxSurge: 5
+      maxUnavailable: 0
 ```
 
 #### Incremental Scale-Up

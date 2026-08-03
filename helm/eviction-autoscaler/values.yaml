@@ -33,18 +33,36 @@ controllerConfig:
     # - true (opt-out mode): All namespaces are enabled by default.
     #                        actionedNamespaces is ignored.
     #                        Namespaces can opt-out with annotation "eviction-autoscaler.azure.com/enable=false"
-    # Note: Annotations always take precedence over these settings
+    # Note: Annotations take precedence over these settings, EXCEPT for AKS-owned
+    # namespaces (kube-system, flux-system, etc.), which eviction-autoscaler always
+    # manages and which ignore both this configuration and the annotation.
     enabledByDefault: false
     
     # Namespaces to action on (behavior depends on enabledByDefault)
     # When enabledByDefault=false (opt-in): These namespaces are enabled, all others disabled
     # When enabledByDefault=true (opt-out): This list is ignored, all namespaces enabled by default
-    # Default: [kube-system] (kube-system enabled by default)
-    actionedNamespaces: [kube-system]
+    # Only customer namespaces belong here. AKS-owned namespaces (kube-system, etc.)
+    # are always managed automatically and must NOT be listed (doing so fails startup).
+    # Default: [] (no customer namespaces actioned)
+    # Upgrade note: if upgrading from an older chart that defaulted to [kube-system],
+    # remove it from your values (or use `helm upgrade --reset-values`), otherwise startup fails.
+    actionedNamespaces: []
   
   # PDB creation configuration
   pdb:
     create: true
+
+  # Zero-maxSurge drain override (fleet-wide, install-time)
+  # When a workload's rollout maxSurge resolves to 0 — an explicit maxSurge: 0, a
+  # Recreate strategy, or an unset RollingUpdate — the controller normally cannot
+  # surge and degrades during a drain. Set this to let it surge such workloads
+  # anyway. The value is an int-or-percentage, mirroring Kubernetes maxSurge:
+  #   "25%" — 25% of the workload's min replicas (rounded up), or
+  #   "10"  — an absolute number of extra pods.
+  # A value that resolves to zero ("0"/"0%") or an empty string leaves the feature
+  # off (default), preserving today's degrade-on-zero behavior. Workloads with a
+  # non-zero maxSurge are never affected.
+  zeroSurgeOverride: ""
 
 
 

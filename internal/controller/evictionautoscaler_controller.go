@@ -65,7 +65,24 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update
 
+// recordPanic counts a recovered reconcile panic against the namespace and target that caused
+// it, then re-panics so controller-runtime still handles it as before.
+func recordPanic(controller, namespace string, target *string) {
+	rec := recover()
+	if rec == nil {
+		return
+	}
+	targetName := ""
+	if target != nil {
+		targetName = *target
+	}
+	metrics.PanicCounter.WithLabelValues(namespace, targetName, controller).Inc()
+	panic(rec)
+}
+
 func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	panicTarget := req.Name
+	defer recordPanic("evictionautoscaler", req.Namespace, &panicTarget)
 	logger := log.FromContext(ctx)
 
 	// Fetch the EvictionAutoScaler instance
@@ -109,6 +126,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
+	panicTarget = EvictionAutoScaler.Spec.TargetName
 
 	// StatefulSets are intentionally skipped — their ordered pod management
 	// semantics conflict with the eviction surge strategy.

@@ -136,6 +136,16 @@ var (
 		[]string{"namespace", "pdb_name", "target_name", "metric_type"},
 	)
 
+	// PanicCounter tracks recovered reconcile panics
+	// Labels: namespace, target_name, controller
+	PanicCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eviction_autoscaler_panics_total",
+			Help: "Total number of panics recovered in the eviction autoscaler reconcile loop",
+		},
+		[]string{"namespace", "target_name", "controller"},
+	)
+
 	// PDBCounter tracks the number of PDBs with an increment interface
 	// Labels: namespace, created_by_us (true/false)
 	PDBCounter = prometheus.NewCounterVec(
@@ -215,5 +225,6 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		PanicCounter,
 	)
 }

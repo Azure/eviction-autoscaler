@@ -46,6 +46,7 @@ type DeploymentToPDBReconciler struct {
 // Reconcile watches for Deployment changes (created, updated, deleted) and creates or deletes the associated PDB.
 // creates pdb with minAvailable to be same as replicas for any deployment
 func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	defer recordPanic("deploymenttopdb", req.Namespace, &req.Name)
 	// Fetch the Deployment instance
 	var deployment v1.Deployment
 	if err := r.Get(ctx, req.NamespacedName, &deployment); err != nil {

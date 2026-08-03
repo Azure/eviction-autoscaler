@@ -30,6 +30,7 @@ import (
 	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
+	corev1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -567,4 +568,73 @@ func dumpClusterState() {
 		_ = os.WriteFile(e2eLogsDir+"/"+d.file, out, 0600)
 	}
 	fmt.Printf("cluster state dumped to %s\n", e2eLogsDir)
+}
+
+// applyDSBlockPolicy installs a ValidatingAdmissionPolicy that denies UPDATE
+// writes to Deployments in namespaces labeled ds-block=true, simulating
+// Deployment Safeguards flat-rejecting writes in AKS-owned namespaces.
+func applyDSBlockPolicy() error {
+	policyYaml := `apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: ds-block-deployment-writes
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["apps"]
+        apiVersions: ["v1"]
+        operations:  ["UPDATE"]
+        resources:   ["deployments"]
+  validations:
+    - expression: "false"
+      message: "Deployment Safeguards: writes to Deployments are blocked in this namespace"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: ds-block-deployment-writes-binding
+spec:
+  policyName: ds-block-deployment-writes
+  validationActions: ["Deny"]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        ds-block: "true"
+`
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(policyYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+func deleteDSBlockPolicy() {
+	cmd := exec.Command("kubectl", "delete", "validatingadmissionpolicybinding",
+		"ds-block-deployment-writes-binding", "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+	cmd = exec.Command("kubectl", "delete", "validatingadmissionpolicy",
+		"ds-block-deployment-writes", "--ignore-not-found")
+	_, _ = utils.Run(cmd)
+}
+
+// controllerPodStatus returns the controller-manager pod name and total
+// container restart count, erroring if the pod is missing or not Running.
+func controllerPodStatus(ctx context.Context, c client.Client) (string, int32, error) {
+	var pods corev1.PodList
+	if err := c.List(ctx, &pods, client.InNamespace(namespace),
+		client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+		return "", 0, err
+	}
+	if len(pods.Items) == 0 {
+		return "", 0, fmt.Errorf("no controller-manager pod found")
+	}
+	pod := pods.Items[0]
+	if pod.Status.Phase != corev1.PodRunning {
+		return pod.Name, 0, fmt.Errorf("controller pod %s in %s phase", pod.Name, pod.Status.Phase)
+	}
+	var restarts int32
+	for _, cs := range pod.Status.ContainerStatuses {
+		restarts += cs.RestartCount
+	}
+	return pod.Name, restarts, nil
 }

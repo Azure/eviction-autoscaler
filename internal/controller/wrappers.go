@@ -51,7 +51,17 @@ func (d *DeploymentWrapper) GetMaxSurge() intstr.IntOrString {
 	if d.obj.Spec.Strategy.RollingUpdate != nil && d.obj.Spec.Strategy.RollingUpdate.MaxSurge != nil {
 		return *d.obj.Spec.Strategy.RollingUpdate.MaxSurge
 	}
-	return intstr.FromInt(0)
+	// Recreate strategy has no rolling-update concept — return 0 so the
+	// zero-surge override can apply if configured.
+	if d.obj.Spec.Strategy.Type == v1.RecreateDeploymentStrategyType {
+		return intstr.FromInt(0)
+	}
+	// When the strategy is RollingUpdate (or unset, which implies RollingUpdate)
+	// and maxSurge is not explicitly specified, Kubernetes defaults to 25% at
+	// admission time. Return that default so we don't incorrectly trigger the
+	// fleet-wide zero-surge override for workloads that actually get 25% surge
+	// during rollouts.
+	return intstr.FromString("25%")
 }
 
 // AddAnnotation  add new status annotation

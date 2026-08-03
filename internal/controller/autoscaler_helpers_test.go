@@ -121,8 +121,22 @@ var _ = Describe("calculateSurge", func() {
 		Expect(result).To(Equal(int32(5)))
 	})
 
-	It("returns errMaxSurgeZero when no RollingUpdate strategy is set", func() {
+	It("uses the Kubernetes default 25% surge when no RollingUpdate strategy is set", func() {
 		dep := &appsv1.Deployment{}
+		target := &DeploymentWrapper{obj: dep}
+		// An unset strategy implies RollingUpdate with 25% maxSurge (k8s default).
+		// 4 * 25% = 1.0 → ceil(1.0) = 1 → 4+1 = 5
+		result, err := calculateSurge(ctx, target, 4, nil)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(5)))
+	})
+
+	It("returns errMaxSurgeZero for a Recreate strategy (no override)", func() {
+		dep := &appsv1.Deployment{
+			Spec: appsv1.DeploymentSpec{
+				Strategy: appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType},
+			},
+		}
 		target := &DeploymentWrapper{obj: dep}
 		result, err := calculateSurge(ctx, target, 4, nil)
 		Expect(errors.Is(err, errMaxSurgeZero)).To(BeTrue())
@@ -243,6 +257,32 @@ var _ = Describe("calculateSurge", func() {
 		result, err := calculateSurge(ctx, target, 10, pct("33%"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(result).To(Equal(int32(14)))
+	})
+
+	It("does NOT apply override for a bare Deployment (unset strategy defaults to 25%)", func() {
+		dep := &appsv1.Deployment{}
+		target := &DeploymentWrapper{obj: dep}
+		// Override is set but should be ignored: unset strategy implies 25% maxSurge.
+		// 100 * 25% = 25 -> 100 + 25 = 125 (using k8s default, not override 10%)
+		result, err := calculateSurge(ctx, target, 100, pct("10%"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(125)))
+	})
+
+	It("does NOT apply override when RollingUpdate type is set but maxSurge is nil", func() {
+		dep := &appsv1.Deployment{
+			Spec: appsv1.DeploymentSpec{
+				Strategy: appsv1.DeploymentStrategy{
+					Type: appsv1.RollingUpdateDeploymentStrategyType,
+				},
+			},
+		}
+		target := &DeploymentWrapper{obj: dep}
+		// Override is set but should be ignored: nil maxSurge defaults to 25%.
+		// 100 * 25% = 25 -> 100 + 25 = 125
+		result, err := calculateSurge(ctx, target, 100, pct("10%"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(result).To(Equal(int32(125)))
 	})
 })
 

@@ -40,8 +40,10 @@ type EvictionAutoScalerReconciler struct {
 	Filter   filter
 	// ZeroSurgeOverride lets the controller surge a workload whose maxSurge
 	// resolves to 0 — an explicit maxSurge: 0 (common under safe-deployment
-	// guidance) or a Recreate strategy — which otherwise cannot surge and would
-	// degrade. When non-nil, its value is applied as the drain surge for such
+	// guidance) or a Recreate strategy — which otherwise cannot surge and
+	// would degrade. Note: an unset RollingUpdate strategy is NOT treated as
+	// zero — Kubernetes defaults it to 25% at admission time, and GetMaxSurge
+	// returns that default. When non-nil, its value is applied as the drain surge for such
 	// workloads: an int-or-percentage resolved against minReplicas, mirroring
 	// Kubernetes' own maxSurge semantics — e.g. "25%" (rounded up) or an absolute
 	// "10". The actual surge stays demand-driven (minReplicas + displaced) and is
@@ -135,7 +137,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	// Track whether this workload's rollout maxSurge resolves to 0 (an explicit
-	// maxSurge: 0, a Recreate strategy, or an unset RollingUpdate). Set per reconcile
+	// maxSurge: 0 or a Recreate strategy). An unset RollingUpdate defaults to
+	// 25% (the Kubernetes default) and is NOT counted as zero. Set per reconcile
 	// so the series sum reflects the current count of maxSurge:0 workloads in the cluster.
 	recordZeroMaxSurge(target, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName)
 
@@ -347,10 +350,13 @@ var (
 )
 
 // calculateSurge returns the maximum replica count after surge (minReplicas + surge).
-// The surge amount is normally taken from the target's maxSurge. When maxSurge
-// resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy) and a fleet-wide
-// zeroSurgeOverride is configured, that override — an int-or-percentage resolved
-// against minReplicas — is applied instead of refusing to surge.
+// The surge amount is normally taken from the target's maxSurge (via GetMaxSurge,
+// which returns the Kubernetes default 25% for an unset RollingUpdate strategy).
+// When maxSurge resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy) and
+// a fleet-wide zeroSurgeOverride is configured, that override — an int-or-percentage
+// resolved against minReplicas — is applied instead of refusing to surge.
+// Note: workloads with an unset strategy (or unset maxSurge within RollingUpdate)
+// get the Kubernetes default 25% and are NOT eligible for the override.
 // The underlying error unwraps to a sentinel:
 //   - errMaxSurgeZero: the surge amount resolves to 0 and no override applies
 //   - errInvalidPercentage: percentage string could not be parsed or lacks a "%" suffix
@@ -391,8 +397,9 @@ func ParseZeroSurgeOverride(raw string) (*intstr.IntOrString, error) {
 }
 
 // recordZeroMaxSurge sets the zero-maxSurge workload gauge for the target: 1 when its
-// rollout maxSurge resolves to 0 (an explicit maxSurge: 0, a Recreate strategy, or an
-// unset RollingUpdate), else 0 — so the series sum is the cluster-wide count.
+// rollout maxSurge resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy),
+// else 0 — so the series sum is the cluster-wide count. Workloads with an unset
+// RollingUpdate strategy are NOT counted as zero (Kubernetes defaults to 25%).
 func recordZeroMaxSurge(target Surger, namespace, name string) {
 	value := 0.0
 	if isZeroSurge(target.GetMaxSurge()) {
@@ -412,7 +419,8 @@ func (r *EvictionAutoScalerReconciler) logZeroSurgeOverride(ctx context.Context,
 }
 
 // isZeroSurge reports whether a maxSurge value resolves to no surge — an int 0 or
-// a 0% (e.g. an explicit maxSurge: 0 or a Recreate strategy).
+// a 0% (e.g. an explicit maxSurge: 0 or a Recreate strategy). An unset RollingUpdate
+// strategy returns 25% (the Kubernetes default) and is NOT considered zero surge.
 func isZeroSurge(maxSurge intstr.IntOrString) bool {
 	_, err := surgeFromValue(maxSurge, 1)
 	return errors.Is(err, errMaxSurgeZero)

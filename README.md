@@ -151,9 +151,9 @@ az k8s-extension create \
 
 **Configuration Options:**
 
-- `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
+- `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: true)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
-- `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
+- `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
 - `affinity` - Full Kubernetes affinity spec for the controller pod, including `nodeAffinity` (default: `{}`)
 - `tolerations` - Allows the controller pod to schedule onto tainted nodes (default: `[]`)

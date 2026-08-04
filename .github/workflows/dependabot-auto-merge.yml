@@ -2,7 +2,10 @@ name: Dependabot auto-merge
 
 # Requires branch protection with required status checks on the default branch;
 # gh pr merge --auto waits on those checks before merging.
-on: pull_request
+on:
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -21,9 +24,11 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      # Auto-merge patch updates only; minor and major are left for human review.
-      - name: Enable auto-merge for patch updates
-        if: steps.metadata.outputs.update-type == 'version-update:semver-patch'
+      # Auto-merge patch and minor updates only; major are left for human review.
+      - name: Enable auto-merge for patch and minor updates
+        if: >-
+          steps.metadata.outputs.update-type == 'version-update:semver-patch' ||
+          steps.metadata.outputs.update-type == 'version-update:semver-minor'
         run: gh pr merge --auto --merge "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}

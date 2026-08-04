@@ -40,6 +40,7 @@ type PDBToEvictionAutoScalerReconciler struct {
 
 // Reconcile reads the state of the cluster for a PDB and creates/deletes EvictionAutoScalers accordingly.
 func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
+	defer recordPanic("pdbtoevictionautoscaler", req.Namespace, &req.Name)
 	logger := log.FromContext(ctx)
 	logger.WithValues("pdb", req.Name, "namespace", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)

@@ -41,6 +41,8 @@ spec:
             value: {{ .Values.controllerConfig.namespaces.enabledByDefault | quote }}
           - name: ACTIONED_NAMESPACES
             value: {{ join "," .Values.controllerConfig.namespaces.actionedNamespaces | quote }}
+          - name: ZERO_SURGE_OVERRIDE
+            value: {{ .Values.controllerConfig.zeroSurgeOverride | quote }}
         command:
         - /manager
         args:

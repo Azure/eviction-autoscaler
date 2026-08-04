@@ -34,6 +34,7 @@ import (
 	"k8s.io/client-go/util/homedir"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	controller "github.com/azure/eviction-autoscaler/internal/controller"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -854,6 +855,24 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyPdbCreated(ctx, clientset, "kube-system", "test-kube-opt")
 			}, time.Minute, time.Second).Should(Succeed())
 
+			// Test 7b: kube-system is AKS-owned, so a disable annotation must be ignored.
+			By("annotating kube-system with enable=false (AKS-owned namespaces must ignore it)")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "kube-system",
+				"eviction-autoscaler.azure.com/enable=false", "--overwrite")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB STILL exists in kube-system despite enable=false (AKS-owned override)")
+			Consistently(func() error {
+				return verifyPdbCreated(ctx, clientset, "kube-system", "test-kube-opt")
+			}, 30*time.Second, 5*time.Second).Should(Succeed())
+
+			By("removing the enable=false annotation from kube-system to restore state")
+			cmd = exec.Command("kubectl", "annotate", "namespace", "kube-system",
+				"eviction-autoscaler.azure.com/enable-")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
 			// Test 8: Create new deployment with annotation in opt-in mode namespace
 			testNsOptInWithAnnotation := "test-opt-in-with-anno"
 			By("creating a namespace with enable=true annotation in opt-in mode")
@@ -1158,6 +1177,136 @@ var _ = Describe("controller", Ordered, func() {
 			By("cleaning up HPA test resources")
 			deleteHPA("nginx-hpa", testNs)
 			deleteDeployment("nginx-hpa", testNs)
+			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
+			_, _ = utils.Run(cmd)
+		})
+
+		It("should not crash when Deployment Safeguards blocks the surge write in an AKS-owned namespace", func() {
+			ctx := context.Background()
+			testNs := "test-ds-block"
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+			}
+
+			By("creating test namespace with enable annotation and ds-block label")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			cmd = exec.Command("kubectl", "label", "namespace", testNs, "ds-block=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("creating a deployment with 1 replica and maxUnavailable=0")
+			err = createDeployment(deploymentConfig{
+				Name:           "nginx-ds",
+				Namespace:      testNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for deployment to be ready")
+			err = waitForDeployment("nginx-ds", testNs)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("building a client")
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying PDB and EvictionAutoScaler are created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, "nginx-ds")
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, "nginx-ds")
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("installing a ValidatingAdmissionPolicy that blocks Deployment writes (simulating DS)")
+			err = applyDSBlockPolicy()
+			Expect(err).NotTo(HaveOccurred())
+			defer deleteDSBlockPolicy()
+
+			By("waiting for the DS policy to become enforced")
+			EventuallyWithOffset(1, func() error {
+				probe := exec.Command("kubectl", "-n", testNs, "annotate", "deployment", "nginx-ds",
+					"ds-probe=1", "--overwrite")
+				out, perr := utils.Run(probe)
+				if perr == nil {
+					return fmt.Errorf("expected DS policy to block the deployment write, but it succeeded")
+				}
+				if !strings.Contains(string(out), "Deployment Safeguards: writes to Deployments are blocked") {
+					return fmt.Errorf("expected DS policy denial, got: %v", perr)
+				}
+				return nil
+			}, time.Minute, 2*time.Second).Should(Succeed())
+
+			By("recording the controller-manager pod baseline before the surge")
+			baselineName, baselineRestarts, err := controllerPodStatus(ctx, clientset)
+			Expect(err).NotTo(HaveOccurred())
+			fmt.Printf("controller pod %s baseline restarts=%d\n", baselineName, baselineRestarts)
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(testNs))
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+			fmt.Printf("nginx-ds pod running on node %s\n", nodeName)
+
+			By("cordoning the node to trigger an eviction surge (which DS will block)")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the deployment never surges because the write is blocked")
+			ConsistentlyWithOffset(1, func() (int32, error) {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-ds"}, &dep); err != nil {
+					return 0, err
+				}
+				if dep.Spec.Replicas == nil {
+					return 0, fmt.Errorf("deployment replicas is nil")
+				}
+				return *dep.Spec.Replicas, nil
+			}, time.Minute, 5*time.Second).Should(Equal(int32(1)))
+
+			By("verifying the controller-manager pod stays healthy (no crash, panic, or restart)")
+			ConsistentlyWithOffset(1, func() error {
+				name, restarts, err := controllerPodStatus(ctx, clientset)
+				if err != nil {
+					return err
+				}
+				if restarts > baselineRestarts {
+					return fmt.Errorf("controller pod %s restarted (%d -> %d)", name, baselineRestarts, restarts)
+				}
+				return nil
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("cleaning up: removing DS policy, uncordoning, deleting resources")
+			deleteDSBlockPolicy()
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+			deleteDeployment("nginx-ds", testNs)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
 		})
@@ -1517,6 +1666,209 @@ var _ = Describe("controller", Ordered, func() {
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
 			uninstallKEDA()
+		})
+
+		It("should surge and scale back down for an AKS-owned namespace (kube-system)", func() {
+			ctx := context.Background()
+			const aksNs = "kube-system"
+			const depName = "nginx-aks-surge"
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("uncordoning all nodes to ensure a clean starting state")
+			nodesOut, err := utils.Run(exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}"))
+			Expect(err).NotTo(HaveOccurred())
+			for _, n := range strings.Fields(string(nodesOut)) {
+				_, _ = utils.Run(exec.Command("kubectl", "uncordon", n))
+			}
+
+			By("creating a deployment in kube-system with no enable annotation (AKS-owned is always managed)")
+			err = createDeployment(deploymentConfig{
+				Name:           depName,
+				Namespace:      aksNs,
+				Replicas:       1,
+				MaxUnavailable: 0,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the deployment to be ready")
+			Expect(waitForDeployment(depName, aksNs)).To(Succeed())
+
+			By("verifying EA manages it: a PDB is created even without an enable annotation")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, aksNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the EvictionAutoScaler CR is created")
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, aksNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding the node the pod runs on")
+			var pods corev1.PodList
+			err = clientset.List(ctx, &pods, client.InNamespace(aksNs), client.MatchingLabels{"app": depName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pods.Items).NotTo(BeEmpty())
+			nodeName := pods.Items[0].Spec.NodeName
+
+			By("cordoning the node to trigger an eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the deployment gets the evictionSurgeReplicas annotation (surge happened)")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; !ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not added yet")
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment surges to 2 available replicas")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Status.AvailableReplicas < 2 {
+					return fmt.Errorf("expected 2 available replicas, got %d", dep.Status.AvailableReplicas)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("draining the node to complete the eviction")
+			drain := func() error {
+				var podList corev1.PodList
+				if err := clientset.List(ctx, &podList, client.InNamespace(aksNs),
+					client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+					return err
+				}
+				for _, pod := range podList.Items {
+					if pod.Labels["app"] != depName {
+						continue
+					}
+					if err := evictionClient.PolicyV1().Evictions(pod.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: pod.ObjectMeta,
+					}); err != nil {
+						return fmt.Errorf("failed to evict %s: %w", pod.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment scales back down to 1 and clears the surge annotation")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: aksNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 1 {
+					return fmt.Errorf("expected 1 replica after cooldown, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not removed")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("uncordoning the node")
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = false
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("cleaning up the kube-system test deployment")
+			deleteDeployment(depName, aksNs)
+		})
+
+		It("should reject an AKS-owned namespace in actionedNamespaces and refuse to start", func() {
+			ctx := context.Background()
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("uninstalling the existing eviction-autoscaler to reconfigure")
+			cmd := exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace)
+			_, _ = utils.Run(cmd)
+			time.Sleep(10 * time.Second)
+
+			By("installing eviction-autoscaler with kube-system (AKS-owned) in actionedNamespaces")
+			projectimage := "evictionautoscaler:e2etest"
+			imgParts := strings.Split(projectimage, ":")
+			Expect(imgParts).To(HaveLen(2), "expected image to be of the form <repository>:<tag>")
+			repo := imgParts[0]
+			tag := imgParts[1]
+			helmArgs := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", repo),
+				"--set", fmt.Sprintf("image.tag=%s", tag),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				// kube-system is AKS-owned; the controller must reject it and exit rather than start.
+				"--set", "controllerConfig.namespaces.actionedNamespaces[0]=kube-system",
+			}
+			cmd = exec.Command("helm", helmArgs...)
+			_, err = utils.Run(cmd)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+			By("verifying the controller never becomes available (it exits on the rejected config)")
+			cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler", "--namespace", namespace, "--timeout=60s")
+			_, err = utils.Run(cmd)
+			Expect(err).To(HaveOccurred(),
+				"deployment must not become available with an AKS-owned namespace in actionedNamespaces")
+
+			By("verifying a controller pod is crashlooping because the config was rejected")
+			Eventually(func() (bool, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return false, err
+				}
+				for _, pod := range pods.Items {
+					for _, cs := range pod.Status.ContainerStatuses {
+						if cs.RestartCount > 0 {
+							return true, nil
+						}
+						if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+							return true, nil
+						}
+					}
+				}
+				return false, nil
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "expected a crashlooping controller pod")
+
+			By("confirming the rejection reason is logged")
+			Eventually(func() (string, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return "", err
+				}
+				if len(pods.Items) == 0 {
+					return "", fmt.Errorf("no controller pod found")
+				}
+				logCmd := exec.Command("kubectl", "logs", pods.Items[0].Name,
+					"--namespace", namespace, "--all-containers", "--tail=-1")
+				out, _ := utils.Run(logCmd)
+				return string(out), nil
+			}, 2*time.Minute, 5*time.Second).Should(ContainSubstring("may not contain an AKS-owned namespace"))
 		})
 	})
 })

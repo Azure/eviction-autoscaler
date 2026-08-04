@@ -329,6 +329,13 @@ func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas 
 	// Track scaling opportunity
 	metrics.ScalingOpportunityCounter.WithLabelValues(eas.Namespace, eas.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 
+	// Order matters and is a deliberate fail-safe: revert the surge (scale back to
+	// MinReplicas) BEFORE restoring the partner PDB. If the PDB restore then fails,
+	// we requeue with the deployment already at baseline but the floor still pinned —
+	// briefly over-restrictive (a new drain may need one extra requeue), which
+	// converges on the next reconcile. The opposite order could momentarily leave a
+	// permissive PDB over an under-replicated deployment (fail-open), so we prefer
+	// the over-restrictive failure mode.
 	// Revert the target to the original state now that disruptions are allowed again.
 	if err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
 		return ctrl.Result{}, err
@@ -434,6 +441,12 @@ func (r *EvictionAutoScalerReconciler) defendPinnedFloor(ctx context.Context, ea
 // pinFloorBeforeSurge pins the PDB floor before a surge when the feature is enabled
 // for the namespace. Returns the pinned floor and whether a pin was applied; a no-op
 // (0, false, nil) when the feature is disabled for the namespace.
+//
+// Absolute-minAvailable PDBs are pinned too, for a consistent mid-drain contract: the
+// floor is claimed (CR finalizer + status) so a partner edit mid-drain is defended and
+// deferred to restore, exactly like maxUnavailable / percentage PDBs. This costs no PDB
+// spec churn while the PDB already carries the floor — ensurePDBFloor's re-mutation
+// guard (pdbCarriesFloor) short-circuits the snapshot+rewrite until the partner deviates.
 func (r *EvictionAutoScalerReconciler) pinFloorBeforeSurge(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) (int32, bool, error) {
 	allowed, err := r.pdbFloorMutationAllowed(ctx, eas.Namespace)
 	if err != nil {

@@ -209,6 +209,55 @@ var _ = Describe("PDB floor mutation", func() {
 		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
 	})
 
+	It("claims the floor without churning the spec for an absolute-minAvailable PDB", func() {
+		createDeployment(5, intstr.FromInt32(2))
+
+		ma := intstr.FromInt32(4)
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &ma,
+				Selector:     &metav1.LabelSelector{MatchLabels: selectorMatch},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+		setPDBStatus(pdb, 0, 4, 4, 5) // DA==0, absolute floor already 4
+
+		cordonWithPods(2)
+
+		ea := &v1.EvictionAutoScaler{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       v1.EvictionAutoScalerSpec{TargetName: name, TargetKind: "deployment"},
+		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
+
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		ea.Spec.LastEviction = v1.Eviction{PodName: "p", EvictionTime: metav1.Now()}
+		Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+
+		// The PDB already carries the floor, so the re-mutation guard short-circuits:
+		// the spec is left untouched and no snapshot/pin annotations are written.
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
+		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationMutatedAt))
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+
+		// But the floor IS claimed on the CR (finalizer + persisted floor) so a partner
+		// edit mid-drain is defended and deferred to restore — parity with other PDBs.
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		Expect(controllerutil.ContainsFinalizer(ea, PDBFloorFinalizer)).To(BeTrue())
+		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
+		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
+	})
+
 	It("does not touch the PDB when the feature is disabled", func() {
 		reconciler.PDBFloorMutationEnabled = false
 

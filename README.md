@@ -154,6 +154,36 @@ az k8s-extension create \
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
+- `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
+- `affinity` - Full Kubernetes affinity spec for the controller pod, including `nodeAffinity` (default: `{}`)
+- `tolerations` - Allows the controller pod to schedule onto tainted nodes (default: `[]`)
+
+**Controller Pod Scheduling (node affinity / tolerations):**
+
+Pin the controller to specific nodes with a node label:
+
+```bash
+az k8s-extension create \
+    --cluster-name <your-cluster-name> \
+    --cluster-type managedClusters \
+    --extension-type microsoft.evictionautoscaler \
+    --name eviction-autoscaler \
+    --resource-group <your-resource-group-name> \
+    --release-train stable \
+    --configuration-settings nodeSelector."kubernetes\.io/os"=linux \
+    --auto-upgrade-minor-version true
+```
+
+When installing the chart directly with Helm, richer `affinity` / `tolerations`
+specs are easiest to pass as JSON:
+
+```bash
+helm install eviction-autoscaler ./helm/eviction-autoscaler \
+  --set-json 'affinity={"nodeAffinity":{"requiredDuringSchedulingIgnoredDuringExecution":{"nodeSelectorTerms":[{"matchExpressions":[{"key":"agentpool","operator":"In","values":["system"]}]}]}}}' \
+  --set-json 'tolerations=[{"key":"CriticalAddonsOnly","operator":"Exists"}]'
+```
+
+Leaving these unset (the default) applies no placement constraints — the controller schedules like any other pod.
 
 **Common Configuration Combinations:**
 

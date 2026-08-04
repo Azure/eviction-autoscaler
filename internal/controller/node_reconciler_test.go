@@ -19,6 +19,7 @@ import (
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
 var _ = Describe("Node Controller", func() {
@@ -173,6 +174,111 @@ var _ = Describe("Node Controller", func() {
 			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(BeZero())
 			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal(podName))
 
+		})
+
+		It("should handle a karpenter disruption taint by updating pod and EvictionAutoScaler", func() {
+			nodeReconciler := &NodeReconciler{
+				Client: k8sClient,
+				Scheme: scheme.Scheme,
+			}
+			_, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			node := &corev1.Node{}
+			err = k8sClient.Get(ctx, nodeNamespacedName, node)
+			Expect(err).NotTo(HaveOccurred())
+			// Karpenter v1 drains without cordoning: unschedulable stays false
+			node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+				Key:    "karpenter.sh/disrupted",
+				Effect: corev1.TaintEffectNoSchedule,
+			})
+
+			err = k8sClient.Update(ctx, node)
+			Expect(err).NotTo(HaveOccurred())
+			result, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown))
+
+			By("checking pod condition ")
+			pod := &corev1.Pod{}
+			err = k8sClient.Get(ctx, podNamespacedName, pod)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pod.Status.Conditions).To(HaveLen(2))
+			Expect(pod.Status.Conditions[1].Type).To(Equal(corev1.DisruptionTarget))
+
+			By("updating pdb watcher ")
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			err = k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(EvictionAutoScaler.Spec.LastEviction.EvictionTime).ToNot(BeZero())
+			Expect(EvictionAutoScaler.Spec.LastEviction.PodName).To(Equal(podName))
+		})
+
+		It("should ignore a node with only a dedicated-node taint", func() {
+			nodeReconciler := &NodeReconciler{
+				Client: k8sClient,
+				Scheme: scheme.Scheme,
+			}
+
+			node := &corev1.Node{}
+			err := k8sClient.Get(ctx, nodeNamespacedName, node)
+			Expect(err).NotTo(HaveOccurred())
+			// permanent workload-isolation taint, not a drain signal
+			node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
+				Key:    "env",
+				Value:  "system",
+				Effect: corev1.TaintEffectNoSchedule,
+			})
+
+			err = k8sClient.Update(ctx, node)
+			Expect(err).NotTo(HaveOccurred())
+			result, err := nodeReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: nodeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			By("checking pod is untouched")
+			pod := &corev1.Pod{}
+			err = k8sClient.Get(ctx, podNamespacedName, pod)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
+		})
+
+		It("should filter node updates on drain-signal transitions only", func() {
+			plain := &corev1.Node{}
+			cordoned := &corev1.Node{Spec: corev1.NodeSpec{Unschedulable: true}}
+			disrupted := &corev1.Node{Spec: corev1.NodeSpec{Taints: []corev1.Taint{
+				{Key: "karpenter.sh/disrupted", Effect: corev1.TaintEffectNoSchedule},
+			}}}
+			caDeleting := &corev1.Node{Spec: corev1.NodeSpec{Taints: []corev1.Taint{
+				{Key: "ToBeDeletedByClusterAutoscaler", Effect: corev1.TaintEffectNoSchedule},
+			}}}
+			dedicated := &corev1.Node{Spec: corev1.NodeSpec{Taints: []corev1.Taint{
+				{Key: "env", Value: "system", Effect: corev1.TaintEffectNoSchedule},
+			}}}
+
+			By("triggering on cordon flips")
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: plain, ObjectNew: cordoned})).To(BeTrue())
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: cordoned, ObjectNew: plain})).To(BeTrue())
+
+			By("triggering on draining-taint transitions")
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: plain, ObjectNew: disrupted})).To(BeTrue())
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: disrupted, ObjectNew: plain})).To(BeTrue())
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: plain, ObjectNew: caDeleting})).To(BeTrue())
+
+			By("ignoring heartbeats and unrelated updates")
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: plain, ObjectNew: plain})).To(BeFalse())
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: disrupted, ObjectNew: disrupted})).To(BeFalse())
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: plain, ObjectNew: dedicated})).To(BeFalse())
+
+			By("ignoring non-node objects")
+			Expect(nodeDrainSignalChanged(event.UpdateEvent{ObjectOld: &corev1.Pod{}, ObjectNew: &corev1.Pod{}})).To(BeFalse())
 		})
 
 		It("should handle cordon with no targetable pod", func() {

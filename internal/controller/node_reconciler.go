@@ -31,6 +31,38 @@ type NodeReconciler struct {
 
 const NodeNameIndex = "spec.nodeName"
 
+// drainingTaintKeys are taints applied by node-lifecycle controllers that drain
+// nodes without cordoning them (spec.unschedulable stays false):
+//   - karpenter.sh/disrupted: Karpenter v1 disruption and termination
+//   - ToBeDeletedByClusterAutoscaler: cluster-autoscaler scale-down
+var drainingTaintKeys = []string{
+	"karpenter.sh/disrupted",
+	"ToBeDeletedByClusterAutoscaler",
+}
+
+// hasDrainingTaint reports whether the node carries a NoSchedule taint from a
+// known draining controller. Matching specific keys (not any NoSchedule taint)
+// matters: dedicated-node taints are permanent and do not signal a drain.
+func hasDrainingTaint(node *corev1.Node) bool {
+	for _, taint := range node.Spec.Taints {
+		if taint.Effect != corev1.TaintEffectNoSchedule {
+			continue
+		}
+		for _, key := range drainingTaintKeys {
+			if taint.Key == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nodeIsDraining reports whether evictions on this node are imminent, either
+// via a classic cordon or via a draining controller's taint.
+func nodeIsDraining(node *corev1.Node) bool {
+	return node.Spec.Unschedulable || hasDrainingTaint(node)
+}
+
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
 
@@ -54,16 +86,14 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 
-	// Track node cordoning events
-	if node.Spec.Unschedulable {
+	// Track node cordoning/draining events
+	if nodeIsDraining(node) {
 		metrics.NodeCordoningCounter.Inc()
+	} else {
+		return ctrl.Result{}, nil
 	}
 
-	if !node.Spec.Unschedulable {
-		return ctrl.Result{}, err
-	}
-
-	logger.Info("Node is cordoned", "node", node.Name)
+	logger.Info("Node is draining", "node", node.Name, "unschedulable", node.Spec.Unschedulable, "drainingTaint", hasDrainingTaint(node))
 
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
@@ -167,14 +197,25 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		WithEventFilter(predicate.Funcs{
-			// ignore status updates as we only care about cordon.
-			UpdateFunc: func(ue event.UpdateEvent) bool {
-				oldNode := ue.ObjectOld.(*corev1.Node)
-				newNode := ue.ObjectNew.(*corev1.Node)
-				return oldNode.Spec.Unschedulable == newNode.Spec.Unschedulable
-			},
+			// Trigger only on drain-signal transitions: cordon flips or a
+			// draining taint appearing/disappearing. Create/Delete keep the
+			// default (true) so already-draining nodes reconcile on resync.
+			UpdateFunc: nodeDrainSignalChanged,
 		}).
 		Complete(r)
+}
+
+// nodeDrainSignalChanged reports whether an update transitions the node's
+// drain signal (cordon flip or draining-taint appearance/removal), ignoring
+// status-only updates such as heartbeats.
+func nodeDrainSignalChanged(ue event.UpdateEvent) bool {
+	oldNode, okOld := ue.ObjectOld.(*corev1.Node)
+	newNode, okNew := ue.ObjectNew.(*corev1.Node)
+	if !okOld || !okNew {
+		return false
+	}
+	return oldNode.Spec.Unschedulable != newNode.Spec.Unschedulable ||
+		hasDrainingTaint(oldNode) != hasDrainingTaint(newNode)
 }
 
 /*

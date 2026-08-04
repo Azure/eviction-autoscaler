@@ -251,12 +251,27 @@ func main() {
 	}
 	setupLog.Info("Event recording configuration", "eventRecordingEnabled", eventRecordingEnabled)
 
+	// Parse ZERO_SURGE_OVERRIDE environment variable (unset/empty ⇒ feature off).
+	// Fleet-wide, install-time knob: when set, a workload whose maxSurge resolves to
+	// 0 (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate) is
+	// surged by this value during a drain instead of degrading. The value is an
+	// int-or-percentage, mirroring Kubernetes maxSurge — "25%" of minReplicas
+	// (rounded up) or an absolute "10". A value that resolves to zero ("0"/"0%")
+	// leaves the feature off; a negative or malformed value fails fast at startup.
+	zeroSurgeOverride, zsErr := controllers.ParseZeroSurgeOverride(os.Getenv("ZERO_SURGE_OVERRIDE"))
+	if zsErr != nil {
+		setupLog.Error(zsErr, "Failed to parse ZERO_SURGE_OVERRIDE env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
+
 	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
 		Client:                  mgr.GetClient(),
 		Scheme:                  mgr.GetScheme(),
 		Filter:                  nsfilter,
 		PDBFloorMutationEnabled: pdbFloorMutationEnabled,
 		StaleMutationWindow:     staleMutationWindow,
+		ZeroSurgeOverride:       zeroSurgeOverride,
 	}
 	// Only wire the event recorder when event recording is enabled; otherwise the
 	// nil Recorder disables all event emission via the existing guards.

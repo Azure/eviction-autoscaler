@@ -33,6 +33,19 @@ var (
 		[]string{"namespace", "can_create_pdb"},
 	)
 
+	// ZeroMaxSurgeWorkloadGauge tracks workloads whose rollout maxSurge resolves to 0
+	// (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate), set to
+	// 1 per such workload and 0 otherwise, so the series sum is the count of maxSurge:0
+	// workloads currently seen in the cluster.
+	// Labels: namespace, name
+	ZeroMaxSurgeWorkloadGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_zero_maxsurge_workloads",
+			Help: "Workloads whose rollout maxSurge resolves to 0, seen by the eviction autoscaler",
+		},
+		[]string{"namespace", "name"},
+	)
+
 	// PDBGauge tracks the number of PDBs seen by the controller
 	// Labels: namespace, created_by_us (true/false)
 	PDBGauge = prometheus.NewGaugeVec(
@@ -121,6 +134,16 @@ var (
 			Help: "PDB configuration and status information",
 		},
 		[]string{"namespace", "pdb_name", "target_name", "metric_type"},
+	)
+
+	// PanicCounter tracks recovered reconcile panics
+	// Labels: namespace, target_name, controller
+	PanicCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eviction_autoscaler_panics_total",
+			Help: "Total number of panics recovered in the eviction autoscaler reconcile loop",
+		},
+		[]string{"namespace", "target_name", "controller"},
 	)
 
 	// PDBCounter tracks the number of PDBs with an increment interface
@@ -215,6 +238,7 @@ func init() {
 	// Register metrics with controller-runtime's registry
 	ctrlmetrics.Registry.MustRegister(
 		DeploymentGauge,
+		ZeroMaxSurgeWorkloadGauge,
 		PDBGauge,
 		EvictionCounter,
 		BlockedEvictionCounter,
@@ -226,5 +250,6 @@ func init() {
 		PDBInfoGauge,
 		PDBCounter,
 		PDBFloorRestoreFailureCounter,
+		PanicCounter,
 	)
 }

@@ -209,58 +209,78 @@ func main() {
 	}
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
-	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Filter:            nsfilter,
-		ZeroSurgeOverride: zeroSurgeOverride,
+	// Parse CONTROLLER_ENABLED environment variable (defaults to true). This is a
+	// global kill switch: when false, no reconcilers are registered, so the
+	// controller runs (serving health and metrics) but takes no action on any
+	// namespace or PDB — letting operators fully disable the feature in place via
+	// config, without uninstalling the extension.
+	controllerEnabled := true
+	if v := os.Getenv("CONTROLLER_ENABLED"); v != "" {
+		var err error
+		controllerEnabled, err = strconv.ParseBool(v)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse CONTROLLER_ENABLED env variable")
+			os.Exit(1)
+		}
 	}
-	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
-		os.Exit(1)
-	}
-	setupLog.Info("EvictionAutoScalerReconciler setup completed")
+	setupLog.Info("Controller enable configuration", "controllerEnabled", controllerEnabled)
 
-	if pdbCreate {
-		if err = (&controllers.DeploymentToPDBReconciler{
+	if controllerEnabled {
+		evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
+			Client:            mgr.GetClient(),
+			Scheme:            mgr.GetScheme(),
+			Filter:            nsfilter,
+			ZeroSurgeOverride: zeroSurgeOverride,
+		}
+		if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
+			os.Exit(1)
+		}
+		setupLog.Info("EvictionAutoScalerReconciler setup completed")
+
+		if pdbCreate {
+			if err = (&controllers.DeploymentToPDBReconciler{
+				Client: mgr.GetClient(),
+				Scheme: mgr.GetScheme(),
+				Filter: nsfilter,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
+				os.Exit(1)
+			}
+			setupLog.Info("DeploymentToPDBReconciler setup completed")
+
+			// Watches both HPA and KEDA ScaledObject changes to keep PDB minAvailable
+			// in sync with the autoscaler's min replicas floor.
+			if err = (&controllers.AutoscalerToPDBReconciler{
+				Client: mgr.GetClient(),
+				Scheme: mgr.GetScheme(),
+				Filter: nsfilter,
+			}).SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to create controller", "controller", "AutoscalerToPDBReconciler")
+				os.Exit(1)
+			}
+			setupLog.Info("AutoscalerToPDBReconciler setup completed")
+		}
+
+		if err = (&controllers.PDBToEvictionAutoScalerReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
 			Filter: nsfilter,
 		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
+			setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 			os.Exit(1)
 		}
-		setupLog.Info("DeploymentToPDBReconciler setup completed")
+		setupLog.Info("PDBToEvictionAutoScalerReconciler  setup completed")
 
-		// Watches both HPA and KEDA ScaledObject changes to keep PDB minAvailable
-		// in sync with the autoscaler's min replicas floor.
-		if err = (&controllers.AutoscalerToPDBReconciler{
+		if err = (&controllers.NodeReconciler{
 			Client: mgr.GetClient(),
 			Scheme: mgr.GetScheme(),
-			Filter: nsfilter,
 		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "AutoscalerToPDBReconciler")
+			setupLog.Error(err, "unable to create controller", "controller", "NodeReconciler")
 			os.Exit(1)
 		}
-		setupLog.Info("AutoscalerToPDBReconciler setup completed")
-	}
-
-	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
-		os.Exit(1)
-	}
-	setupLog.Info("PDBToEvictionAutoScalerReconciler  setup completed")
-
-	if err = (&controllers.NodeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
-		os.Exit(1)
+	} else {
+		setupLog.Info("Controller is disabled (CONTROLLER_ENABLED=false); no reconcilers registered — serving health and metrics only")
 	}
 	// +kubebuilder:scaffold:builder
 

@@ -174,6 +174,24 @@ az k8s-extension create \
     --auto-upgrade-minor-version true
 ```
 
+Tolerations (and other list values) can be set field-by-field using the indexed
+form, where `[N]` is the list position:
+
+```bash
+az k8s-extension create \
+    --cluster-name <your-cluster-name> \
+    --cluster-type managedClusters \
+    --extension-type microsoft.evictionautoscaler \
+    --name eviction-autoscaler \
+    --resource-group <your-resource-group-name> \
+    --release-train stable \
+    --configuration-settings \
+        tolerations[0].key=CriticalAddonsOnly \
+        tolerations[0].operator=Exists \
+        tolerations[0].effect=NoSchedule \
+    --auto-upgrade-minor-version true
+```
+
 When installing the chart directly with Helm, richer `affinity` / `tolerations`
 specs are easiest to pass as JSON:
 

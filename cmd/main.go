@@ -174,13 +174,30 @@ func main() {
 		}
 	}
 
+	// Parse MANAGE_AKS_OWNED_NAMESPACES environment variable (defaults to true).
+	// When true (default), eviction-autoscaler unconditionally manages AKS-owned
+	// namespaces (kube-system, flux-system, etc.). Set to false to exclude them, so
+	// only namespaces enabled via ACTIONED_NAMESPACES / the enable annotation / the
+	// default are acted on — giving operators full control over the managed set.
+	manageAKSOwned := true
+	if v := os.Getenv("MANAGE_AKS_OWNED_NAMESPACES"); v != "" {
+		var err error
+		manageAKSOwned, err = strconv.ParseBool(v)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse MANAGE_AKS_OWNED_NAMESPACES env variable")
+			os.Exit(1)
+		}
+	}
+
 	// Create namespace filter
-	nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault)
+	nsfilter := namespacefilter.New(actionedNamespacesList, disabledByDefault,
+		namespacefilter.WithManageAKSOwnedNamespaces(manageAKSOwned))
 
 	setupLog.Info("Eviction autoscaler configuration",
 		"disabledByDefault", disabledByDefault,
 		"enabledByDefault", enabledByDefault,
-		"actionedNamespaces", actionedNamespacesList)
+		"actionedNamespaces", actionedNamespacesList,
+		"manageAKSOwnedNamespaces", manageAKSOwned)
 
 	// Parse PDB_CREATE environment variable (defaults to false if not set)
 	pdbCreateStr := os.Getenv("PDB_CREATE")

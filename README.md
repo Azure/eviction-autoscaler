@@ -152,6 +152,7 @@ az k8s-extension create \
 **Configuration Options:**
 
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
+- `controllerConfig.pdb.maxUnavailableToMinAvailablePercentage=90` - Continuously converts PDBs with `maxUnavailable` in managed namespaces to `minAvailable: 90%` (default: disabled)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
 
@@ -240,6 +241,20 @@ If you want a PDB for such a deployment, you can either:
 
 This behavior applies to both integer values (`maxUnavailable: 1`) and percentage values (`maxUnavailable: 25%`). Only deployments with `maxUnavailable: 0` or `maxUnavailable: 0%` will automatically get PDBs created.
 
+### Converting maxUnavailable PDBs
+
+Existing PDBs that use `maxUnavailable` may allow disruptions before eviction-autoscaler has a reason to surge. An optional policy can continuously convert those PDBs to a percentage-based `minAvailable` policy:
+
+```yaml
+controllerConfig:
+  pdb:
+    maxUnavailableToMinAvailablePercentage: 90
+```
+
+With this setting, a PDB such as `maxUnavailable: 1` or `maxUnavailable: 25%` becomes `minAvailable: 90%`. The policy applies only in namespaces managed by eviction-autoscaler and accepts integer values from `1` through `100`. It is independent of automatic PDB creation, so it can be enabled when `controllerConfig.pdb.create` is false.
+
+The conversion is continuously enforced: setting `maxUnavailable` again causes the controller to replace it with the configured `minAvailable` percentage. Disabling the setting stops future conversions but does not restore the original `maxUnavailable` value.
+
 ### Namespace Control: enabled_by_default Configuration
 
 Eviction autoscaler provides flexible namespace-level control with two operational modes controlled by environment variables:
@@ -251,6 +266,7 @@ Eviction autoscaler provides flexible namespace-level control with two operation
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
+- **`PDB_MAX_UNAVAILABLE_TO_MIN_AVAILABLE_PERCENTAGE`**: Integer percentage from `1` through `100` used to continuously replace `maxUnavailable` PDBs in managed namespaces with percentage-based `minAvailable`; unset disables conversion
 - **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves. **Note:** workloads that omit `maxSurge` entirely (or omit the strategy altogether) are _not_ affected — Kubernetes defaults those to `25%` at admission time, so they already have a non-zero surge and the override does not apply.
 
 #### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
@@ -432,6 +448,8 @@ spec:
           value: "kube-system,production,staging"
         - name: PDB_CREATE
           value: "true"
+        - name: PDB_MAX_UNAVAILABLE_TO_MIN_AVAILABLE_PERCENTAGE
+          value: "90"
 ```
 
 Deployments in `production` and `staging` namespaces will be managed by eviction autoscaler. Deployments in other namespaces (e.g., `development`, `testing`) will be ignored.

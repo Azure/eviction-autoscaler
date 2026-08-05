@@ -195,6 +195,15 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
+	maxUnavailableToMinAvailablePercentage, pdbConversionErr := controllers.ParseMaxUnavailableToMinAvailablePercentage(
+		os.Getenv("PDB_MAX_UNAVAILABLE_TO_MIN_AVAILABLE_PERCENTAGE"))
+	if pdbConversionErr != nil {
+		setupLog.Error(pdbConversionErr, "Failed to parse PDB_MAX_UNAVAILABLE_TO_MIN_AVAILABLE_PERCENTAGE env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("PDB maxUnavailable conversion configuration",
+		"minAvailablePercentage", maxUnavailableToMinAvailablePercentage)
+
 	// Parse ZERO_SURGE_OVERRIDE environment variable (unset/empty ⇒ feature off).
 	// Fleet-wide, install-time knob: when set, a workload whose maxSurge resolves to
 	// 0 (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate) is
@@ -246,9 +255,10 @@ func main() {
 	}
 
 	if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Filter: nsfilter,
+		Client:                                 mgr.GetClient(),
+		Scheme:                                 mgr.GetScheme(),
+		Filter:                                 nsfilter,
+		MaxUnavailableToMinAvailablePercentage: maxUnavailableToMinAvailablePercentage,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 		os.Exit(1)

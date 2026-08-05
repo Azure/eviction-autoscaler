@@ -52,6 +52,12 @@ controllerConfig:
   pdb:
     create: true
 
+    # Optional policy for existing PDBs in managed namespaces. When set to an
+    # integer from 1 through 100, any PDB with maxUnavailable is continuously
+    # converted to minAvailable using this percentage (for example, 90 writes
+    # minAvailable: 90%). Empty leaves existing PDBs unchanged.
+    maxUnavailableToMinAvailablePercentage: ""
+
   # Zero-maxSurge drain override (fleet-wide, install-time)
   # When a workload's rollout maxSurge resolves to 0 — an explicit maxSurge: 0, a
   # Recreate strategy, or an unset RollingUpdate — the controller normally cannot

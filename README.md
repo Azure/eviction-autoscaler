@@ -154,6 +154,7 @@ az k8s-extension create \
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
+- `controllerConfig.namespaces.manageAKSOwnedNamespaces=false` - When `false`, AKS-owned namespaces (kube-system, flux-system, etc.) follow the normal enable rules instead of being unconditionally managed, so they can be excluded (default: true)
 
 **Common Configuration Combinations:**
 
@@ -250,6 +251,7 @@ Eviction autoscaler provides flexible namespace-level control with two operation
   - `false`: Namespaces disabled by default - only specified namespaces enabled
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
+- **`MANAGE_AKS_OWNED_NAMESPACES`**: Whether AKS-owned namespaces (kube-system, flux-system, etc.) are unconditionally managed (default: `true`). When `false`, they follow the normal enable rules (annotation / actioned list / default) like any other namespace, so operators can exclude them from eviction-autoscaler entirely.
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
 - **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves. **Note:** workloads that omit `maxSurge` entirely (or omit the strategy altogether) are _not_ affected — Kubernetes defaults those to `25%` at admission time, so they already have a non-zero surge and the override does not apply.
 

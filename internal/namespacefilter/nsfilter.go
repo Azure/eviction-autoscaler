@@ -53,13 +53,34 @@ func IsAKSOwnedNamespace(ns string) bool {
 type nsfilter struct {
 	disabledByDefault bool
 	hardcoded         []string
+	// manageAKSOwned controls whether AKS-owned namespaces are unconditionally
+	// managed. Defaults to true (historical behavior); when false, AKS-owned
+	// namespaces are subject to the normal enable rules like any other namespace.
+	manageAKSOwned bool
 }
 
-func New(hardcoded []string, disabledByDefault bool) *nsfilter {
-	return &nsfilter{
+// Option configures optional nsfilter behavior.
+type Option func(*nsfilter)
+
+// WithManageAKSOwnedNamespaces controls whether AKS-owned namespaces (kube-system,
+// flux-system, etc.) are always managed regardless of config and annotation. The
+// default (true) preserves historical behavior; passing false makes those namespaces
+// follow the normal enable rules (annotation / actioned list / default), so operators
+// can exclude them from eviction-autoscaler entirely.
+func WithManageAKSOwnedNamespaces(manage bool) Option {
+	return func(n *nsfilter) { n.manageAKSOwned = manage }
+}
+
+func New(hardcoded []string, disabledByDefault bool, opts ...Option) *nsfilter {
+	n := &nsfilter{
 		hardcoded:         hardcoded,
 		disabledByDefault: disabledByDefault,
+		manageAKSOwned:    true,
 	}
+	for _, opt := range opts {
+		opt(n)
+	}
+	return n
 }
 
 type Reader interface {
@@ -69,8 +90,10 @@ type Reader interface {
 func (n *nsfilter) Filter(ctx context.Context, c Reader, ns string) (bool, error) {
 	logger := ctrl.LoggerFrom(ctx)
 
-	// AKS-owned namespaces are always managed, ignoring config and the enable annotation.
-	if IsAKSOwnedNamespace(ns) {
+	// AKS-owned namespaces are always managed, ignoring config and the enable
+	// annotation — unless AKS-owned management has been disabled, in which case they
+	// fall through to the normal enable rules below like any other namespace.
+	if n.manageAKSOwned && IsAKSOwnedNamespace(ns) {
 		logger.Info("namespace filtering decision", "namespace", ns, "source", "aks-owned", "filtering", true)
 		return true, nil
 	}

@@ -47,6 +47,15 @@ controllerConfig:
     # Upgrade note: if upgrading from an older chart that defaulted to [kube-system],
     # remove it from your values (or use `helm upgrade --reset-values`), otherwise startup fails.
     actionedNamespaces: []
+
+    # Whether eviction-autoscaler unconditionally manages AKS-owned namespaces
+    # (kube-system, flux-system, etc.).
+    # - true (default): AKS-owned namespaces are always managed, ignoring
+    #                   enabledByDefault, actionedNamespaces, and the enable annotation.
+    # - false: AKS-owned namespaces follow the normal enable rules like any other
+    #          namespace, so they can be excluded entirely (e.g. with enabledByDefault=false
+    #          and no annotation). Use this for full control over the managed namespace set.
+    manageAKSOwnedNamespaces: true
   
   # PDB creation configuration
   pdb:

@@ -20,6 +20,27 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// ParseMaxUnavailableToMinAvailablePercentage parses the percentage used to
+// convert maxUnavailable PDBs to minAvailable PDBs. An empty value disables the
+// feature. Configured values are integer percentages in the inclusive range
+// 1-100 and are returned in Kubernetes percentage form (for example, "90%").
+func ParseMaxUnavailableToMinAvailablePercentage(raw string) (*intstr.IntOrString, error) {
+	if raw == "" {
+		return nil, nil //nolint:nilnil // nil signals that PDB conversion is disabled
+	}
+
+	percentage, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, fmt.Errorf("percentage must be an integer from 1 to 100: %q", raw)
+	}
+	if percentage < 1 || percentage > 100 {
+		return nil, fmt.Errorf("percentage must be between 1 and 100: %d", percentage)
+	}
+
+	value := intstr.FromString(fmt.Sprintf("%d%%", percentage))
+	return &value, nil
+}
+
 // shouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
 // Returns true if:
 // - Deployment has pdb-create annotation set to false
@@ -182,9 +203,9 @@ func tryGet(m map[string]string, key string) string {
 	return m[key]
 }
 
-// triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
-// by comparing the ownedBy annotation between old and new PDB
-func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
+// triggerOnPDBRelevantChange checks whether a PDB update affects behavior owned by
+// this controller: ownership transfer or maxUnavailable conversion.
+func triggerOnPDBRelevantChange(e event.UpdateEvent, logger logr.Logger) bool {
 	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
 	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
 	if okOld && okNew {
@@ -196,8 +217,26 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 				"oldValue", oldVal, "newValue", newVal)
 			return true
 		}
+
+		oldMaxUnavailable := oldPDB.Spec.MaxUnavailable
+		newMaxUnavailable := newPDB.Spec.MaxUnavailable
+		if (oldMaxUnavailable == nil) != (newMaxUnavailable == nil) ||
+			(oldMaxUnavailable != nil && newMaxUnavailable != nil && *oldMaxUnavailable != *newMaxUnavailable) {
+			logger.Info("PDB update event detected, maxUnavailable changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", intOrStringValue(oldMaxUnavailable),
+				"newValue", intOrStringValue(newMaxUnavailable))
+			return true
+		}
 	}
 	return false
+}
+
+func intOrStringValue(value *intstr.IntOrString) string {
+	if value == nil {
+		return ""
+	}
+	return value.String()
 }
 
 // countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned

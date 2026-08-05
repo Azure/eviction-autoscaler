@@ -37,6 +37,8 @@ spec:
         env:
           - name: PDB_CREATE
             value: {{ .Values.controllerConfig.pdb.create | quote }}
+          - name: PDB_MAX_UNAVAILABLE_TO_MIN_AVAILABLE_PERCENTAGE
+            value: {{ .Values.controllerConfig.pdb.maxUnavailableToMinAvailablePercentage | quote }}
           - name: ENABLED_BY_DEFAULT
             value: {{ .Values.controllerConfig.namespaces.enabledByDefault | quote }}
           - name: ACTIONED_NAMESPACES

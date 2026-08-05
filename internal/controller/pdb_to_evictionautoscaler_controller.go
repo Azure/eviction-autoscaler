@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8s_types "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,9 +29,10 @@ var errOwnerNotFound error = fmt.Errorf("owner not found")
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Filter   filter
+	Scheme                                 *runtime.Scheme
+	Recorder                               record.EventRecorder
+	Filter                                 filter
+	MaxUnavailableToMinAvailablePercentage *intstr.IntOrString
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -83,6 +85,18 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				}
 			}
 		}
+		return reconcile.Result{}, nil
+	}
+
+	// When configured, continuously replace maxUnavailable PDBs in managed
+	// namespaces with the configured percentage-based minAvailable policy.
+	// Return after the write; the resulting PDB update event will enqueue another
+	// reconciliation to continue EvictionAutoScaler processing with fresh state.
+	converted, err := r.convertMaxUnavailablePDB(ctx, &pdb)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	if converted {
 		return reconcile.Result{}, nil
 	}
 
@@ -146,6 +160,30 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
+}
+
+func (r *PDBToEvictionAutoScalerReconciler) convertMaxUnavailablePDB(ctx context.Context, pdb *policyv1.PodDisruptionBudget) (bool, error) {
+	if r.MaxUnavailableToMinAvailablePercentage == nil || pdb.Spec.MaxUnavailable == nil {
+		return false, nil
+	}
+
+	logger := log.FromContext(ctx)
+	oldMaxUnavailable := pdb.Spec.MaxUnavailable.String()
+	pdb.Spec.MaxUnavailable = nil
+	minAvailable := *r.MaxUnavailableToMinAvailablePercentage
+	pdb.Spec.MinAvailable = &minAvailable
+
+	if err := r.Update(ctx, pdb); err != nil {
+		logger.Error(err, "Failed to convert PDB maxUnavailable to minAvailable",
+			"namespace", pdb.Namespace, "name", pdb.Name,
+			"maxUnavailable", oldMaxUnavailable, "minAvailable", minAvailable.String())
+		return false, err
+	}
+
+	logger.Info("Converted PDB maxUnavailable to minAvailable",
+		"namespace", pdb.Namespace, "name", pdb.Name,
+		"maxUnavailable", oldMaxUnavailable, "minAvailable", minAvailable.String())
+	return true, nil
 }
 
 // handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
@@ -236,7 +274,7 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 				// Only filter PDB updates; let Namespace updates through so namespace
 				// annotation changes (enable/disable) trigger cleanup of EvictionAutoScalers
 				if _, ok := e.ObjectNew.(*policyv1.PodDisruptionBudget); ok {
-					return triggerOnPDBAnnotationChange(e, logger)
+					return triggerOnPDBRelevantChange(e, logger)
 				}
 				// For non-PDB objects (e.g. Namespace), always trigger
 				return true

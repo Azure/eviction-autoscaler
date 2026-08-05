@@ -19,6 +19,13 @@ resources:
 
 # Controller configuration - the main settings users need to customize
 controllerConfig:
+  # Global enable/disable for the entire controller (kill switch).
+  # - true (default): reconcilers run normally.
+  # - false: no reconcilers are registered, so the controller takes no action on any
+  #          namespace or PDB (it still serves health and metrics). Use this to fully
+  #          disable eviction-autoscaler in place, without uninstalling the extension.
+  enabled: true
+
   # Metrics configuration
   metrics:
     enabled: true
@@ -47,6 +54,15 @@ controllerConfig:
     # Upgrade note: if upgrading from an older chart that defaulted to [kube-system],
     # remove it from your values (or use `helm upgrade --reset-values`), otherwise startup fails.
     actionedNamespaces: []
+
+    # Whether eviction-autoscaler unconditionally manages AKS-owned namespaces
+    # (kube-system, flux-system, etc.).
+    # - true (default): AKS-owned namespaces are always managed, ignoring
+    #                   enabledByDefault, actionedNamespaces, and the enable annotation.
+    # - false: AKS-owned namespaces follow the normal enable rules like any other
+    #          namespace, so they can be excluded entirely (e.g. with enabledByDefault=false
+    #          and no annotation). Use this for full control over the managed namespace set.
+    manageAKSOwnedNamespaces: true
   
   # PDB creation configuration
   pdb:

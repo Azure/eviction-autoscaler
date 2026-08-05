@@ -473,3 +473,67 @@ func TestFilter_RealWorldScenario_OptOut(t *testing.T) {
 		t.Errorf("expected disabled to be disabled via annotation, got %v", result)
 	}
 }
+
+// AKS-owned namespace management toggle (WithManageAKSOwnedNamespaces).
+
+func TestFilter_ManageAKSOwned_DefaultTrue_KubeSystemManaged(t *testing.T) {
+	// Default (no option): AKS-owned namespaces are always managed even in opt-in
+	// mode with an empty actioned list — backward-compatible behavior.
+	filter := New([]string{}, true)
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+
+	result, err := filter.Filter(context.Background(), fakeClient, "kube-system")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != true {
+		t.Errorf("expected kube-system to be managed by default, got %v", result)
+	}
+}
+
+func TestFilter_ManageAKSOwnedFalse_KubeSystemExcluded(t *testing.T) {
+	// With AKS-owned management disabled and opt-in mode + no annotation, an
+	// AKS-owned namespace follows the normal rules and is excluded.
+	filter := New([]string{}, true, WithManageAKSOwnedNamespaces(false))
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system"}}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+
+	result, err := filter.Filter(context.Background(), fakeClient, "kube-system")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != false {
+		t.Errorf("expected kube-system to be excluded when manageAKSOwned=false in opt-in mode, got %v", result)
+	}
+}
+
+func TestFilter_ManageAKSOwnedFalse_AnnotationStillEnables(t *testing.T) {
+	// With AKS-owned management disabled, an explicit enable annotation still opts an
+	// AKS-owned namespace back in (normal rules apply).
+	filter := New([]string{}, true, WithManageAKSOwnedNamespaces(false))
+
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "kube-system",
+			Annotations: map[string]string{EnableEvictionAutoscalerAnnotationKey: "true"},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ns).Build()
+
+	result, err := filter.Filter(context.Background(), fakeClient, "kube-system")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != true {
+		t.Errorf("expected kube-system to be enabled via annotation when manageAKSOwned=false, got %v", result)
+	}
+}

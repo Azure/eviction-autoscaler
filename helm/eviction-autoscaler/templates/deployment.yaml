@@ -43,6 +43,10 @@ spec:
             value: {{ join "," .Values.controllerConfig.namespaces.actionedNamespaces | quote }}
           - name: ZERO_SURGE_OVERRIDE
             value: {{ .Values.controllerConfig.zeroSurgeOverride | quote }}
+          - name: CONTROLLER_ENABLED
+            value: {{ .Values.controllerConfig.enabled | quote }}
+          - name: MANAGE_AKS_OWNED_NAMESPACES
+            value: {{ .Values.controllerConfig.namespaces.manageAKSOwnedNamespaces | quote }}
         command:
         - /manager
         args:

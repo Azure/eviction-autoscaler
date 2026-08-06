@@ -199,19 +199,16 @@ func main() {
 
 	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set).
 	// Fleet-wide master opt-in for the PDB-floor mutation feature; when off, the
-	// controller never pins/mutates a partner PDB's minAvailable floor. Strictly
-	// validated to "true"/"false"/empty so a typo fails fast at startup rather than
-	// silently disabling the feature.
+	// controller never pins/mutates a partner PDB's minAvailable floor. An invalid
+	// value fails fast at startup rather than silently disabling the feature.
 	pdbFloorMutationEnabled := false
-	switch v := os.Getenv("ENABLE_PDB_FLOOR_MUTATION"); v {
-	case "", "false":
-		pdbFloorMutationEnabled = false
-	case "true":
-		pdbFloorMutationEnabled = true
-	default:
-		setupLog.Error(fmt.Errorf("invalid value %q for ENABLE_PDB_FLOOR_MUTATION (must be \"true\" or \"false\")", v),
-			"Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
-		os.Exit(1)
+	if v := os.Getenv("ENABLE_PDB_FLOOR_MUTATION"); v != "" {
+		var err error
+		pdbFloorMutationEnabled, err = strconv.ParseBool(v)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+			os.Exit(1)
+		}
 	}
 	setupLog.Info("PDB floor mutation configuration", "pdbFloorMutationEnabled", pdbFloorMutationEnabled)
 

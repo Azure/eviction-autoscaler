@@ -113,7 +113,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Handle deletion: if we still hold the PDB-floor restore finalizer, restore
 	// the partner's PDB before letting the CR be removed.
 	if !EvictionAutoScaler.DeletionTimestamp.IsZero() {
-		return r.reconcileFloorOnDeletion(ctx, EvictionAutoScaler)
+		return ctrl.Result{}, r.reconcileFloorOnDeletion(ctx, EvictionAutoScaler)
 	}
 
 	// Check if eviction autoscaler should be enabled for this namespace
@@ -144,7 +144,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// stale window (e.g. the CR was force-deleted without the finalizer running).
 	if isMutationStale(pdb, time.Now(), r.StaleMutationWindow) {
 		logger.Info("PDB floor mutation is stale, restoring partner spec", "pdb", pdb.Name)
-		return r.restoreStaleFloor(ctx, EvictionAutoScaler, pdb)
+		return ctrl.Result{}, r.restoreStaleFloor(ctx, EvictionAutoScaler, pdb)
 	}
 
 	if EvictionAutoScaler.Spec.TargetName == "" {
@@ -289,7 +289,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	//still at a scaled out state check if we can scale back down
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
-		return r.handleScaleDown(ctx, EvictionAutoScaler, pdb, target, surgeApplier)
+		return ctrl.Result{}, r.handleScaleDown(ctx, EvictionAutoScaler, pdb, target, surgeApplier)
 	}
 
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
@@ -366,7 +366,7 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, e
 
 // handleScaleDown reverts the surge and restores the partner PDB once the drain has
 // finished (cooldown elapsed, disruptions allowed again), marking the eviction handled.
-func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, target Surger, surgeApplier SurgeApplier) (ctrl.Result, error) {
+func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, target Surger, surgeApplier SurgeApplier) error {
 	logger := log.FromContext(ctx)
 
 	// Track scaling opportunity
@@ -381,12 +381,12 @@ func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas 
 	// the over-restrictive failure mode.
 	// Revert the target to the original state now that disruptions are allowed again.
 	if err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Restore the partner's PDB (and drop the finalizer) now the drain is done.
 	if err := r.revertPDBFloor(ctx, eas, pdb); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
 
 	// Track actual scaling action
@@ -399,16 +399,16 @@ func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas 
 	logger.Info(fmt.Sprintf("Handled eviction %s", eas.Spec.LastEviction))
 
 	ready(&eas.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
-	return ctrl.Result{}, r.Status().Update(ctx, eas)
+	return r.Status().Update(ctx, eas)
 }
 
 // reconcileFloorOnDeletion restores the partner PDB (best effort) and drops the
 // restore finalizer when the CR is being deleted, so a mid-drain deletion never
 // leaves a partner PDB pinned.
-func (r *EvictionAutoScalerReconciler) reconcileFloorOnDeletion(ctx context.Context, eas *myappsv1.EvictionAutoScaler) (ctrl.Result, error) {
+func (r *EvictionAutoScalerReconciler) reconcileFloorOnDeletion(ctx context.Context, eas *myappsv1.EvictionAutoScaler) error {
 	logger := log.FromContext(ctx)
 	if !controllerutil.ContainsFinalizer(eas, PDBFloorFinalizer) {
-		return ctrl.Result{}, nil
+		return nil
 	}
 	pdb := &policyv1.PodDisruptionBudget{}
 	err := r.Get(ctx, types.NamespacedName{Name: eas.Name, Namespace: eas.Namespace}, pdb)
@@ -421,26 +421,26 @@ func (r *EvictionAutoScalerReconciler) reconcileFloorOnDeletion(ctx context.Cont
 			metrics.PDBFloorRestoreFailureCounter.WithLabelValues(pdb.Namespace, pdb.Name, metrics.PDBFloorRestoreReasonDeletion).Inc()
 		} else if changed {
 			if uerr := r.Update(ctx, pdb); uerr != nil {
-				return ctrl.Result{}, uerr
+				return uerr
 			}
 		}
 	case !apierrors.IsNotFound(err):
-		return ctrl.Result{}, err
+		return err
 	}
 	controllerutil.RemoveFinalizer(eas, PDBFloorFinalizer)
 	if err := r.Update(ctx, eas); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
-	return ctrl.Result{}, nil
+	return nil
 }
 
 // restoreStaleFloor reverts a PDB left mutated past the stale window and persists
 // the cleared floor on the CR status.
-func (r *EvictionAutoScalerReconciler) restoreStaleFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) (ctrl.Result, error) {
+func (r *EvictionAutoScalerReconciler) restoreStaleFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
 	if err := r.revertPDBFloor(ctx, eas, pdb); err != nil {
-		return ctrl.Result{}, err
+		return err
 	}
-	return ctrl.Result{}, r.Status().Update(ctx, eas)
+	return r.Status().Update(ctx, eas)
 }
 
 // restoreFloorIfDrainHandled restores the partner PDB once the drain is fully

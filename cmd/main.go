@@ -223,7 +223,8 @@ func main() {
 	if v := os.Getenv("PDB_MUTATION_STALE_WINDOW"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil || d <= 0 {
-			setupLog.Error(fmt.Errorf("invalid value %q for PDB_MUTATION_STALE_WINDOW (must be a positive Go duration, e.g. \"2h\")", v),
+			setupLog.Error(
+				fmt.Errorf("invalid value %q for PDB_MUTATION_STALE_WINDOW (must be a positive Go duration, e.g. \"2h\")", v),
 				"Failed to parse PDB_MUTATION_STALE_WINDOW env variable")
 			os.Exit(1)
 		}

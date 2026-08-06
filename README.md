@@ -444,6 +444,10 @@ When eviction-autoscaler creates a PodDisruptionBudget (PDB) for a deployment, i
 - **Owner Reference**: Links the PDB to its deployment, ensuring the PDB is deleted when the deployment is deleted
 - **Annotation**: `ownedBy: EvictionAutoScaler` marks the PDB as managed by eviction-autoscaler
 
+By default, eviction-autoscaler only modifies PDBs it owns (those carrying the `ownedBy: EvictionAutoScaler` annotation); user-owned PDBs are never touched.
+
+> **Exception — optional PDB-floor mutation (off by default).** When the opt-in PDB-floor mutation feature is explicitly enabled — it is **double-gated**: the `ENABLE_PDB_FLOOR_MUTATION` install flag (default `false`) **and** a per-namespace opt-in annotation (`eviction-autoscaler.azure.com/pdb-floor-mutation: "true"`) — eviction-autoscaler may **temporarily** pin the floor of a user-owned PDB for the duration of an active drain, so surge capacity converts into allowed disruptions. The change is transient and self-reverting: the partner's original PDB spec is snapshotted and restored on completion, and a stale-window backstop restores it even if the drain is interrupted. With the feature off (the default), this section's contract holds unchanged and user-owned PDBs are never modified.
+
 #### Taking Manual Control of a PDB
 
 If you want to take manual control of a PDB that was created by eviction-autoscaler, remove the `ownedBy` annotation:

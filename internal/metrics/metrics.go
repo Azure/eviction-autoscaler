@@ -155,6 +155,16 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// PDBValidationGauge tracks PDB configuration health classification.
+	// classification is one of: blocks_all, no_effect, tight_budget, valid
+	PDBValidationGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_pdb_validation",
+			Help: "PDB configuration validation classification (1 per PDB)",
+		},
+		[]string{"namespace", "pdb_name", "classification"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -225,6 +235,7 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		PDBValidationGauge,
 		PanicCounter,
 	)
 }

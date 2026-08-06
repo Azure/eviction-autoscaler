@@ -62,6 +62,10 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	// Track PDB existence
 	metrics.PDBCounter.WithLabelValues(pdb.Namespace, createdByUsStr).Inc()
 
+	// Validate PDB configuration and track classification metric
+	classification := ClassifyPDBSetting(&pdb, pdb.Status.ExpectedPods)
+	metrics.PDBValidationGauge.WithLabelValues(pdb.Namespace, pdb.Name, classification).Set(1)
+
 	// Check if eviction autoscaler should be enabled for this PDB
 	isEnabled, err := r.Filter.Filter(ctx, r.Client, pdb.Namespace)
 	if err != nil {

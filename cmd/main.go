@@ -231,26 +231,6 @@ func main() {
 	}
 	setupLog.Info("PDB mutation stale window configuration", "staleMutationWindow", staleMutationWindow)
 
-	// Parse ENABLE_EVENT_RECORDING environment variable (defaults to false if not set).
-	// Controls whether the controller emits Kubernetes events at all — an
-	// installation-time observability decision, orthogonal to feature flags. When off,
-	// the Recorder is left nil and the `if r.Recorder != nil` guards throughout the
-	// controller skip all event emission; structured logs and Prometheus metrics
-	// (e.g. eviction_autoscaler_pdb_floor_restore_failures_total) remain the primary
-	// signal. Strictly validated to "true"/"false"/empty so a typo fails fast.
-	eventRecordingEnabled := false
-	switch v := os.Getenv("ENABLE_EVENT_RECORDING"); v {
-	case "", "false":
-		eventRecordingEnabled = false
-	case "true":
-		eventRecordingEnabled = true
-	default:
-		setupLog.Error(fmt.Errorf("invalid value %q for ENABLE_EVENT_RECORDING (must be \"true\" or \"false\")", v),
-			"Failed to parse ENABLE_EVENT_RECORDING env variable")
-		os.Exit(1)
-	}
-	setupLog.Info("Event recording configuration", "eventRecordingEnabled", eventRecordingEnabled)
-
 	// Parse ZERO_SURGE_OVERRIDE environment variable (unset/empty ⇒ feature off).
 	// Fleet-wide, install-time knob: when set, a workload whose maxSurge resolves to
 	// 0 (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate) is
@@ -272,11 +252,6 @@ func main() {
 		PDBFloorMutationEnabled: pdbFloorMutationEnabled,
 		StaleMutationWindow:     staleMutationWindow,
 		ZeroSurgeOverride:       zeroSurgeOverride,
-	}
-	// Only wire the event recorder when event recording is enabled; otherwise the
-	// nil Recorder disables all event emission via the existing guards.
-	if eventRecordingEnabled {
-		evictionAutoScalerReconciler.Recorder = mgr.GetEventRecorderFor("eviction-autoscaler")
 	}
 	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")

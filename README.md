@@ -717,14 +717,12 @@ Enable/config summary:
 | `ENABLE_PDB_FLOOR_MUTATION` | Controller env var | `false` | Fleet-wide master opt-in switch |
 | `eviction-autoscaler.azure.com/pdb-floor-mutation: "true"` | Namespace annotation | (absent) | Per-namespace owner opt-in (required in addition to the master switch) |
 | `PDB_MUTATION_STALE_WINDOW` | Controller env var | `2h` | Max time a PDB may stay mutated before the backstop restores it |
-| `ENABLE_EVENT_RECORDING` | Controller env var | `false` | Enable emission of Kubernetes events (e.g. `PDBFloorRestoreFailed`). Off by default — structured logs and metrics are the primary signal |
 
 A failure to restore a partner PDB after a pinned-floor mutation (corrupt or
-missing snapshot) is surfaced primarily as the Prometheus counter
+missing snapshot) is surfaced as the Prometheus counter
 `eviction_autoscaler_pdb_floor_restore_failures_total` (labels: `namespace`,
-`pdb_name`, `reason`) so operators can alert on an un-restored PDB. The
-corresponding `PDBFloorRestoreFailed` Kubernetes event is emitted only when
-`ENABLE_EVENT_RECORDING=true`.
+`pdb_name`, `reason`) so operators can alert on an un-restored PDB, along with a
+structured error log at the failure site.
 
 These per-PDB annotations and the status field are managed automatically — do
 not edit them manually.

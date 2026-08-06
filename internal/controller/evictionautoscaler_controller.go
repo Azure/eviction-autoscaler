@@ -419,8 +419,6 @@ func (r *EvictionAutoScalerReconciler) reconcileFloorOnDeletion(ctx context.Cont
 			// it. Log and proceed to drop the finalizer.
 			logger.Error(rerr, "failed to restore PDB on deletion; removing finalizer anyway to avoid a stuck CR", "pdb", pdb.Name)
 			metrics.PDBFloorRestoreFailureCounter.WithLabelValues(pdb.Namespace, pdb.Name, metrics.PDBFloorRestoreReasonDeletion).Inc()
-			r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
-				fmt.Sprintf("cannot restore PDB on EvictionAutoScaler deletion (%v); PDB may remain pinned and needs manual review", rerr))
 		} else if changed {
 			if uerr := r.Update(ctx, pdb); uerr != nil {
 				return ctrl.Result{}, uerr
@@ -811,14 +809,6 @@ func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (in
 	}
 }
 
-// recordPDBWarning emits a Warning event on the PDB if an event recorder is
-// configured. Nil-safe so tests (and any setup without a recorder) don't panic.
-func (r *EvictionAutoScalerReconciler) recordPDBWarning(pdb *policyv1.PodDisruptionBudget, reason, message string) {
-	if r.Recorder != nil {
-		r.Recorder.Event(pdb, corev1.EventTypeWarning, reason, message)
-	}
-}
-
 // revertPDBFloor restores the partner's PDB spec, removes the restore finalizer
 // and clears the persisted floor (in memory — the caller persists it via a
 // status update). Safe to call when nothing is pinned.
@@ -846,8 +836,8 @@ func (r *EvictionAutoScalerReconciler) revertPDBFloor(ctx context.Context, eas *
 		// restore their original spec. Surface it to an operator and stop claiming
 		// the pin by clearing our marker annotation; the (stricter) floor spec is
 		// left in place as the fail-safe direction.
-		r.recordPDBWarning(pdb, "PDBFloorRestoreFailed",
-			fmt.Sprintf("cannot restore PDB: snapshot annotation %q missing while pinned floor is %d; leaving minAvailable in place", AnnotationOriginalPDBSpec, floor))
+		log.FromContext(ctx).Error(nil, "cannot restore PDB: snapshot annotation missing while pinned floor is set; leaving minAvailable in place",
+			"pdb", pdb.Name, "snapshotAnnotation", AnnotationOriginalPDBSpec, "pinnedFloor", floor)
 		metrics.PDBFloorRestoreFailureCounter.WithLabelValues(pdb.Namespace, pdb.Name, metrics.PDBFloorRestoreReasonSnapshotMissing).Inc()
 		delete(pdb.Annotations, AnnotationPinnedFloor)
 		if err := r.Update(ctx, pdb); err != nil {

@@ -155,6 +155,19 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// PDBFloorRestoreFailureCounter tracks failures to restore a partner PDB's
+	// original spec after a pinned-floor mutation. This is the alertable signal
+	// for an un-restored PDB that needs manual review (events are secondary and
+	// gated behind ENABLE_EVENT_RECORDING).
+	// Labels: namespace, pdb_name, reason
+	PDBFloorRestoreFailureCounter = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "eviction_autoscaler_pdb_floor_restore_failures_total",
+			Help: "Total number of failures to restore a partner PDB after a pinned-floor mutation",
+		},
+		[]string{"namespace", "pdb_name", "reason"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -181,6 +194,17 @@ const (
 const (
 	ScaleUpAction   = "scale_up"
 	ScaleDownAction = "scale_down"
+)
+
+// Constants for PDB floor restore failure reasons
+const (
+	// PDBFloorRestoreReasonDeletion: the CR is being deleted and the PDB snapshot
+	// could not be parsed/restored, so the finalizer is dropped anyway.
+	PDBFloorRestoreReasonDeletion = "deletion_corrupt_snapshot"
+	// PDBFloorRestoreReasonSnapshotMissing: the PDB still carries our pinned floor
+	// but the original-spec snapshot annotation is gone, so the original spec
+	// cannot be reconstructed.
+	PDBFloorRestoreReasonSnapshotMissing = "snapshot_missing"
 )
 
 // Constants for scaling opportunity signals
@@ -225,6 +249,7 @@ func init() {
 		NodeCordoningCounter,
 		PDBInfoGauge,
 		PDBCounter,
+		PDBFloorRestoreFailureCounter,
 		PanicCounter,
 	)
 }

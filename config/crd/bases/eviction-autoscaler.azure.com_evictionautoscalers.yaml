@@ -133,6 +133,16 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              pinnedPDBFloor:
+                description: |-
+                  PinnedPDBFloor is the absolute minAvailable value the controller has pinned
+                  onto the target's PDB for the duration of an active drain. It is captured
+                  once (from the PDB's DesiredHealthy at the pre-surge moment) and held
+                  constant until the drain completes, so it is immune to surge inflation and
+                  survives a partner stripping the PDB's snapshot annotations. Nil when no
+                  PDB-floor mutation is active.
+                format: int32
+                type: integer
             required:
             - deploymentGeneration
             - minReplicas

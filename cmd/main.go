@@ -19,9 +19,11 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -195,6 +197,38 @@ func main() {
 	}
 	setupLog.Info("PDB creation configuration", "pdbCreate", pdbCreate)
 
+	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set).
+	// Fleet-wide master opt-in for the PDB-floor mutation feature; when off, the
+	// controller never pins/mutates a partner PDB's minAvailable floor. An invalid
+	// value fails fast at startup rather than silently disabling the feature.
+	pdbFloorMutationEnabled := false
+	if v := os.Getenv("ENABLE_PDB_FLOOR_MUTATION"); v != "" {
+		var err error
+		pdbFloorMutationEnabled, err = strconv.ParseBool(v)
+		if err != nil {
+			setupLog.Error(err, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+			os.Exit(1)
+		}
+	}
+	setupLog.Info("PDB floor mutation configuration", "pdbFloorMutationEnabled", pdbFloorMutationEnabled)
+
+	// Parse PDB_MUTATION_STALE_WINDOW (defaults to DefaultStaleMutationWindow if unset).
+	// Bounds how long a PDB may stay mutated before the backstop restores it. Strictly
+	// validated — a malformed or non-positive duration fails fast at startup, matching
+	// ENABLE_PDB_FLOOR_MUTATION, rather than silently falling back to the default.
+	staleMutationWindow := controllers.DefaultStaleMutationWindow
+	if v := os.Getenv("PDB_MUTATION_STALE_WINDOW"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			setupLog.Error(
+				fmt.Errorf("invalid value %q for PDB_MUTATION_STALE_WINDOW (must be a positive Go duration, e.g. \"2h\")", v),
+				"Failed to parse PDB_MUTATION_STALE_WINDOW env variable")
+			os.Exit(1)
+		}
+		staleMutationWindow = d
+	}
+	setupLog.Info("PDB mutation stale window configuration", "staleMutationWindow", staleMutationWindow)
+
 	// Parse ZERO_SURGE_OVERRIDE environment variable (unset/empty ⇒ feature off).
 	// Fleet-wide, install-time knob: when set, a workload whose maxSurge resolves to
 	// 0 (an explicit maxSurge: 0, a Recreate strategy, or an unset RollingUpdate) is
@@ -210,10 +244,12 @@ func main() {
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
 	evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
-		Client:            mgr.GetClient(),
-		Scheme:            mgr.GetScheme(),
-		Filter:            nsfilter,
-		ZeroSurgeOverride: zeroSurgeOverride,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		Filter:                  nsfilter,
+		PDBFloorMutationEnabled: pdbFloorMutationEnabled,
+		StaleMutationWindow:     staleMutationWindow,
+		ZeroSurgeOverride:       zeroSurgeOverride,
 	}
 	if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")

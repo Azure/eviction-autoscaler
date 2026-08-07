@@ -297,6 +297,22 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	//still at a scaled out state check if we can scale back down
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
 
+		// Don't scale down while pods are still awaiting eviction on cordoned nodes.
+		// The cooldown alone is not a reliable signal that the drain is complete — the
+		// drain controller may be on extended backoff after repeated PDB rejections.
+		// Scaling down prematurely causes thrashing (re-surge on next eviction attempt).
+		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
+		if countErr != nil {
+			logger.Error(countErr, "failed to count pods on cordoned nodes during scale-down check")
+			return ctrl.Result{}, countErr
+		}
+		if displaced > 0 {
+			logger.Info("Cordoned pods still pending eviction, holding surge",
+				"pdb", pdb.Name, "displaced", displaced)
+			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "holding surge while cordoned pods await eviction")
+			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
+
 		// Track scaling opportunity
 		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
 

@@ -296,45 +296,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	//still at a scaled out state check if we can scale back down
 	if target.GetReplicas() > EvictionAutoScaler.Status.MinReplicas {
-
-		// Don't scale down while pods are still awaiting eviction on cordoned nodes.
-		// The cooldown alone is not a reliable signal that the drain is complete — the
-		// drain controller may be on extended backoff after repeated PDB rejections.
-		// Scaling down prematurely causes thrashing (re-surge on next eviction attempt).
-		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
-		if countErr != nil {
-			logger.Error(countErr, "failed to count pods on cordoned nodes during scale-down check")
-			return ctrl.Result{}, countErr
-		}
-		if displaced > 0 {
-			logger.Info("Cordoned pods still pending eviction, holding surge",
-				"pdb", pdb.Name, "displaced", displaced)
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "holding surge while cordoned pods await eviction")
-			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
-
-		// Track scaling opportunity
-		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
-
-		//okay we have allowed disruptions, revert target to the original state
-		err = surgeApplier.RevertSurge(ctx, EvictionAutoScaler.Status.MinReplicas)
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Track actual scaling action
-		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
-
-		// Log the scaling action
-		logger.Info(fmt.Sprintf("Reverted surge on %s %s/%s (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeApplier.Name()))
-		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
-		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
-		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
-		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
-
-		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		return r.handleScaleDown(ctx, EvictionAutoScaler, pdb, target, surgeApplier)
 	}
 
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
@@ -342,6 +304,50 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+}
+
+// handleScaleDown reverts the surge once the drain is complete (no pods on cordoned
+// nodes, cooldown elapsed, disruptions allowed). Extracted to reduce Reconcile complexity.
+func (r *EvictionAutoScalerReconciler) handleScaleDown(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, target Surger, surgeApplier SurgeApplier) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	// Don't scale down while pods are still awaiting eviction on cordoned nodes.
+	// The cooldown alone is not a reliable signal that the drain is complete — the
+	// drain controller may be on extended backoff after repeated PDB rejections.
+	// Scaling down prematurely causes thrashing (re-surge on next eviction attempt).
+	displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
+	if countErr != nil {
+		logger.Error(countErr, "failed to count pods on cordoned nodes during scale-down check")
+		return ctrl.Result{}, countErr
+	}
+	if displaced > 0 {
+		logger.Info("Cordoned pods still pending eviction, holding surge",
+			"pdb", pdb.Name, "displaced", displaced)
+		ready(&eas.Status.Conditions, "Reconciled", "holding surge while cordoned pods await eviction")
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, eas)
+	}
+
+	// Track scaling opportunity
+	metrics.ScalingOpportunityCounter.WithLabelValues(eas.Namespace, eas.Spec.TargetName, metrics.ScaleDownAction, metrics.CooldownElapsedSignal).Inc()
+
+	//okay we have allowed disruptions, revert target to the original state
+	err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Track actual scaling action
+	metrics.ActualScalingCounter.WithLabelValues(eas.Namespace, eas.Spec.TargetName, metrics.ScaleDownAction).Inc()
+
+	// Log the scaling action
+	logger.Info(fmt.Sprintf("Reverted surge on %s %s/%s (via %s)", eas.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeApplier.Name()))
+	logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", eas.Status.TargetGeneration, target.Obj().GetGeneration()))
+	eas.Status.TargetGeneration = target.Obj().GetGeneration()
+	eas.Status.LastEviction = eas.Spec.LastEviction
+	logger.Info(fmt.Sprintf("Handled eviction %s", eas.Spec.LastEviction))
+
+	ready(&eas.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
+	return ctrl.Result{}, r.Status().Update(ctx, eas)
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {

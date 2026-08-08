@@ -24,6 +24,9 @@ type EvictionAutoScalerStatus struct {
 	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
 	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
 	Conditions       []metav1.Condition `json:"conditions,omitempty"`
+	// PinnedPDBFloor is the absolute PDB minAvailable floor pinned during a drain so a
+	// replica surge converts into DisruptionsAllowed; nil when no floor is currently held.
+	PinnedPDBFloor *int32 `json:"pinnedPDBFloor,omitempty"`
 }
 
 // +kubebuilder:object:root=true

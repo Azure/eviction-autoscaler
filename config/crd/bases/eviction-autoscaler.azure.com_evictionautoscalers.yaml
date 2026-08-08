@@ -133,6 +133,12 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              pinnedPDBFloor:
+                description: |-
+                  PinnedPDBFloor is the absolute PDB minAvailable floor pinned during a drain so a
+                  replica surge converts into DisruptionsAllowed; nil when no floor is currently held.
+                format: int32
+                type: integer
             required:
             - deploymentGeneration
             - minReplicas

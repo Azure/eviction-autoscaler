@@ -148,3 +148,7 @@ func (h *HPASurgeApplier) IsSurgeActive() bool {
 	}
 	return false
 }
+
+func (h *HPASurgeApplier) RecordedSurge() (int32, bool) {
+	return recordedSurgeFromAnnotations(h.hpa.Annotations)
+}

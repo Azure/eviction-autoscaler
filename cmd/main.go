@@ -270,7 +270,7 @@ func main() {
 			setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
 			os.Exit(1)
 		}
-		setupLog.Info("PDBToEvictionAutoScalerReconciler  setup completed")
+		setupLog.Info("PDBToEvictionAutoScalerReconciler setup completed")
 
 		if err = (&controllers.NodeReconciler{
 			Client: mgr.GetClient(),

@@ -589,6 +589,7 @@ spec:
   validations:
     - expression: "false"
       message: "Deployment Safeguards: writes to Deployments are blocked in this namespace"
+      reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicyBinding

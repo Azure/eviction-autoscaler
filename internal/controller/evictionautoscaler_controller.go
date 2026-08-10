@@ -14,7 +14,6 @@ import (
 
 	//v1 "k8s.io/api/apps/v1"
 
-	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -375,8 +374,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 }
 
 // pdbFloorMutationEnabled is the master switch for the PDB-floor pinning feature; it
-// ships OFF (dormant). A package var (not const) so tests can enable it and the
-// namespace-opt-in check stays reachable. PR4 wires it from install-time env.
+// ships OFF (dormant). A package var (not const) so tests can enable it. PR4 wires it
+// from install-time env.
 var pdbFloorMutationEnabled = false
 
 // holdsPinnedFloor reports whether we currently hold a pinned PDB floor, keyed off
@@ -406,32 +405,13 @@ func (r *EvictionAutoScalerReconciler) restoreFloorIfDrainHandled(ctx context.Co
 	return r.revertPDBFloor(ctx, eas, pdb)
 }
 
-// pinFloorBeforeSurge pins the PDB floor when the feature is enabled for the namespace;
+// pinFloorBeforeSurge pins the PDB floor when the feature master switch is on;
 // a no-op (0, false, nil) otherwise.
 func (r *EvictionAutoScalerReconciler) pinFloorBeforeSurge(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, liveReplicas int32) (int32, bool, error) {
-	allowed, err := r.pdbFloorMutationAllowed(ctx, eas.Namespace)
-	if err != nil {
-		return 0, false, err
-	}
-	if !allowed {
+	if !pdbFloorMutationEnabled {
 		return 0, false, nil
 	}
 	return r.ensurePDBFloor(ctx, eas, pdb, liveReplicas)
-}
-
-// pdbFloorMutationAllowed reports whether the feature may mutate PDBs in the namespace:
-// the master switch must be on AND the namespace must carry a truthy opt-in annotation.
-func (r *EvictionAutoScalerReconciler) pdbFloorMutationAllowed(ctx context.Context, namespace string) (bool, error) {
-	if !pdbFloorMutationEnabled {
-		return false, nil
-	}
-	ns := &corev1.Namespace{}
-	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err != nil {
-		return false, err
-	}
-	// ParseBool returns false on any error (missing/typo'd annotation → not opted in).
-	optIn, _ := strconv.ParseBool(ns.Annotations[AnnotationNamespacePDBFloorOptIn])
-	return optIn, nil
 }
 
 // ensurePDBFloor pins an absolute PDB floor derived from the partner's spec at the frozen

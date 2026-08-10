@@ -36,14 +36,13 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 
 	BeforeEach(func() {
 		// The master switch defaults to off (feature ships dormant); enable it for
-		// these specs. Harmless to other specs — they don't opt namespaces in.
+		// these specs. Harmless to other specs, which leave it off.
 		pdbFloorMutationEnabled = true
 		nsObj := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				GenerateName: "floor",
 				Annotations: map[string]string{
 					namespacefilter.EnableEvictionAutoscalerAnnotationKey: "true",
-					AnnotationNamespacePDBFloorOptIn:                      "true",
 				},
 			},
 		}

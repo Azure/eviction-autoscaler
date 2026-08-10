@@ -29,10 +29,6 @@ const (
 	// AnnotationPinnedFloor records the pinned floor on the PDB so it survives a lost
 	// CR status write (Status.PinnedPDBFloor).
 	AnnotationPinnedFloor = "eviction-autoscaler.azure.com/pinned-floor"
-
-	// AnnotationNamespacePDBFloorOptIn is the per-namespace opt-in; required (in
-	// addition to the master switch) before the controller mutates any PDB.
-	AnnotationNamespacePDBFloorOptIn = "eviction-autoscaler.azure.com/pdb-floor-mutation"
 )
 
 // isMutated reports whether the PDB carries our original-spec snapshot annotation.

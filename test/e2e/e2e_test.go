@@ -1295,6 +1295,9 @@ var _ = Describe("controller", Ordered, func() {
 				if condition == nil {
 					return fmt.Errorf("expected Degraded condition")
 				}
+				if meta.FindStatusCondition(ea.Status.Conditions, "Ready") != nil {
+					return fmt.Errorf("expected Ready condition to be removed")
+				}
 				if condition.Reason != "SurgeForbidden" {
 					return fmt.Errorf("expected SurgeForbidden reason, got %q", condition.Reason)
 				}

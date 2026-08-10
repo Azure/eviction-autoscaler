@@ -268,6 +268,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		if err != nil {
 			logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
 			if apierrors.IsForbidden(err) {
+				meta.RemoveStatusCondition(&EvictionAutoScaler.Status.Conditions, "Ready")
 				degraded(&EvictionAutoScaler.Status.Conditions, "SurgeForbidden", err.Error())
 				return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 			}

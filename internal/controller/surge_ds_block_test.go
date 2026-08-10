@@ -25,10 +25,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// forbidWritesInNamespace simulates Deployment Safeguards: it rejects every write to any
-// resource in the given protected namespace, matching how DS flatly rejects any write to an
-// AKS-owned namespace regardless of resource type. Only the main Update hook is set, so the
-// controller's own status-subresource writes still succeed and the block lands on the surge write.
+// rejectWritesInNamespace rejects main-resource updates in the given namespace using the supplied
+// error. Status-subresource writes still reach the underlying client.
 func rejectWritesInNamespace(namespace string, rejection func(client.Object) error) interceptor.Funcs {
 	return interceptor.Funcs{
 		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
@@ -40,6 +38,8 @@ func rejectWritesInNamespace(namespace string, rejection func(client.Object) err
 	}
 }
 
+// forbidWritesInNamespace simulates Deployment Safeguards rejecting every main-resource write in
+// an AKS-owned namespace while allowing the controller to persist status.
 func forbidWritesInNamespace(namespace string) interceptor.Funcs {
 	return rejectWritesInNamespace(namespace, func(obj client.Object) error {
 		return apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, obj.GetName(), nil)
@@ -157,6 +157,7 @@ var _ = Describe("EvictionAutoScaler controller when Deployment Safeguards block
 		updatedEA := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, eaKey, updatedEA)).To(Succeed())
 		condition := meta.FindStatusCondition(updatedEA.Status.Conditions, "Degraded")
+		Expect(meta.FindStatusCondition(updatedEA.Status.Conditions, "Ready")).To(BeNil())
 		Expect(condition).NotTo(BeNil())
 		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
 		Expect(condition.Reason).To(Equal("SurgeForbidden"))

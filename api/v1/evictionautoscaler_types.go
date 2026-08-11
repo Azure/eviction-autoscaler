@@ -24,6 +24,10 @@ type EvictionAutoScalerStatus struct {
 	MinReplicas      int32              `json:"minReplicas"`            // Minimum number of replicas to maintain
 	TargetGeneration int64              `json:"deploymentGeneration"`   // generation (spec hash) of deployment or statefulse
 	Conditions       []metav1.Condition `json:"conditions,omitempty"`
+	// PDBFloorPinned latches whether a PDB minAvailable floor is currently pinned for a drain
+	// (so a replica surge converts into DisruptionsAllowed). It is intent only: the PDB
+	// reconciler's actuator derives and writes the concrete floor, which lives on the PDB.
+	PDBFloorPinned bool `json:"pdbFloorPinned,omitempty"`
 }
 
 // +kubebuilder:object:root=true

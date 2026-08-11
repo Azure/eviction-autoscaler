@@ -10,6 +10,7 @@ import (
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -136,10 +137,13 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
-	// Check if PDB has the ownedBy annotation - if not, skip updates (user owns it)
+	// Check if PDB has the ownedBy annotation - if not, skip updates (user owns it),
+	// UNLESS we pinned a floor on it (feature enabled): a replica change must then unwind
+	// the now-stale pin even on a user-owned PDB.
 	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+	pinned := pdbFloorMutationEnabled && isMutated(&pdb)
 
-	if !hasAnnotation {
+	if !hasAnnotation && !pinned {
 		logger.Info("Skipping PDB update - not owned by DeploymentToPDBController",
 			"namespace", pdb.Namespace, "name", pdb.Name)
 		return nil
@@ -164,7 +168,8 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	}
 
 	// Track deployment.spec.replicas directly.
-	// But skip if the replica change was caused by our own eviction surge.
+	// But skip if the replica change was caused by our own eviction surge (the pin must
+	// stay in place during an active surge).
 	//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 	//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
 	// no surge happened but customer already increased deployment replicas, then annotation would not exist
@@ -179,6 +184,42 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			return nil
 		}
 	}
+
+	// A genuine (non-surge) replica change on a PDB we pinned: re-derive the floor from the
+	// original setting (maxUnavailable:x%/minAvailable:x) at the new replica base and re-pin,
+	// instead of tracking replicas directly.
+	if pinned {
+		origSpec, ok, snapErr := originalSpecFromSnapshot(&pdb)
+		if snapErr != nil {
+			return snapErr
+		}
+		if ok {
+			floor, floorErr := desiredHealthyAt(origSpec, *deployment.Spec.Replicas)
+			if floorErr != nil {
+				return floorErr
+			}
+			if floor > 0 && !pdbCarriesFloor(&pdb, floor) {
+				pinPDBFloor(&pdb, floor)
+				if err := r.Update(ctx, &pdb); err != nil {
+					if apierrors.IsConflict(err) {
+						// PDB changed under us — most likely restored by the actuator as the
+						// drain completed. Requeue; the re-read sees isMutated==false and skips
+						// re-pinning, so we don't resurrect a stale floor over a valid restore.
+						logger.V(1).Info("conflict re-pinning PDB floor, requeueing to re-evaluate",
+							"namespace", pdb.Namespace, "name", pdb.Name)
+						return err
+					}
+					logger.Error(err, "unable to re-pin pdb floor on replica change",
+						"namespace", pdb.Namespace, "name", pdb.Name, "floor", floor)
+					return err
+				}
+				logger.Info("Re-pinned PDB floor at new replica base",
+					"namespace", pdb.Namespace, "name", pdb.Name, "floor", floor)
+			}
+			return nil
+		}
+	}
+
 	minAvailable := *deployment.Spec.Replicas
 
 	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {

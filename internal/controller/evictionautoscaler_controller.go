@@ -241,16 +241,19 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			surgeTarget = maxSurgeTarget
 		}
 
-		// Policy only: publish the desired absolute PDB floor so the PDB reconciler pins it,
-		// converting the surge into DisruptionsAllowed. Captured once at the frozen baseline
-		// (liveReplicas == MinReplicas); an autoscaler above its min is skipped. Never writes
-		// the PDB here — actuation is the PDB reconciler's job.
-		if pdbFloorMutationEnabled && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
-			if dh, dhErr := desiredHealthyAt(pdb.Spec, EvictionAutoScaler.Status.MinReplicas); dhErr != nil {
-				logger.Error(dhErr, "failed to compute desired PDB floor; proceeding without it", "pdb", pdb.Name)
-			} else if dh > 0 {
-				EvictionAutoScaler.Status.PinnedPDBFloor = &dh
-			}
+		// Policy only: latch that a PDB floor should be pinned so the PDB reconciler actuates it,
+		// converting the surge into DisruptionsAllowed. Latched once at the frozen baseline
+		// (liveReplicas == MinReplicas); the concrete floor is derived and written by the
+		// actuator — this is intent only, never the PDB.
+		//
+		// Known limitation (HPA/KEDA above min): if traffic holds live replicas above the
+		// autoscaler's min when the drain hits (live != MinReplicas), we skip pinning rather
+		// than under-protect. The actuator can only anchor the floor at MinReplicas (it runs
+		// post-surge, so live replicas are already inflated), and MinReplicas must stay the
+		// true floor for surge sizing/revert — so the correct pre-surge base isn't available
+		// to pin against. Fixing it needs EAS to capture that base into its own status field.
+		if pdbFloorMutationEnabled && !EvictionAutoScaler.Status.PDBFloorPinned && target.GetReplicas() == EvictionAutoScaler.Status.MinReplicas {
+			EvictionAutoScaler.Status.PDBFloorPinned = true
 		}
 
 		if target.GetReplicas() >= surgeTarget {
@@ -318,8 +321,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, err
 		}
 
-		// Drain done — clear the desired floor so the PDB reconciler restores the partner PDB.
-		EvictionAutoScaler.Status.PinnedPDBFloor = nil
+		// Drain done — clear the latch so the PDB reconciler restores the partner PDB.
+		EvictionAutoScaler.Status.PDBFloorPinned = false
 
 		// Track actual scaling action
 		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
@@ -337,10 +340,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
-	// Only clear a floor we actually hold, so the PDB reconciler restores the partner PDB.
-	if EvictionAutoScaler.Status.PinnedPDBFloor != nil {
-		EvictionAutoScaler.Status.PinnedPDBFloor = nil
-	}
+	// Clear the latch so the PDB reconciler restores the partner PDB if we held a pin.
+	EvictionAutoScaler.Status.PDBFloorPinned = false
 	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))

@@ -11,7 +11,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
@@ -57,13 +56,14 @@ var _ = Describe("actuatePDBFloor", func() {
 		return out
 	}
 
-	easFloor := func(f *int32) *v1.EvictionAutoScaler {
-		return &v1.EvictionAutoScaler{Status: v1.EvictionAutoScalerStatus{PinnedPDBFloor: f}}
+	easPinned := func(pinned bool, minReplicas int32) *v1.EvictionAutoScaler {
+		return &v1.EvictionAutoScaler{Status: v1.EvictionAutoScalerStatus{PDBFloorPinned: pinned, MinReplicas: minReplicas}}
 	}
 
 	It("pins a relative PDB when a floor is desired", func() {
 		r, live := seed(relativePDB())
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(ptr.To(int32(4))))).To(Succeed())
+		// maxUnavailable:1 at MinReplicas 5 -> keep 4 healthy.
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(true, 5))).To(Succeed())
 
 		got := get(r)
 		Expect(got.Spec.MaxUnavailable).To(BeNil())
@@ -80,7 +80,7 @@ var _ = Describe("actuatePDBFloor", func() {
 		r, live := seed(pdb)
 		rv := get(r).ResourceVersion
 
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(ptr.To(int32(4))))).To(Succeed())
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(true, 5))).To(Succeed())
 		Expect(get(r).ResourceVersion).To(Equal(rv)) // no write
 	})
 
@@ -95,7 +95,7 @@ var _ = Describe("actuatePDBFloor", func() {
 		r, live := seed(pdb)
 		rv := get(r).ResourceVersion
 
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(ptr.To(int32(4))))).To(Succeed())
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(true, 5))).To(Succeed())
 		got := get(r)
 		Expect(got.ResourceVersion).To(Equal(rv)) // untouched
 		Expect(got.Spec.MaxUnavailable.StrVal).To(Equal("25%"))
@@ -107,7 +107,7 @@ var _ = Describe("actuatePDBFloor", func() {
 		pinPDBFloor(pdb, 4)
 		r, live := seed(pdb)
 
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(nil))).To(Succeed())
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(false, 0))).To(Succeed())
 		got := get(r)
 		Expect(got.Spec.MinAvailable).To(BeNil())
 		Expect(got.Spec.MaxUnavailable).NotTo(BeNil())
@@ -125,7 +125,7 @@ var _ = Describe("actuatePDBFloor", func() {
 		pdb.Spec.MaxUnavailable = &mu
 		r, live := seed(pdb)
 
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(nil))).To(Succeed())
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(false, 0))).To(Succeed())
 		got := get(r)
 		Expect(got.Spec.MaxUnavailable.StrVal).To(Equal("25%")) // partner edit preserved
 		Expect(got.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
@@ -135,7 +135,7 @@ var _ = Describe("actuatePDBFloor", func() {
 	It("is a no-op when no floor is desired and nothing is pinned", func() {
 		r, live := seed(relativePDB())
 		rv := get(r).ResourceVersion
-		Expect(r.actuatePDBFloor(ctx, live, easFloor(nil))).To(Succeed())
+		Expect(r.actuatePDBFloor(ctx, live, easPinned(false, 0))).To(Succeed())
 		Expect(get(r).ResourceVersion).To(Equal(rv))
 	})
 })

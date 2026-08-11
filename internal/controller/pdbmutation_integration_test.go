@@ -19,8 +19,8 @@ import (
 )
 
 // These tests exercise the split PDB-floor design end to end: the EAS reconciler is
-// policy-only (it publishes the desired absolute floor on EvictionAutoScaler.Status.
-// PinnedPDBFloor), and the PDB reconciler is the single writer that actuates that policy
+// policy-only (it latches pin intent on EvictionAutoScaler.Status.PDBFloorPinned), and the
+// PDB reconciler is the single writer that derives the floor and actuates that policy
 // onto the partner PDB. Each spec drives the EAS reconcile, then the actuator, mirroring
 // the two watch-triggered reconciles that run in production.
 //
@@ -132,7 +132,7 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 	}
 
 	// actuate runs the PDB reconciler's single-writer actuation once, converging the PDB
-	// toward whatever floor the EAS reconciler last published on Status.PinnedPDBFloor.
+	// toward the floor it derives while the EAS reconciler holds Status.PDBFloorPinned.
 	actuate := func(pdb *policyv1.PodDisruptionBudget) {
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
@@ -140,9 +140,9 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 		Expect(pdbReconciler.actuatePDBFloor(ctx, pdb, ea)).To(Succeed())
 	}
 
-	// surgeAndPin drives the policy reconcile (baseline then surge) so the EAS publishes
-	// PinnedPDBFloor=4 and surges the deployment to 7, then runs the actuator so the partner
-	// PDB is pinned to minAvailable=4.
+	// surgeAndPin drives the policy reconcile (baseline then surge) so the EAS latches
+	// PDBFloorPinned and surges the deployment to 7, then runs the actuator so the partner
+	// PDB is pinned to minAvailable=4 (the floor derived at the baseline of 5).
 	surgeAndPin := func(pdb *policyv1.PodDisruptionBudget) *v1.EvictionAutoScaler {
 		ea := &v1.EvictionAutoScaler{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
@@ -161,10 +161,9 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
 
-		// Policy: the EAS reconciler published the desired floor but did NOT touch the PDB.
+		// Policy: the EAS reconciler latched pin intent but did NOT touch the PDB.
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
-		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
+		Expect(ea.Status.PDBFloorPinned).To(BeTrue())
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
 		Expect(pdb.Spec.MinAvailable).To(BeNil())
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
@@ -204,7 +203,7 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 		Expect(*dep.Spec.Replicas).To(Equal(int32(5)))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 
 		// Actuation: with the desired floor cleared, the PDB reconciler restores the partner
 		// PDB to its exact original (maxUnavailable:1), annotations gone.
@@ -249,7 +248,7 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 		Expect(err).NotTo(HaveOccurred())
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 
 		actuate(pdb)
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
@@ -292,7 +291,7 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 
 		// Policy skipped: no floor published because live replicas (7) != MinReplicas (5).
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 
 		// Actuation is a no-op: the partner PDB is left exactly as-is.
 		actuate(pdb)
@@ -312,9 +311,9 @@ var _ = Describe("PDB floor pin/restore (split policy + actuation)", func() {
 
 	It("restores a lingering pin when the desired floor is cleared", func() {
 		// Aftermath of a partial cleanup: a prior drain pinned the PDB (minAvailable:4 + our
-		// tracking annotations) but the restore never completed, and the EAS no longer
-		// publishes a desired floor (Status.PinnedPDBFloor is nil). The actuator — the single
-		// writer — must restore the held pin on its next pass rather than let it linger.
+		// tracking annotations) but the restore never completed, and the EAS no longer holds a
+		// pin (Status.PDBFloorPinned is false). The actuator — the single writer — must restore
+		// the held pin on its next pass rather than let it linger.
 		createDeployment(5, intstr.FromInt32(2))
 
 		ma := intstr.FromInt32(4)

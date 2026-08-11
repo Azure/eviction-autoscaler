@@ -2,8 +2,8 @@
 PDB-floor actuation.
 
 The PDBToEvictionAutoScalerReconciler is the single writer of the PDB-floor pin. The EAS
-reconciler publishes the desired absolute floor on EvictionAutoScaler.Status.PinnedPDBFloor
-(policy); this actuator converges the PDB toward it (actuation):
+reconciler latches intent on EvictionAutoScaler.Status.PDBFloorPinned (policy); this actuator
+derives the concrete floor and converges the PDB toward it (actuation):
   - desired set & PDB not yet floored -> snapshot the partner spec, pin minAvailable: floor.
   - desired cleared & PDB still pinned -> restore the partner spec (or, if a partner
     overwrote our pin mid-drain, drop only our tracking and keep their spec).
@@ -27,11 +27,10 @@ import (
 // writes the PDB-floor pin.
 func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
 	logger := log.FromContext(ctx)
-	desired := eas.Status.PinnedPDBFloor
 
-	if desired != nil && *desired > 0 {
-		// Already at the desired floor, or a partner overwrote our pin mid-drain (isMutated
-		// but the live spec is no longer our floor) — stay passive in both cases.
+	if eas.Status.PDBFloorPinned {
+		// A partner overwrote our pin mid-drain (isMutated but the live spec is no longer our
+		// floor), or we already pinned — stay passive in both cases.
 		//
 		// TODO: honor-vs-re-pin is currently decided by whether the user's write kept our
 		// snapshot annotation (isMutated), not by intent — a spec-only edit is honored, but a
@@ -39,24 +38,35 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 		// user actions behave differently. Make it consistent: either (a) an ownership marker
 		// so a user takeover always honors (never re-pin over a stripped PDB), or (b) recompute
 		// the floor from the user's new spec and re-pin, skipping when the result is nonsensical.
-		if pdbCarriesFloor(pdb, *desired) || isMutated(pdb) {
+		if isMutated(pdb) {
 			return nil
 		}
+		// Not yet pinned: pdb.Spec is still the partner's original, so derive the absolute floor
+		// at the frozen baseline (Status.MinReplicas) and pin it — the value lives on the PDB,
+		// status carries only intent.
+		//
 		// Only user-owned relative PDBs are materially pinned here. A controller-owned PDB
-		// already carries an absolute minAvailable == F, so pdbCarriesFloor short-circuits
-		// above (no snapshot, never isMutated). This is why there's no conflict with the
-		// sibling reconcilers: DeploymentToPDBReconciler/AutoscalerToPDBReconciler only write
-		// controller-owned PDBs (and the autoscaler one also skips during surge), while the
-		// pin's real target is exactly the user-owned PDBs they never touch.
+		// already carries an absolute minAvailable == F, so pdbCarriesFloor short-circuits below
+		// (no snapshot). This is why there's no conflict with the sibling reconcilers:
+		// DeploymentToPDBReconciler/AutoscalerToPDBReconciler only write controller-owned PDBs
+		// (and the autoscaler one also skips during surge), while the pin's real target is
+		// exactly the user-owned PDBs they never touch.
+		floor, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
+		if err != nil {
+			return err
+		}
+		if floor <= 0 || pdbCarriesFloor(pdb, floor) {
+			return nil
+		}
 		if err := snapshotPDBSpec(pdb); err != nil {
 			return err
 		}
-		pinPDBFloor(pdb, *desired)
-		logger.Info("Pinning PDB floor", "pdb", pdb.Name, "floor", *desired)
+		pinPDBFloor(pdb, floor)
+		logger.Info("Pinning PDB floor", "pdb", pdb.Name, "floor", floor)
 		return r.updatePDBConflictAware(ctx, pdb)
 	}
 
-	// Desired cleared. Restore the partner's spec only when our pin is intact; if a partner
+	// Not pinned. Restore the partner's spec only when our pin is intact; if a partner
 	// overwrote it, preserve their live spec and just drop our tracking annotations.
 	floor, floorKnown := pinnedFloorFromPDB(pdb)
 	switch {

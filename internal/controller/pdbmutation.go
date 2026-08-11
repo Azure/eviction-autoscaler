@@ -5,8 +5,8 @@ During a PDB-blocked drain the controller pins the target's PDB to an absolute
 minAvailable floor (the partner's required-healthy count at the pre-surge baseline,
 Status.MinReplicas) so a replica surge converts into DisruptionsAllowed instead of
 being tracked away by a relative floor, then restores the partner's spec when the
-drain finishes. The floor is captured once and persisted (on the PDB annotation and
-Status.PinnedPDBFloor); a partner overwriting the PDB mid-drain is honored, not
+drain finishes. The floor is captured once and persisted on the PDB annotation while the
+EAS latches Status.PDBFloorPinned; a partner overwriting the PDB mid-drain is honored, not
 clobbered. Helpers here are pure functions over the PDB; the reconcile loop performs
 the client Update.
 */
@@ -27,7 +27,7 @@ const (
 	AnnotationOriginalPDBSpec = "eviction-autoscaler.azure.com/original-pdb-spec"
 
 	// AnnotationPinnedFloor records the pinned floor on the PDB so it survives a lost
-	// CR status write (Status.PinnedPDBFloor).
+	// CR status write and is the source of truth for the current floor value.
 	AnnotationPinnedFloor = "eviction-autoscaler.azure.com/pinned-floor"
 )
 

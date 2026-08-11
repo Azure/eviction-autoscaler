@@ -86,18 +86,29 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Find the PDB that matches this deployment's pod selector labels.
-	// Only consider PDBs created by this controller (ownedBy annotation) — user-managed PDBs
-	// should not be modified. If no controller-owned PDB exists, there's nothing to update.
+	// We consider any matching PDB (not just controller-owned): a user-managed PDB that we
+	// pinned a floor onto must also be re-derived here when the autoscaler floor moves,
+	// mirroring DeploymentToPDBReconciler for the non-autoscaler path. Non-pinned user PDBs
+	// are still left untouched (guarded below).
 	//
 	// PDB creation is intentionally left to DeploymentToPDBReconciler, not this controller.
 	// The pdb-create annotation lives on the Deployment, so the deployment controller is the
 	// natural place to gate and create PDBs. Duplicating that decision here (or supporting
 	// the annotation on HPA/ScaledObject too) would add complexity without benefit.
-	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, true)
+	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, false)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if !found {
+		return reconcile.Result{}, nil
+	}
+
+	// Only touch controller-owned PDBs, UNLESS we pinned a floor on a user-owned one
+	// (feature enabled): an autoscaler-floor change must then re-derive the now-stale pin.
+	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+	pinned := pdbFloorMutationEnabled && isMutated(pdb)
+	if !hasAnnotation && !pinned {
+		logger.V(1).Info("PDB not owned by controller and not pinned, skipping", "pdb", pdb.Name)
 		return reconcile.Result{}, nil
 	}
 
@@ -112,6 +123,40 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		logger.V(1).Info("No HPA/KEDA found for deployment, skipping PDB update",
 			"deployment", deploymentName)
 		return reconcile.Result{}, nil
+	}
+
+	// A pinned PDB: re-derive the floor from the partner's original setting
+	// (maxUnavailable:x%/minAvailable:x) at the new autoscaler floor and re-pin, instead of
+	// writing the raw autoscaler min — mirrors the deployment controller's re-pin-at-new-base.
+	if pinned {
+		origSpec, ok, snapErr := originalSpecFromSnapshot(pdb)
+		if snapErr != nil {
+			return reconcile.Result{}, snapErr
+		}
+		if ok {
+			floor, floorErr := desiredHealthyAt(origSpec, minAvailable)
+			if floorErr != nil {
+				return reconcile.Result{}, floorErr
+			}
+			if floor > 0 && !pdbCarriesFloor(pdb, floor) {
+				pinPDBFloor(pdb, floor)
+				if err := r.Update(ctx, pdb); err != nil {
+					if apierrors.IsConflict(err) {
+						// PDB changed under us — most likely restored by the actuator as the
+						// drain completed. Requeue; the re-read sees isMutated==false and skips
+						// re-pinning, so we don't resurrect a stale floor over a valid restore.
+						logger.V(1).Info("conflict re-pinning PDB floor from autoscaler, requeueing",
+							"pdb", pdb.Name)
+						return reconcile.Result{}, err
+					}
+					logger.Error(err, "unable to re-pin PDB floor from autoscaler floor",
+						"pdb", pdb.Name, "floor", floor)
+					return reconcile.Result{}, err
+				}
+				logger.Info("Re-pinned PDB floor at new autoscaler base", "pdb", pdb.Name, "floor", floor)
+			}
+			return reconcile.Result{}, nil
+		}
 	}
 
 	// Idempotency: skip the API write if the PDB already has the correct value.

@@ -6,6 +6,7 @@ import (
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 )
 
 func pdbWithMaxUnavailable(mu intstr.IntOrString) *policyv1.PodDisruptionBudget {
@@ -53,6 +54,28 @@ var _ = Describe("pdbCarriesFloor", func() {
 	})
 	It("is false when minAvailable is nil", func() {
 		Expect(pdbCarriesFloor(pdbWithMaxUnavailable(intstr.FromInt32(1)), 101)).To(BeFalse())
+	})
+})
+
+var _ = Describe("pdbSpecMatchesSnapshot", func() {
+	It("is false when the PDB is not mutated", func() {
+		match, err := pdbSpecMatchesSnapshot(pdbWithMaxUnavailable(intstr.FromInt32(1)))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(match).To(BeFalse())
+	})
+
+	It("detects whether live floor fields byte-match the snapshot", func() {
+		pdb := pdbWithMaxUnavailable(intstr.FromInt32(1))
+		Expect(snapshotPDBSpec(pdb)).To(Succeed())
+		match, err := pdbSpecMatchesSnapshot(pdb)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(match).To(BeTrue())
+
+		pdb.Spec.MaxUnavailable = nil
+		pdb.Spec.MinAvailable = ptr.To(intstr.FromInt32(4))
+		match, err = pdbSpecMatchesSnapshot(pdb)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(match).To(BeFalse())
 	})
 })
 

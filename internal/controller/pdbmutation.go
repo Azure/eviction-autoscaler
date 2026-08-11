@@ -50,6 +50,21 @@ func pdbCarriesFloor(pdb *policyv1.PodDisruptionBudget, floor int32) bool {
 	return ma.Type == intstr.Int && ma.IntVal == floor
 }
 
+func pdbSpecMatchesSnapshot(pdb *policyv1.PodDisruptionBudget) (bool, error) {
+	if !isMutated(pdb) {
+		return false, nil
+	}
+	snap := pdbFloorSnapshot{
+		MinAvailable:   pdb.Spec.MinAvailable,
+		MaxUnavailable: pdb.Spec.MaxUnavailable,
+	}
+	specBytes, err := json.Marshal(snap)
+	if err != nil {
+		return false, fmt.Errorf("pdbSpecMatchesSnapshot: marshal snapshot: %w", err)
+	}
+	return string(specBytes) == pdb.Annotations[AnnotationOriginalPDBSpec], nil
+}
+
 // pdbFloorSnapshot is the restore snapshot: only the two mutually-exclusive fields
 // we ever mutate, so restore never rolls back a partner's edit to a field we don't
 // manage (Selector, UnhealthyPodEvictionPolicy).

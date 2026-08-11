@@ -97,6 +97,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
 
+	// Flag-off clear: if the master switch is off but a pinned-floor policy is still
+	// recorded, clear it unconditionally. Placed before namespace/target/surge lookups
+	// (all of which can early-return) so turning the flag off always un-pins.
+	if clearPinnedFloorIfDisabled(EvictionAutoScaler) {
+		logger.Info("PDB floor mutation disabled, clearing pinned PDB floor policy")
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
 	// Check if eviction autoscaler should be enabled for this namespace
 	isEnabled, err := r.Filter.Filter(ctx, r.Client, EvictionAutoScaler.Namespace)
 	if err != nil {
@@ -175,19 +183,13 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err
 	}
 
-	// Bail-on-replica-change: if we hold a pinned floor and the target's replica count
-	// changed externally, restore the partner PDB and clear the pin before any surge/pin
-	// decisions. The flow below may then re-pin fresh at the current baseline (self-heal).
-	if holdsPinnedFloor(EvictionAutoScaler, pdb) && externalReplicaChange(EvictionAutoScaler, target, surgeApplier) {
-		logger.Info("External replica change detected while holding a pinned PDB floor, bailing", "pdb", pdb.Name)
-		if err := r.revertPDBFloor(ctx, EvictionAutoScaler, pdb); err != nil {
-			return ctrl.Result{}, err
-		}
-		// Persist the cleared floor now so a later non-status-writing return path doesn't
-		// leave holdsPinnedFloor true and re-fire this no-op bail every reconcile.
-		if err := r.Status().Update(ctx, EvictionAutoScaler); err != nil {
-			return ctrl.Result{}, err
-		}
+	// Bail-on-replica-change: if policy says a pinned floor is active and the target's
+	// replica count changed externally, clear the policy and end the pass. Returning here
+	// is required so the pin condition further down cannot re-pin in the same reconcile.
+	// The PDB actuator restores the partner PDB async.
+	if bailPinnedFloorOnExternalChange(EvictionAutoScaler, target, surgeApplier) {
+		logger.Info("External replica change detected while holding a pinned PDB floor policy, bailing", "pdb", pdb.Name)
+		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
@@ -217,11 +219,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Have we processed all evictions okay don't do anything else
 	if EvictionAutoScaler.Spec.LastEviction == EvictionAutoScaler.Status.LastEviction {
-		// Drain is fully handled; if the PDB is still mutated (or we still hold a
-		// pinned floor), restore the partner PDB. Keyed off the PDB's own state so
-		// a pin whose status write never landed is still cleaned up.
-		if err := r.restoreFloorIfDrainHandled(ctx, EvictionAutoScaler, pdb); err != nil {
-			return ctrl.Result{}, err
+		if EvictionAutoScaler.Status.PinnedPDBFloor != nil {
+			EvictionAutoScaler.Status.PinnedPDBFloor = nil
 		}
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "no unhandled eviction")
@@ -250,70 +249,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
-		displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
-		if countErr != nil {
-			logger.Error(countErr, "failed to count displaced pods on cordoned nodes")
-			return ctrl.Result{}, countErr
-		}
-
-		surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
-		if surgeTarget > maxSurgeTarget {
-			logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
-			surgeTarget = maxSurgeTarget
-		}
-
-		// Pin an absolute PDB floor so the surge converts into DisruptionsAllowed. Idempotent
-		// (first-capture-gated) and non-fatal — a pin failure never blocks drain relief. Skipped
-		// during an external replica change (the top-of-reconcile bail already un-pinned).
-		if !externalReplicaChange(EvictionAutoScaler, target, surgeApplier) {
-			floor, pinned, pinErr := r.pinFloorBeforeSurge(ctx, EvictionAutoScaler, pdb, target.GetReplicas())
-			if pinErr != nil {
-				logger.Error(pinErr, "failed to pin PDB floor; proceeding without blocking the surge (will retry)", "pdb", pdb.Name)
-			} else if pinned {
-				EvictionAutoScaler.Status.PinnedPDBFloor = &floor
-			}
-		}
-
-		if target.GetReplicas() >= surgeTarget {
-			//we've scaled up but pdb is still blockign may just be waiting for new pods to become ready
-			logger.Info("Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting",
-				"pdb", pdb.Name,
-				"target", EvictionAutoScaler.Spec.TargetName)
-			ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting")
-			return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
-
-		logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
-
-		// Surface when the fleet-wide zero-maxSurge override drives a surge — we are
-		// deliberately surging a workload whose author set an explicit (often 0)
-		// rollout maxSurge. Logged only when a surge actually fires.
-		r.logZeroSurgeOverride(ctx, target, surgeTarget)
-
-		// Track blocked eviction if the PDB is blocking the eviction
-		metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
-
-		// Track scaling opportunity with signal label
-		signalLabel := metrics.GetScalingSignal(pdb)
-		metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
-
-		err = surgeApplier.ApplySurge(ctx, surgeTarget)
-		if err != nil {
-			logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
-			return ctrl.Result{}, err
-		}
-
-		// Track actual scaling action
-		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
-
-		// Log the scaling action
-		logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
-		logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
-		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
-		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
-		//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
-		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
-		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+		return r.handleBlockedDrain(ctx, EvictionAutoScaler, target, pdb, surgeApplier, maxSurgeTarget)
 	}
 
 	//what if we're allowed disruptions >0 and minreplicas == replicas? Could argue that we should mark the eviction as handled
@@ -339,10 +275,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, err
 		}
 
-		// Restore the partner PDB now the drain is done (after the surge revert; a restore
-		// failure requeues with the deployment already at baseline — the safe order).
-		if err := r.revertPDBFloor(ctx, EvictionAutoScaler, pdb); err != nil {
-			return ctrl.Result{}, err
+		if EvictionAutoScaler.Status.PinnedPDBFloor != nil {
+			EvictionAutoScaler.Status.PinnedPDBFloor = nil
 		}
 
 		// Track actual scaling action
@@ -361,11 +295,8 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
-	// Also restore a still-held pin here: a prior scale-down may have reverted the surge
-	// but failed to restore the PDB, and a status-only update won't re-trigger a reconcile —
-	// so clean it up on this terminal path. No-op when nothing is pinned.
-	if err := r.restoreFloorIfDrainHandled(ctx, EvictionAutoScaler, pdb); err != nil {
-		return ctrl.Result{}, err
+	if EvictionAutoScaler.Status.PinnedPDBFloor != nil {
+		EvictionAutoScaler.Status.PinnedPDBFloor = nil
 	}
 	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
@@ -378,11 +309,113 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 // from install-time env.
 var pdbFloorMutationEnabled = false
 
-// holdsPinnedFloor reports whether we currently hold a pinned PDB floor, keyed off
-// the PDB's own mutation state or the recorded floor on the CR status (so a pin whose
-// status write never landed still counts).
-func holdsPinnedFloor(eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) bool {
-	return isMutated(pdb) || eas.Status.PinnedPDBFloor != nil
+// clearPinnedFloorIfDisabled clears a recorded pinned-floor policy when the master switch is
+// off. Returns true if it cleared one (the caller then persists status). Our block.
+func clearPinnedFloorIfDisabled(eas *myappsv1.EvictionAutoScaler) bool {
+	if pdbFloorMutationEnabled || eas.Status.PinnedPDBFloor == nil {
+		return false
+	}
+	eas.Status.PinnedPDBFloor = nil
+	return true
+}
+
+// bailPinnedFloorOnExternalChange clears a pinned-floor policy when a replica change we did not
+// make is detected while we hold one. Returns true if it cleared (caller persists status). Our block.
+func bailPinnedFloorOnExternalChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {
+	if eas.Status.PinnedPDBFloor == nil || !externalReplicaChange(eas, target, surgeApplier) {
+		return false
+	}
+	eas.Status.PinnedPDBFloor = nil
+	return true
+}
+
+// handleBlockedDrain runs the DisruptionsAllowed==0 surge path: it counts displaced pods,
+// computes the demand-driven surge target (capped at the maxSurge ceiling), pins the PDB
+// floor policy when we are driving our own surge, and either waits (already surged) or
+// applies the surge. Extracted from Reconcile to keep its cyclomatic complexity in check.
+func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, EvictionAutoScaler *myappsv1.EvictionAutoScaler, target Surger, pdb *policyv1.PodDisruptionBudget, surgeApplier SurgeApplier, maxSurgeTarget int32) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
+	if countErr != nil {
+		logger.Error(countErr, "failed to count displaced pods on cordoned nodes")
+		return ctrl.Result{}, countErr
+	}
+
+	surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
+	if surgeTarget > maxSurgeTarget {
+		logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
+		surgeTarget = maxSurgeTarget
+	}
+
+	// Pin the PDB floor whenever WE are driving the surge (baseline OR our recorded surge).
+	if floor := pinnedFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb); floor != nil {
+		EvictionAutoScaler.Status.PinnedPDBFloor = floor
+	}
+
+	if target.GetReplicas() >= surgeTarget {
+		//we've scaled up but pdb is still blockign may just be waiting for new pods to become ready
+		logger.Info("Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting",
+			"pdb", pdb.Name,
+			"target", EvictionAutoScaler.Spec.TargetName)
+		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting")
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+	}
+
+	logger.Info("No disruptions allowed, scaling up", "pdb", pdb.Name, "lastEviction", EvictionAutoScaler.Spec.LastEviction, "strategy", surgeApplier.Name(), "displaced", displaced, "surgeTarget", surgeTarget)
+
+	// Surface when the fleet-wide zero-maxSurge override drives a surge — we are
+	// deliberately surging a workload whose author set an explicit (often 0)
+	// rollout maxSurge. Logged only when a surge actually fires.
+	r.logZeroSurgeOverride(ctx, target, surgeTarget)
+
+	// Track blocked eviction if the PDB is blocking the eviction
+	metrics.BlockedEvictionCounter.WithLabelValues(EvictionAutoScaler.Namespace, pdb.Name).Inc()
+
+	// Track scaling opportunity with signal label
+	signalLabel := metrics.GetScalingSignal(pdb)
+	metrics.ScalingOpportunityCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction, signalLabel).Inc()
+
+	if err := surgeApplier.ApplySurge(ctx, surgeTarget); err != nil {
+		logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
+		return ctrl.Result{}, err
+	}
+
+	// Track actual scaling action
+	metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
+
+	// Log the scaling action
+	logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
+	logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
+	// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
+	EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
+	//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
+	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
+	return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
+}
+
+// pinnedFloorForOwnSurge returns the PDB floor to pin when WE are driving the surge — either
+// sitting at the frozen baseline about to surge, or already holding a surge we ourselves
+// applied. Coupling to "our surge" (baseline OR our recorded surge) instead of the fleeting
+// live==MinReplicas instant makes the pin idempotent across reconciles: a lost status write
+// self-heals on the next pass while we still hold the surge. A replica change we didn't make
+// (HPA-above-min, manual scale) matches neither and returns nil (no pin). Returns nil when the
+// feature is off or the derived floor is not positive.
+func pinnedFloorForOwnSurge(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier, pdb *policyv1.PodDisruptionBudget) *int32 {
+	if !pdbFloorMutationEnabled {
+		return nil
+	}
+	recordedSurge, hasRecordedSurge := surgeApplier.RecordedSurge()
+	ourSurge := (target.GetReplicas() == eas.Status.MinReplicas) ||
+		(hasRecordedSurge && target.GetReplicas() == recordedSurge)
+	if !ourSurge {
+		return nil
+	}
+	dh, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
+	if err != nil || dh <= 0 {
+		return nil
+	}
+	return &dh
 }
 
 // externalReplicaChange reports whether the target's replica count changed outside our
@@ -393,76 +426,6 @@ func externalReplicaChange(eas *myappsv1.EvictionAutoScaler, target Surger, surg
 	}
 	recorded, ok := surgeApplier.RecordedSurge()
 	return ok && target.GetReplicas() != recorded
-}
-
-// restoreFloorIfDrainHandled restores the partner PDB once the drain is handled; no-op
-// when no floor is held.
-func (r *EvictionAutoScalerReconciler) restoreFloorIfDrainHandled(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	if !holdsPinnedFloor(eas, pdb) {
-		return nil
-	}
-	log.FromContext(ctx).Info("Drain handled, restoring partner PDB", "pdb", pdb.Name)
-	return r.revertPDBFloor(ctx, eas, pdb)
-}
-
-// pinFloorBeforeSurge pins the PDB floor when the feature master switch is on;
-// a no-op (0, false, nil) otherwise.
-func (r *EvictionAutoScalerReconciler) pinFloorBeforeSurge(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, liveReplicas int32) (int32, bool, error) {
-	if !pdbFloorMutationEnabled {
-		return 0, false, nil
-	}
-	return r.ensurePDBFloor(ctx, eas, pdb, liveReplicas)
-}
-
-// ensurePDBFloor pins an absolute PDB floor derived from the partner's spec at the frozen
-// baseline (Status.MinReplicas). Pins once (no-op if already pinned, never re-pins over a
-// partner overwrite); first-capture is skipped unless liveReplicas == MinReplicas, so an
-// autoscaler above its min is never pinned.
-func (r *EvictionAutoScalerReconciler) ensurePDBFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, liveReplicas int32) (int32, bool, error) {
-	var floor int32
-	firstCapture := false
-	pinnedFloor, hasPinnedFloor := pinnedFloorFromPDB(pdb)
-	switch {
-	case hasPinnedFloor:
-		// Existing pin recorded on the PDB is the durable source of truth.
-		floor = pinnedFloor
-	case eas.Status.PinnedPDBFloor != nil:
-		floor = *eas.Status.PinnedPDBFloor
-	default:
-		firstCapture = true
-		// Only pin at the frozen baseline (liveReplicas == MinReplicas). An autoscaler
-		// above its min would get a floor derived at the min — over-permissive — so skip
-		// it (deferred follow-up). Plain Deployments always satisfy this, so it's a no-op.
-		if liveReplicas != eas.Status.MinReplicas {
-			return 0, false, nil
-		}
-		// Derive the floor synchronously from the partner spec at MinReplicas (mirrors the
-		// built-in Status.DesiredHealthy without depending on that async field).
-		dh, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
-		if err != nil {
-			return 0, false, err
-		}
-		floor = dh
-	}
-	if floor <= 0 {
-		// PDB expresses no availability requirement at baseline — nothing to protect.
-		return 0, false, nil
-	}
-
-	// Pin only on first capture. If a pin was already recorded but the PDB no longer
-	// carries it, a partner overwrote it mid-drain — leave their spec untouched (no
-	// defend; the guarded restore preserves their edit at completion).
-	if firstCapture && !pdbCarriesFloor(pdb, floor) {
-		if err := snapshotPDBSpec(pdb); err != nil {
-			return 0, false, err
-		}
-		pinPDBFloor(pdb, floor)
-		if err := r.Update(ctx, pdb); err != nil {
-			return 0, false, err
-		}
-	}
-
-	return floor, true, nil
 }
 
 // desiredHealthyAt computes a PDB's desired-healthy count at a replica count, mirroring
@@ -490,41 +453,6 @@ func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (in
 	default:
 		return 0, nil
 	}
-}
-
-// revertPDBFloor restores the partner's PDB and clears the persisted floor. Guarded: it
-// writes the snapshot back only when the PDB still carries our pin; if a partner
-// overwrote it, we keep their spec and just drop our tracking. No-op when nothing is pinned.
-func (r *EvictionAutoScalerReconciler) revertPDBFloor(ctx context.Context, eas *myappsv1.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	floor, floorKnown := pinnedFloorFromPDB(pdb)
-	if !floorKnown && eas.Status.PinnedPDBFloor != nil {
-		floor, floorKnown = *eas.Status.PinnedPDBFloor, true
-	}
-	switch {
-	case floorKnown && pdbCarriesFloor(pdb, floor):
-		// Our pin is intact — restore the partner's original spec.
-		changed, err := restorePDBSpec(pdb)
-		if err != nil {
-			// Corrupt snapshot — leave the mutated spec in place for an operator
-			// rather than dropping the partner's config.
-			return err
-		}
-		if changed {
-			if err := r.Update(ctx, pdb); err != nil {
-				return err
-			}
-		}
-	case isMutated(pdb):
-		// Partner overwrote our pin with their own edit; preserve their live spec and
-		// only drop our tracking annotations so we stop claiming the pin.
-		delete(pdb.Annotations, AnnotationOriginalPDBSpec)
-		delete(pdb.Annotations, AnnotationPinnedFloor)
-		if err := r.Update(ctx, pdb); err != nil {
-			return err
-		}
-	}
-	eas.Status.PinnedPDBFloor = nil
-	return nil
 }
 
 func ready(conditions *[]metav1.Condition, reason string, message string) {

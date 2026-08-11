@@ -69,6 +69,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		return reconcile.Result{}, err
 	}
 	if !isEnabled {
+		// Namespace disabled: restore the partner PDB if we left a floor pinned.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
 		// Only delete EvictionAutoScaler for user-owned PDbs
 		// Controller-owned PDbs will be deleted by DeploymentToPDBReconciler, which cascade-deletes the EvictionAutoScaler
@@ -92,6 +98,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
+		}
+		// EvictionAutoScaler gone but the PDB still carries our floor: restore it.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
 		}
 
 		deploymentName, _, e := r.discoverDeployment(ctx, &pdb)
@@ -138,14 +150,86 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
 		}
-
 		// Track EvictionAutoScaler creation
 		metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
-
 		logger.Info("Created EvictionAutoScaler")
+	} else if !EvictionAutoScaler.DeletionTimestamp.IsZero() {
+		// EvictionAutoScaler is being deleted: restore the partner PDB if we pinned it.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+		return reconcile.Result{}, nil
 	}
-	// Return no error and no requeue
+
+	// Converge the PDB floor toward the EAS policy (pin / edit-honor / restore).
+	if err := r.actuatePDBFloor(ctx, &pdb, &EvictionAutoScaler); err != nil {
+		return reconcile.Result{}, err
+	}
 	return reconcile.Result{}, nil
+}
+
+func pdbCarriesFloorAnnotations(pdb *policyv1.PodDisruptionBudget) bool {
+	if isMutated(pdb) {
+		return true
+	}
+	_, ok := pinnedFloorFromPDB(pdb)
+	return ok
+}
+
+func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
+	active := eas != nil && eas.Status.PinnedPDBFloor != nil
+	if active {
+		if f, ok := pinnedFloorFromPDB(pdb); ok && pdbCarriesFloor(pdb, f) {
+			return nil
+		}
+		matches, err := pdbSpecMatchesSnapshot(pdb)
+		if err != nil {
+			return err
+		}
+		if isMutated(pdb) && matches {
+			return nil
+		}
+		floor, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
+		if err != nil {
+			return err
+		}
+		if floor <= 0 {
+			return nil
+		}
+		if pdbCarriesFloor(pdb, floor) {
+			return nil
+		}
+		if err := snapshotPDBSpec(pdb); err != nil {
+			return err
+		}
+		pinPDBFloor(pdb, floor)
+		return r.updatePDBConflictAware(ctx, pdb)
+	}
+
+	if f, ok := pinnedFloorFromPDB(pdb); ok && pdbCarriesFloor(pdb, f) {
+		changed, err := restorePDBSpec(pdb)
+		if err != nil {
+			return err
+		}
+		if changed {
+			return r.updatePDBConflictAware(ctx, pdb)
+		}
+	} else if isMutated(pdb) {
+		delete(pdb.Annotations, AnnotationOriginalPDBSpec)
+		delete(pdb.Annotations, AnnotationPinnedFloor)
+		return r.updatePDBConflictAware(ctx, pdb)
+	}
+	return nil
+}
+
+func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
+	err := r.Update(ctx, pdb)
+	if apierrors.IsConflict(err) {
+		log.FromContext(ctx).V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
+	}
+	return err
 }
 
 // handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
@@ -230,15 +314,16 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(requeuePDBsOnNamespaceChange(r.Client))).
+		Watches(&types.EvictionAutoScaler{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+			return []reconcile.Request{{NamespacedName: k8s_types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}}}
+		})).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				// Only filter PDB updates; let Namespace updates through so namespace
-				// annotation changes (enable/disable) trigger cleanup of EvictionAutoScalers
 				if _, ok := e.ObjectNew.(*policyv1.PodDisruptionBudget); ok {
 					return triggerOnPDBAnnotationChange(e, logger)
 				}
-				// For non-PDB objects (e.g. Namespace), always trigger
+				// For non-PDB objects (e.g. Namespace, EvictionAutoScaler), always trigger
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },

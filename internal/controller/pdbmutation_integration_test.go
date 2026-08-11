@@ -10,6 +10,7 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +32,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		ns            string
 		nsName        types.NamespacedName
 		reconciler    *EvictionAutoScalerReconciler
+		pdbReconciler *PDBToEvictionAutoScalerReconciler
 		selectorMatch = map[string]string{"app": "floor-test"}
 	)
 
@@ -51,6 +53,11 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		nsName = types.NamespacedName{Name: name, Namespace: ns}
 
 		reconciler = &EvictionAutoScalerReconciler{
+			Client: k8sClient,
+			Scheme: k8sClient.Scheme(),
+			Filter: &evictionTestFilter{},
+		}
+		pdbReconciler = &PDBToEvictionAutoScalerReconciler{
 			Client: k8sClient,
 			Scheme: k8sClient.Scheme(),
 			Filter: &evictionTestFilter{},
@@ -123,6 +130,11 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		return pdb
 	}
 
+	actuatePDB := func() {
+		_, err := pdbReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+	}
+
 	// surgeAndPin drives the initial reconcile (baseline) then the surge reconcile,
 	// leaving the PDB pinned to minAvailable=4 and the deployment surged to 7.
 	surgeAndPin := func(pdb *policyv1.PodDisruptionBudget) *v1.EvictionAutoScaler {
@@ -143,14 +155,16 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
 
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
+		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
+		actuatePDB()
+
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
 		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
 		Expect(pdb.Annotations).To(HaveKey(AnnotationOriginalPDBSpec))
-		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
-		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
 		return ea
 	}
 
@@ -172,6 +186,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
 
 		// PDB restored to the partner's exact original (maxUnavailable:1), annotations gone.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
@@ -205,6 +220,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
 
 		// The bail restored the partner PDB and cleared the pin.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
@@ -241,6 +257,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 			Expect(err).NotTo(HaveOccurred())
 		}
+		actuatePDB()
 
 		// The PDB stays restored to the partner's original (maxUnavailable:1), pin cleared.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
@@ -254,7 +271,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
 	})
 
-	It("does not defend a passive PDB edit and preserves it on completion (guarded restore)", func() {
+	It("honors a mid-drain PDB edit and preserves it on completion", func() {
 		createDeployment(5, intstr.FromInt32(5)) // maxSurge:5 so the surge is not capped at 7
 		pdb := makeBlockedPDB()
 		cordonWithPods(2)
@@ -269,36 +286,38 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
 		setPDBStatus(pdb, 0, 7, 4, 7)
 
+		// The PDB actuator honors the edit by re-deriving at the frozen baseline:
+		// maxUnavailable:2 at 5 replicas => minAvailable floor 3.
+		actuatePDB()
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(3)))
+
 		// Grow the displaced count so surgeTarget (5+4=9) exceeds current replicas (7).
-		// This routes the reconcile THROUGH pinFloorBeforeSurge -> ensurePDBFloor with
-		// the partner's edit live — genuinely exercising the no-defend path (a defend
-		// would re-pin minAvailable:4 here). Without this, GetReplicas()>=surgeTarget
-		// early-returns before ensurePDBFloor runs.
 		addCordonedPods(2)
 
 		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
 
-		// ensurePDBFloor ran (proven by the re-surge to 9) but did NOT re-pin —
-		// the partner's edit stands.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
-		Expect(pdb.Spec.MinAvailable).To(BeNil())
-		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
-		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
+		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(3)))
 		dep := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, nsName, dep)).To(Succeed())
 		Expect(*dep.Spec.Replicas).To(Equal(int32(9)))
 
-		// Drain finishes: the guarded restore must NOT clobber the partner's edit —
-		// it only drops our tracking annotations.
+		// Drain finishes: restore must preserve the partner's latest edit.
 		setPDBStatus(pdb, 1, 9, 4, 9)
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
 
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
 		Expect(pdb.Spec.MinAvailable).To(BeNil())
 		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
-		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(2))) // partner's edit preserved, not 1
+		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(2)))
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		ea := &v1.EvictionAutoScaler{}
@@ -306,43 +325,49 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
 	})
 
-	It("skips first-capture pinning when the workload is above its baseline (autoscaler above min)", func() {
-		// An autoscaler (HPA/KEDA) running above its min: Status.MinReplicas is the
-		// configured min (5) while the live desired replica count is higher (7).
-		// Deriving the floor at 5 would leave the pinned PDB over-permissive, so the
-		// first-capture guard must skip pinning entirely and leave the partner PDB
-		// untouched (the drain proceeds under the partner's own relative PDB).
-		mu := intstr.FromInt32(1)
-		pdb := &policyv1.PodDisruptionBudget{
+	It("does not publish a pin policy when the workload is above its baseline (autoscaler above min)", func() {
+		createDeployment(7, intstr.FromInt32(2))
+		minReplicas := int32(5)
+		hpa := &autoscalingv2.HorizontalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec: policyv1.PodDisruptionBudgetSpec{
-				MaxUnavailable: &mu,
-				Selector:       &metav1.LabelSelector{MatchLabels: selectorMatch},
+			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+				ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{Kind: "Deployment", Name: name, APIVersion: "apps/v1"},
+				MinReplicas:    &minReplicas,
+				MaxReplicas:    10,
 			},
 		}
+		Expect(k8sClient.Create(ctx, hpa)).To(Succeed())
+		pdb := makeBlockedPDB()
+
 		ea := &v1.EvictionAutoScaler{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Status:     v1.EvictionAutoScalerStatus{MinReplicas: 5},
+			Spec:       v1.EvictionAutoScalerSpec{TargetName: name, TargetKind: "deployment"},
 		}
+		Expect(k8sClient.Create(ctx, ea)).To(Succeed())
 
-		floor, pinned, err := reconciler.ensurePDBFloor(ctx, ea, pdb, 7) // live 7 != baseline 5
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
-		Expect(pinned).To(BeFalse())
-		Expect(floor).To(Equal(int32(0)))
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		Expect(ea.Status.MinReplicas).To(Equal(int32(5)))
 
-		// Partner PDB left exactly as-is; no pin spec change, no tracking annotations.
+		ea.Spec.LastEviction = v1.Eviction{PodName: "p", EvictionTime: metav1.NewTime(time.Now().Add(-2 * cooldown))}
+		Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
 		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
 		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
 		Expect(pdb.Spec.MinAvailable).To(BeNil())
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
 		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
 
-		// Sanity (positive control): the same PDB DOES have a non-zero floor at the
-		// baseline (5) — so it is the guard, not a zero floor, that gates the skip.
 		dh, err := desiredHealthyAt(pdb.Spec, 5)
 		Expect(err).NotTo(HaveOccurred())
-		Expect(dh).To(Equal(int32(4))) // maxUnavailable:1 at 5 replicas -> keep 4
+		Expect(dh).To(Equal(int32(4)))
 	})
 
 	It("restores a lingering pin on the no-scale completion path", func() {
@@ -389,6 +414,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 
 		_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
 		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
 
 		// The no-scale tail restored the partner's PDB and cleared our tracking.
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())

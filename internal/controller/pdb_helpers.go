@@ -196,8 +196,50 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 				"oldValue", oldVal, "newValue", newVal)
 			return true
 		}
+		// Also trigger on a disruption-field change so the floor actuator reconciles a
+		// user (or deployment-driven) minAvailable/maxUnavailable edit. Our own pin/restore
+		// writes are filtered downstream via pdbCarriesFloor to avoid a feedback loop.
+		if !intStrPtrEqual(oldPDB.Spec.MinAvailable, newPDB.Spec.MinAvailable) ||
+			!intStrPtrEqual(oldPDB.Spec.MaxUnavailable, newPDB.Spec.MaxUnavailable) {
+			return true
+		}
 	}
 	return false
+}
+
+// intStrPtrEqual reports whether two *intstr.IntOrString hold the same value.
+func intStrPtrEqual(a, b *intstr.IntOrString) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// desiredHealthyAt computes a PDB's desired-healthy count at a replica count, mirroring
+// the built-in disruption controller (minAvailable, or replicas-maxUnavailable, %
+// rounded up, clamped ≥0). Lets the floor be derived synchronously instead of from the
+// async Status.DesiredHealthy. No budget → 0.
+func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (int32, error) {
+	switch {
+	case spec.MaxUnavailable != nil:
+		maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MaxUnavailable, int(replicas), true)
+		if err != nil {
+			return 0, fmt.Errorf("resolving maxUnavailable: %w", err)
+		}
+		desired := int(replicas) - maxUnavailable
+		if desired < 0 {
+			desired = 0
+		}
+		return int32(desired), nil
+	case spec.MinAvailable != nil:
+		minAvailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MinAvailable, int(replicas), true)
+		if err != nil {
+			return 0, fmt.Errorf("resolving minAvailable: %w", err)
+		}
+		return int32(minAvailable), nil
+	default:
+		return 0, nil
+	}
 }
 
 // countPodsOnCordoned counts pods matching the PDB selector that are currently on cordoned

@@ -108,6 +108,19 @@ func pinnedFloorFromPDB(pdb *policyv1.PodDisruptionBudget) (int32, bool) {
 	return int32(f), true
 }
 
+// originalSpecFromSnapshot reconstructs the partner's snapshotted disruption spec so the
+// floor can be re-derived at a new replica base. (false when the PDB carries no snapshot).
+func originalSpecFromSnapshot(pdb *policyv1.PodDisruptionBudget) (policyv1.PodDisruptionBudgetSpec, bool, error) {
+	if !isMutated(pdb) {
+		return policyv1.PodDisruptionBudgetSpec{}, false, nil
+	}
+	var snap pdbFloorSnapshot
+	if err := json.Unmarshal([]byte(pdb.Annotations[AnnotationOriginalPDBSpec]), &snap); err != nil {
+		return policyv1.PodDisruptionBudgetSpec{}, false, fmt.Errorf("originalSpecFromSnapshot: unmarshal snapshot: %w", err)
+	}
+	return policyv1.PodDisruptionBudgetSpec{MinAvailable: snap.MinAvailable, MaxUnavailable: snap.MaxUnavailable}, true, nil
+}
+
 // restorePDBSpec restores the snapshotted disruption fields and clears our
 // annotations; only minAvailable/maxUnavailable are written, so a partner's edits to
 // other fields are preserved. With no snapshot it still drops a stale pinned-floor

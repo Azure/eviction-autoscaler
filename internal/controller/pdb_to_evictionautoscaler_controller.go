@@ -144,6 +144,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 
 		logger.Info("Created EvictionAutoScaler")
 	}
+
+	// Actuate the PDB floor from the EAS desired state. This reconciler is the sole writer
+	// of the PDB spec pin; EAS only publishes Status.PinnedPDBFloor (compute vs actuate).
+	if err := r.actuatePDBFloor(ctx, &pdb, &EvictionAutoScaler); err != nil {
+		return reconcile.Result{}, err
+	}
 	// Return no error and no requeue
 	return reconcile.Result{}, nil
 }

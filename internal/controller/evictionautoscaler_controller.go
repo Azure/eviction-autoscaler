@@ -97,14 +97,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
 
-	// Flag-off clear: if the master switch is off but a pinned-floor policy is still
-	// recorded, clear it unconditionally. Placed before namespace/target/surge lookups
-	// (all of which can early-return) so turning the flag off always un-pins.
-	if clearPinnedFloorIfDisabled(EvictionAutoScaler) {
-		logger.Info("PDB floor mutation disabled, clearing pinned PDB floor policy")
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
-	}
-
 	// Check if eviction autoscaler should be enabled for this namespace
 	isEnabled, err := r.Filter.Filter(ctx, r.Client, EvictionAutoScaler.Namespace)
 	if err != nil {
@@ -113,12 +105,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	if !isEnabled {
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
-		// Namespace disabled while we hold a pin: drop it so the PDB actuator restores the
-		// partner. Persist only when there was one, to avoid a status write on every pass.
-		if EvictionAutoScaler.Status.PDBFloorPinned {
-			clearPinIfHeld(EvictionAutoScaler)
-			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
-		}
 		// Don't process evictions for namespaces without the annotation
 		return ctrl.Result{}, nil
 	}
@@ -128,7 +114,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			degraded(EvictionAutoScaler, "NoPdb", "PDB of same name not found")
+			degraded(&EvictionAutoScaler.Status.Conditions, "NoPdb", "PDB of same name not found")
 			logger.Error(err, "no matching pdb", "namespace", EvictionAutoScaler.Namespace, "name", EvictionAutoScaler.Name)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
@@ -136,7 +122,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if EvictionAutoScaler.Spec.TargetName == "" {
-		degraded(EvictionAutoScaler, "EmptyTarget", "no specified target")
+		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -155,14 +141,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	target, err := GetSurger(EvictionAutoScaler.Spec.TargetKind)
 	if err != nil {
 		logger.Error(err, "invalid target kind", "kind", EvictionAutoScaler.Spec.TargetKind)
-		degraded(EvictionAutoScaler, "InvalidTarget", "Invalid Target Kind: "+EvictionAutoScaler.Spec.TargetKind)
+		degraded(&EvictionAutoScaler.Status.Conditions, "InvalidTarget", "Invalid Target Kind: "+EvictionAutoScaler.Spec.TargetKind)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Spec.TargetName, Namespace: EvictionAutoScaler.Namespace}, target.Obj())
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Error(err, "pdb watcher target does not exist", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
-			degraded(EvictionAutoScaler, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
+			degraded(&EvictionAutoScaler.Status.Conditions, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		return ctrl.Result{}, err
@@ -182,20 +168,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		if errors.Is(err, errUnsupportedAutoscalerConfig) {
 			logger.Error(err, "unsupported autoscaler configuration, not requeueing")
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", err.Error())
+			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", err.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		logger.Error(err, "failed to detect surge strategy")
 		return ctrl.Result{}, err
-	}
-
-	// Bail-on-replica-change: if policy says a pinned floor is active and the target's
-	// replica count changed externally, clear the policy and end the pass. Returning here
-	// is required so the pin condition further down cannot re-pin in the same reconcile.
-	// The PDB actuator restores the partner PDB async.
-	if bailPinnedFloorOnExternalChange(EvictionAutoScaler, target, surgeApplier) {
-		logger.Info("External replica change detected while holding a pinned PDB floor policy, bailing", "pdb", pdb.Name)
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	// Check if the resource version has changed or if it's empty (initial state)
@@ -225,7 +202,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Have we processed all evictions okay don't do anything else
 	if EvictionAutoScaler.Spec.LastEviction == EvictionAutoScaler.Status.LastEviction {
-		clearPinIfHeld(EvictionAutoScaler)
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "no unhandled eviction")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
@@ -245,11 +221,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
 			// maxSurge resolves to 0 and no ZeroSurgeOverride set — nothing to surge, degrade.
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
+			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		default:
 			// Parse error or unexpected — degrade.
-			degraded(EvictionAutoScaler, "InvalidSurgeConfiguration", surgeErr.Error())
+			degraded(&EvictionAutoScaler.Status.Conditions, "InvalidSurgeConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
@@ -279,8 +255,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, err
 		}
 
-		clearPinIfHeld(EvictionAutoScaler)
-
 		// Track actual scaling action
 		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
 
@@ -297,22 +271,16 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
-	clearPinIfHeld(EvictionAutoScaler)
 	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 }
 
-// pdbFloorMutationEnabled is the master switch for the PDB-floor pinning feature; it
-// ships OFF (dormant). A package var (not const) so tests can enable it. PR4 wires it
-// from install-time env.
-var pdbFloorMutationEnabled = false
-
 // handleBlockedDrain runs the DisruptionsAllowed==0 surge path: it counts displaced pods,
-// computes the demand-driven surge target (capped at the maxSurge ceiling), pins the PDB
-// floor policy when we are driving our own surge, and either waits (already surged) or
-// applies the surge. Extracted from Reconcile to keep its cyclomatic complexity in check.
+// computes the demand-driven surge target (capped at the maxSurge ceiling), and either
+// waits (already surged) or applies the surge. Extracted from Reconcile to keep its
+// cyclomatic complexity in check.
 func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, EvictionAutoScaler *myappsv1.EvictionAutoScaler, target Surger, pdb *policyv1.PodDisruptionBudget, surgeApplier SurgeApplier, maxSurgeTarget int32) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
@@ -326,11 +294,6 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	if surgeTarget > maxSurgeTarget {
 		logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
 		surgeTarget = maxSurgeTarget
-	}
-
-	// Pin the PDB floor whenever WE are driving the surge (baseline OR our recorded surge).
-	if shouldPinFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb) {
-		EvictionAutoScaler.Status.PDBFloorPinned = true
 	}
 
 	if target.GetReplicas() >= surgeTarget {
@@ -374,43 +337,6 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 }
 
-// externalReplicaChange reports whether the target's replica count changed outside our
-// surge: a generation mismatch, or live desired replicas != the recorded surge count.
-func externalReplicaChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {
-	if eas.Status.TargetGeneration != 0 && eas.Status.TargetGeneration != target.Obj().GetGeneration() {
-		return true
-	}
-	recorded, ok := surgeApplier.RecordedSurge()
-	return ok && target.GetReplicas() != recorded
-}
-
-// desiredHealthyAt computes a PDB's desired-healthy count at a replica count, mirroring
-// the built-in disruption controller (minAvailable, or replicas-maxUnavailable, %
-// rounded up, clamped ≥0). Lets the floor be derived synchronously instead of from the
-// async Status.DesiredHealthy. No budget → 0.
-func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (int32, error) {
-	switch {
-	case spec.MaxUnavailable != nil:
-		maxUnavailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MaxUnavailable, int(replicas), true)
-		if err != nil {
-			return 0, fmt.Errorf("resolving maxUnavailable: %w", err)
-		}
-		desired := int(replicas) - maxUnavailable
-		if desired < 0 {
-			desired = 0
-		}
-		return int32(desired), nil
-	case spec.MinAvailable != nil:
-		minAvailable, err := intstr.GetScaledValueFromIntOrPercent(spec.MinAvailable, int(replicas), true)
-		if err != nil {
-			return 0, fmt.Errorf("resolving minAvailable: %w", err)
-		}
-		return int32(minAvailable), nil
-	default:
-		return 0, nil
-	}
-}
-
 func ready(conditions *[]metav1.Condition, reason string, message string) {
 	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type:               "Ready",
@@ -422,11 +348,8 @@ func ready(conditions *[]metav1.Condition, reason string, message string) {
 	meta.RemoveStatusCondition(conditions, "Degraded")
 }
 
-// degraded marks the EAS Degraded and drops any held pinned-floor policy: a degraded path means
-// we can no longer manage the surge, so the PDB actuator must be allowed to restore the partner.
-func degraded(eas *myappsv1.EvictionAutoScaler, reason string, message string) {
-	clearPinIfHeld(eas)
-	meta.SetStatusCondition(&eas.Status.Conditions, metav1.Condition{
+func degraded(conditions *[]metav1.Condition, reason string, message string) {
+	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type:               "Degraded",
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,

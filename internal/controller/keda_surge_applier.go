@@ -167,7 +167,3 @@ func (k *KEDASurgeApplier) IsSurgeActive() bool {
 	}
 	return false
 }
-
-func (k *KEDASurgeApplier) RecordedSurge() (int32, bool) {
-	return recordedSurgeFromAnnotations(k.scaledObject.GetAnnotations())
-}

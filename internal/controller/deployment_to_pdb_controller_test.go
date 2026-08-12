@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 
+	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -358,6 +359,36 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			})
 
 			Expect(err).ToNot(HaveOccurred())
+		})
+
+		It("preserves an adopted percentage allowance when deployment replicas change", func() {
+			minAvailable := intstr.FromInt32(2)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						PDBOwnedByAnnotationKey:             ControllerName,
+						OriginalMaxUnavailableAnnotationKey: `"25%"`,
+					},
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &minAvailable,
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "example"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
+			deployment.Spec.Replicas = int32Ptr(5)
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+			eas := &myappsv1.EvictionAutoScaler{Status: myappsv1.EvictionAutoScalerStatus{
+				TargetGeneration: deployment.Generation,
+			}}
+
+			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, eas, *pdb)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: 3}))
 		})
 	})
 })

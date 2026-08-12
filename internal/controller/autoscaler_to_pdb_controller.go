@@ -86,7 +86,7 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	// Find the PDB that matches this deployment's pod selector labels.
-	// Only consider PDBs created by this controller (ownedBy annotation) — user-managed PDBs
+	// Only consider PDBs managed by this controller (ownedBy annotation) — user-managed PDBs
 	// should not be modified. If no controller-owned PDB exists, there's nothing to update.
 	//
 	// PDB creation is intentionally left to DeploymentToPDBReconciler, not this controller.
@@ -113,14 +113,24 @@ func (r *AutoscalerToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			"deployment", deploymentName)
 		return reconcile.Result{}, nil
 	}
+	// A live maxUnavailable is normalized by the PDB controller, which also records
+	// the user's latest relative policy before clearing the field.
+	if pdb.Spec.MaxUnavailable != nil {
+		return reconcile.Result{}, nil
+	}
+	minAvailable, err = managedMinAvailable(pdb, minAvailable)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	desired := intstr.FromInt32(minAvailable)
 
 	// Idempotency: skip the API write if the PDB already has the correct value.
 	// This avoids unnecessary updates and the resulting watch events.
-	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
+	if intstrPtrEqual(pdb.Spec.MinAvailable, &desired) {
 		return reconcile.Result{}, nil
 	}
 
-	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
+	pdb.Spec.MinAvailable = &desired
 	if err := r.Update(ctx, pdb); err != nil {
 		logger.Error(err, "unable to update PDB minAvailable from autoscaler",
 			"pdb", pdb.Name, "minAvailable", minAvailable)

@@ -158,8 +158,15 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	// No autoscaler — only proceed if the deployment generation actually changed
-	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
+	// No autoscaler — only proceed if the deployment generation actually changed.
+	// Adopted PDBs are also reconciled on PDB ownership events, which closes an
+	// ordering race where the EAS controller observes a replica change before this
+	// controller and advances TargetGeneration first.
+	_, adopted, err := originalMaxUnavailable(&pdb)
+	if err != nil {
+		return err
+	}
+	if !adopted && EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
 		return nil
 	}
 
@@ -179,13 +186,23 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 			return nil
 		}
 	}
-	minAvailable := *deployment.Spec.Replicas
+	// A live maxUnavailable means the PDB controller is processing a new or updated
+	// relative policy. It owns that conversion and preservation step.
+	if pdb.Spec.MaxUnavailable != nil {
+		return nil
+	}
 
-	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
+	minAvailable, err := managedMinAvailable(&pdb, *deployment.Spec.Replicas)
+	if err != nil {
+		return err
+	}
+	desired := intstr.FromInt32(minAvailable)
+
+	if intstrPtrEqual(pdb.Spec.MinAvailable, &desired) {
 		return nil // already correct
 	}
 
-	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
+	pdb.Spec.MinAvailable = &desired
 	if err = r.Update(ctx, &pdb); err != nil {
 		logger.Error(err, "unable to update pdb minAvailable",
 			"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)

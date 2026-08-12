@@ -259,6 +259,29 @@ metadata:
 
 This annotation instructs eviction-autoscaler not to create a PDB for that deployment, regardless of whether you installed via the Azure Kubernetes Extension Resource Provider.
 
+### PDBs with `maxUnavailable`
+
+When eviction-autoscaler is enabled for a namespace, an existing PDB that selects a
+Deployment and uses `maxUnavailable` is adopted by the controller. The controller:
+
+- Stores the exact integer or percentage in the
+  `eviction-autoscaler.azure.com/original-max-unavailable` annotation.
+- Replaces `maxUnavailable` with the equivalent absolute `minAvailable`, calculated
+  from the Deployment's current desired replicas.
+- Adds the same `ownedBy: EvictionAutoScaler` annotation and Deployment owner
+  reference used for automatically generated PDBs.
+
+For example, `maxUnavailable: 25%` on a five-replica Deployment becomes
+`minAvailable: 3`, because Kubernetes rounds the allowed unavailable count up to two.
+As Deployment replicas or HPA/KEDA minimum replicas change, eviction-autoscaler
+recalculates the absolute floor while preserving the original allowance. Eviction
+surges do not change this floor.
+
+Changing an adopted PDB back to `maxUnavailable` updates the stored policy and causes
+it to be converted again. Removing only its ownership metadata does not release it;
+the controller restores that metadata because the preserved-policy annotation marks
+the PDB as adopted.
+
 ### Deployments with MaxUnavailable
 
 Eviction-autoscaler automatically skips PDB creation for deployments that have a `maxUnavailable` value other than 0 in their rolling update strategy. This is because such deployments already tolerate some level of downtime during updates or maintenance.

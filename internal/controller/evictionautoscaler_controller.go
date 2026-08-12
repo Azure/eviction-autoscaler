@@ -114,7 +114,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			degraded(&EvictionAutoScaler.Status.Conditions, "NoPdb", "PDB of same name not found")
+			degraded(EvictionAutoScaler, "NoPdb", "PDB of same name not found")
 			logger.Error(err, "no matching pdb", "namespace", EvictionAutoScaler.Namespace, "name", EvictionAutoScaler.Name)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
@@ -122,7 +122,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 
 	if EvictionAutoScaler.Spec.TargetName == "" {
-		degraded(&EvictionAutoScaler.Status.Conditions, "EmptyTarget", "no specified target")
+		degraded(EvictionAutoScaler, "EmptyTarget", "no specified target")
 		logger.Error(err, "no specified target name", "targetname", EvictionAutoScaler.Spec.TargetName)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -141,14 +141,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	target, err := GetSurger(EvictionAutoScaler.Spec.TargetKind)
 	if err != nil {
 		logger.Error(err, "invalid target kind", "kind", EvictionAutoScaler.Spec.TargetKind)
-		degraded(&EvictionAutoScaler.Status.Conditions, "InvalidTarget", "Invalid Target Kind: "+EvictionAutoScaler.Spec.TargetKind)
+		degraded(EvictionAutoScaler, "InvalidTarget", "Invalid Target Kind: "+EvictionAutoScaler.Spec.TargetKind)
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 	err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Spec.TargetName, Namespace: EvictionAutoScaler.Namespace}, target.Obj())
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Error(err, "pdb watcher target does not exist", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
-			degraded(&EvictionAutoScaler.Status.Conditions, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
+			degraded(EvictionAutoScaler, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		return ctrl.Result{}, err
@@ -168,7 +168,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		if errors.Is(err, errUnsupportedAutoscalerConfig) {
 			logger.Error(err, "unsupported autoscaler configuration, not requeueing")
-			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", err.Error())
+			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", err.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		logger.Error(err, "failed to detect surge strategy")
@@ -221,11 +221,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
 			// maxSurge resolves to 0 and no ZeroSurgeOverride set — nothing to surge, degrade.
-			degraded(&EvictionAutoScaler.Status.Conditions, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
+			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		default:
 			// Parse error or unexpected — degrade.
-			degraded(&EvictionAutoScaler.Status.Conditions, "InvalidSurgeConfiguration", surgeErr.Error())
+			degraded(EvictionAutoScaler, "InvalidSurgeConfiguration", surgeErr.Error())
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 	} else if pdb.Status.DisruptionsAllowed == 0 {
@@ -348,8 +348,8 @@ func ready(conditions *[]metav1.Condition, reason string, message string) {
 	meta.RemoveStatusCondition(conditions, "Degraded")
 }
 
-func degraded(conditions *[]metav1.Condition, reason string, message string) {
-	meta.SetStatusCondition(conditions, metav1.Condition{
+func degraded(eas *myappsv1.EvictionAutoScaler, reason string, message string) {
+	meta.SetStatusCondition(&eas.Status.Conditions, metav1.Condition{
 		Type:               "Degraded",
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,

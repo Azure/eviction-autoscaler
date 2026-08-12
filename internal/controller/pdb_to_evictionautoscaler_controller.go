@@ -197,7 +197,7 @@ func pdbCarriesFloorAnnotations(pdb *policyv1.PodDisruptionBudget) bool {
 // user's policy is safely stashed in the snapshot) from "the live spec is the user's policy"
 // (first pin, or they overwrote our pin) without conflating the two.
 //
-// Status.PinnedPDBFloor is only the enable/disable signal here; the authoritative floor and the
+// Status.PDBFloorPinned is only the enable/disable signal here; the authoritative floor and the
 // policy-to-restore live on the PDB annotations, re-baselined to the user's current intent.
 //
 // Edge cases:
@@ -210,13 +210,13 @@ func pdbCarriesFloorAnnotations(pdb *policyv1.PodDisruptionBudget) bool {
 //   - User sets minAvailable to a value that equals our recorded floor: indistinguishable from
 //     our pin, and harmless — it *is* the floor we would hold.
 //   - HPA/KEDA deleted mid-surge: the recorded surge lives on the autoscaler, so it is lost with
-//     it. The PDB is only un-pinned once the EAS controller clears Status.PinnedPDBFloor (via the
+//     it. The PDB is only un-pinned once the EAS controller clears Status.PDBFloorPinned (via the
 //     deployment-strategy fallback scale-down); restore here is gated on that clear, so if the
 //     fallback cannot complete the PDB may not be reverted to the user's original.
 //   - MinReplicas (the surge baseline) is frozen while a surge is active, so a held floor cannot
 //     go stale against it; we therefore no-op while holding rather than recomputing every pass.
 func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
-	active := eas != nil && eas.Status.PinnedPDBFloor != nil
+	active := eas != nil && eas.Status.PDBFloorPinned
 	if active {
 		// Holding our own pin? Recognize it by the floor WE recorded (identity), not by a
 		// recomputed value. If the live spec still carries that floor, the user's policy is

@@ -156,8 +156,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(err).NotTo(HaveOccurred())
 
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).NotTo(BeNil())
-		Expect(*ea.Status.PinnedPDBFloor).To(Equal(int32(4)))
+		Expect(ea.Status.PDBFloorPinned).To(BeTrue())
 		actuatePDB()
 
 		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
@@ -201,7 +200,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(*dep.Spec.Replicas).To(Equal(int32(5)))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 
 	It("bails and restores the partner PDB on an external replica change mid-pin", func() {
@@ -230,7 +229,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 
 	It("does not oscillate when replicas are parked above the recorded surge without a generation bump", func() {
@@ -268,7 +267,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 
 	It("honors a mid-drain PDB edit and preserves it on completion", func() {
@@ -322,7 +321,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 
 	It("re-pins after a partner reverts the PDB to its original spec mid-drain", func() {
@@ -391,7 +390,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		ea := &v1.EvictionAutoScaler{}
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 
 	It("treats a partner minAvailable equal to our floor as our own pin (holding, no re-baseline)", func() {
@@ -505,7 +504,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 
 		dh, err := desiredHealthyAt(pdb.Spec, 5)
 		Expect(err).NotTo(HaveOccurred())
@@ -566,6 +565,6 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
-		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
 	})
 })

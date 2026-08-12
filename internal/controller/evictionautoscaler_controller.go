@@ -115,7 +115,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", EvictionAutoScaler.Namespace)
 		// Namespace disabled while we hold a pin: drop it so the PDB actuator restores the
 		// partner. Persist only when there was one, to avoid a status write on every pass.
-		if EvictionAutoScaler.Status.PinnedPDBFloor != nil {
+		if EvictionAutoScaler.Status.PDBFloorPinned {
 			clearPinIfHeld(EvictionAutoScaler)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
@@ -329,8 +329,8 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	}
 
 	// Pin the PDB floor whenever WE are driving the surge (baseline OR our recorded surge).
-	if floor := pinnedFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb); floor != nil {
-		EvictionAutoScaler.Status.PinnedPDBFloor = floor
+	if shouldPinFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb) {
+		EvictionAutoScaler.Status.PDBFloorPinned = true
 	}
 
 	if target.GetReplicas() >= surgeTarget {

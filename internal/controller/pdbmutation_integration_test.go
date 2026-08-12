@@ -325,6 +325,148 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
 	})
 
+	It("re-pins after a partner reverts the PDB to its original spec mid-drain", func() {
+		createDeployment(5, intstr.FromInt32(2))
+		pdb := makeBlockedPDB()
+		cordonWithPods(2)
+
+		surgeAndPin(pdb) // pinned minAvailable:4, snapshot maxUnavailable:1
+
+		// Partner reverts the live spec to the exact original (maxUnavailable:1) while the
+		// pin is still active; our tracking annotations remain. The live spec now equals the
+		// snapshot but is NOT our pin, so the actuator must re-assert the floor rather than
+		// treat "spec == snapshot" as done (the old no-op left the drain unprotected).
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		pdb.Spec.MinAvailable = nil
+		pdb.Spec.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
+		Expect(pdb.Annotations).To(HaveKey(AnnotationOriginalPDBSpec))
+		Expect(pdb.Annotations[AnnotationPinnedFloor]).To(Equal("4"))
+	})
+
+	It("re-baselines to a partner's absolute minAvailable set mid-drain and restores it", func() {
+		createDeployment(5, intstr.FromInt32(2))
+		pdb := makeBlockedPDB()
+		cordonWithPods(2)
+
+		surgeAndPin(pdb) // pinned minAvailable:4, snapshot maxUnavailable:1
+
+		// Partner replaces our pin with their own absolute minAvailable:2, leaving our
+		// tracking annotations; drain still blocking. This is the case the old guard-4
+		// short-circuit adopted silently (pinned-floor stayed 4, snapshot stayed the
+		// original). Now we honor it: re-derive the floor from minAvailable:2 at the frozen
+		// baseline (=2), re-pin it, and re-snapshot it as the restore target.
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		pdb.Spec.MaxUnavailable = nil
+		pdb.Spec.MinAvailable = ptr.To(intstr.FromInt32(2))
+		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(2)))
+		Expect(pdb.Annotations[AnnotationPinnedFloor]).To(Equal("2"))
+		Expect(pdb.Annotations[AnnotationOriginalPDBSpec]).To(ContainSubstring("minAvailable"))
+
+		// Drain finishes: restore must return the partner's latest policy (minAvailable:2),
+		// not the pre-drain original (maxUnavailable:1).
+		setPDBStatus(pdb, 1, 7, 2, 7)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(2)))
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
+		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+		ea := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+		Expect(ea.Status.PinnedPDBFloor).To(BeNil())
+	})
+
+	It("treats a partner minAvailable equal to our floor as our own pin (holding, no re-baseline)", func() {
+		createDeployment(5, intstr.FromInt32(2))
+		pdb := makeBlockedPDB()
+		cordonWithPods(2)
+
+		surgeAndPin(pdb) // pinned minAvailable:4, snapshot maxUnavailable:1
+
+		// Partner sets minAvailable:4 — coincidentally equal to our recorded floor, so it is
+		// indistinguishable from our pin. We hold: no re-snapshot, the true original is kept.
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		pdb.Spec.MaxUnavailable = nil
+		pdb.Spec.MinAvailable = ptr.To(intstr.FromInt32(4))
+		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
+		// Snapshot is NOT re-baselined to the coincidence — it stays the true original.
+		Expect(pdb.Annotations[AnnotationOriginalPDBSpec]).To(ContainSubstring("maxUnavailable"))
+		Expect(pdb.Annotations[AnnotationPinnedFloor]).To(Equal("4"))
+
+		// On completion, restore returns the true original (maxUnavailable:1), not minAvailable:4.
+		setPDBStatus(pdb, 1, 7, 4, 7)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+		Expect(pdb.Spec.MinAvailable).To(BeNil())
+	})
+
+	It("keeps re-pinning across repeated GitOps re-applies of the original spec", func() {
+		createDeployment(5, intstr.FromInt32(2))
+		pdb := makeBlockedPDB()
+		cordonWithPods(2)
+
+		surgeAndPin(pdb) // pinned minAvailable:4, snapshot maxUnavailable:1
+
+		// Simulate a GitOps reconciler re-applying the declared original (maxUnavailable:1)
+		// every sync; each actuate must re-assert our floor, and the snapshot must not drift.
+		for i := 0; i < 3; i++ {
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			pdb.Spec.MinAvailable = nil
+			pdb.Spec.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+			Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+			actuatePDB()
+
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+			Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
+			Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)), "cycle %d should re-pin", i)
+		}
+		// Snapshot never drifted from the true original across the tug-of-war.
+		Expect(pdb.Annotations[AnnotationOriginalPDBSpec]).To(ContainSubstring("maxUnavailable"))
+		Expect(pdb.Annotations[AnnotationPinnedFloor]).To(Equal("4"))
+
+		// Completion restores the original exactly.
+		setPDBStatus(pdb, 1, 7, 4, 7)
+		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+		Expect(err).NotTo(HaveOccurred())
+		actuatePDB()
+
+		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+		Expect(pdb.Spec.MinAvailable).To(BeNil())
+	})
+
 	It("does not publish a pin policy when the workload is above its baseline (autoscaler above min)", func() {
 		createDeployment(7, intstr.FromInt32(2))
 		minReplicas := int32(5)

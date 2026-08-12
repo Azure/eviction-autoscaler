@@ -23,6 +23,15 @@ func clearPinnedFloorIfDisabled(eas *myappsv1.EvictionAutoScaler) bool {
 	return true
 }
 
+// clearPinIfHeld drops a held pinned-floor policy so the PDB actuator restores the partner PDB.
+// Used on degraded paths where we can no longer manage the surge: leaving the PDB frozen at an
+// absolute floor with no path back to its original spec is unsafe.
+func clearPinIfHeld(eas *myappsv1.EvictionAutoScaler) {
+	if eas.Status.PinnedPDBFloor != nil {
+		eas.Status.PinnedPDBFloor = nil
+	}
+}
+
 // bailPinnedFloorOnExternalChange clears a pinned-floor policy when a replica change we did not
 // make is detected while we hold one. Returns true if it cleared (the caller then persists status).
 func bailPinnedFloorOnExternalChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {

@@ -717,6 +717,13 @@ var _ = Describe("controller", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred())
 
+			// Always remove the namespace, even if the spec fails partway, so it can't
+			// leak into later Ordered specs.
+			DeferCleanup(func() {
+				delCmd := exec.Command("kubectl", "delete", "namespace", testNs, "--ignore-not-found")
+				_, _ = utils.Run(delCmd)
+			})
+
 			By("creating a three-replica deployment")
 			err = createDeployment(deploymentConfig{
 				Name:           depName,
@@ -772,6 +779,19 @@ var _ = Describe("controller", Ordered, func() {
 			node.Spec.Unschedulable = true
 			err = clientset.Update(ctx, &node)
 			Expect(err).NotTo(HaveOccurred())
+
+			// Always uncordon the node, even if the spec fails before the explicit
+			// uncordon below, so a cordoned node can't break later specs.
+			DeferCleanup(func() {
+				var n corev1.Node
+				if getErr := clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &n); getErr != nil {
+					return
+				}
+				if n.Spec.Unschedulable {
+					n.Spec.Unschedulable = false
+					_ = clientset.Update(ctx, &n)
+				}
+			})
 
 			By("verifying the deployment gets the evictionSurgeReplicas annotation")
 			EventuallyWithOffset(1, func() error {
@@ -834,17 +854,6 @@ var _ = Describe("controller", Ordered, func() {
 			EventuallyWithOffset(1, func() error {
 				return verifyPdbRestoredPercent(ctx, clientset, testNs, depName, pdbPercent)
 			}, time.Minute, time.Second).Should(Succeed())
-
-			By("uncordoning the node")
-			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
-			Expect(err).NotTo(HaveOccurred())
-			node.Spec.Unschedulable = false
-			err = clientset.Update(ctx, &node)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("cleaning up the PDB floor test namespace")
-			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
-			_, _ = utils.Run(cmd)
 		})
 
 		// Test 2: Namespace filtering modes - enabled_by_default configuration

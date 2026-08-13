@@ -155,6 +155,17 @@ var (
 		},
 		[]string{"namespace", "created_by_us"},
 	)
+
+	// ControllerEnabled is 1 when the global kill switch (CONTROLLER_ENABLED) is on and reconcilers
+	// are registered, else 0. It is set once at startup on both paths, so it stays a continuous
+	// series across a disable/enable — letting dashboards and alerts tell "disabled by config"
+	// apart from "process down / scrape failed" (the /metrics endpoint serves either way).
+	ControllerEnabled = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_controller_enabled",
+			Help: "1 when the controller is enabled (reconcilers registered), 0 when disabled via the CONTROLLER_ENABLED kill switch",
+		},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -215,6 +226,7 @@ func init() {
 	ctrlmetrics.Registry.MustRegister(
 		DeploymentGauge,
 		ZeroMaxSurgeWorkloadGauge,
+		ControllerEnabled,
 		PDBGauge,
 		EvictionCounter,
 		BlockedEvictionCounter,

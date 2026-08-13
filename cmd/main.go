@@ -38,7 +38,7 @@ import (
 
 	appsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	controllers "github.com/azure/eviction-autoscaler/internal/controller"
-	_ "github.com/azure/eviction-autoscaler/internal/metrics"
+	metrics "github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	// +kubebuilder:scaffold:imports
 )
@@ -225,6 +225,15 @@ func main() {
 	}
 	setupLog.Info("Controller enable configuration", "controllerEnabled", controllerEnabled)
 
+	// Publish the kill-switch state as a continuous 0/1 series (set on both paths below) so the
+	// metric stays coherent across a disable/enable and distinguishes "disabled by config" from
+	// "process down".
+	if controllerEnabled {
+		metrics.ControllerEnabled.Set(1)
+	} else {
+		metrics.ControllerEnabled.Set(0)
+	}
+
 	if controllerEnabled {
 		evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
 			Client:            mgr.GetClient(),
@@ -280,6 +289,10 @@ func main() {
 			os.Exit(1)
 		}
 	} else {
+		// Manager still starts, so /metrics and the health endpoints stay up. This controller's
+		// metric families are registered in metrics.init() (import-time, not per-reconciler), so
+		// they stay exposed — but with no reconcilers running nothing updates them: the *Vec
+		// metrics report no series, and the plain NodeCordoningCounter sits at 0.
 		setupLog.Info("Controller is disabled (CONTROLLER_ENABLED=false); no reconcilers registered — serving health and metrics only")
 	}
 	// +kubebuilder:scaffold:builder

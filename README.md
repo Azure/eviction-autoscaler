@@ -151,7 +151,6 @@ az k8s-extension create \
 
 **Configuration Options:**
 
-- `controllerConfig.enabled=false` - Global kill switch; when `false`, no reconcilers run and the controller takes no action (still serves health/metrics) (default: true)
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: false)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: [kube-system])
@@ -247,7 +246,6 @@ Eviction autoscaler provides flexible namespace-level control with two operation
 
 #### Environment Variables
 
-- **`CONTROLLER_ENABLED`**: Global kill switch for the controller (default: `true`). When `false`, no reconcilers are registered — the controller runs (serving health and metrics) but takes no action on any namespace or PDB, so the feature can be fully disabled in place without uninstalling the extension.
 - **`ENABLED_BY_DEFAULT`**: Controls the operational mode (default: `false`)
   - `false`: Namespaces disabled by default - only specified namespaces enabled
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled

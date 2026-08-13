@@ -72,7 +72,7 @@ var _ = Describe("DeploymentWrapper.GetMaxSurge", func() {
 		dep := &appsv1.Deployment{
 			Spec: appsv1.DeploymentSpec{
 				Strategy: appsv1.DeploymentStrategy{
-					Type: appsv1.RollingUpdateDeploymentStrategyType,
+					Type:          appsv1.RollingUpdateDeploymentStrategyType,
 					RollingUpdate: &appsv1.RollingUpdateDeployment{
 						// MaxSurge intentionally nil
 					},

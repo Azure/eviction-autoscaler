@@ -96,7 +96,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	var deploymentName string
-	preservedMaxUnavailable, alreadyAdopted, err := originalMaxUnavailable(&pdb)
+	_, alreadyAdopted, err := originalMaxUnavailable(&pdb)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -128,11 +128,6 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				return reconcile.Result{}, err
 			}
 			changed = true
-		} else if _, err := minAvailableForMaxUnavailable(preservedMaxUnavailable, replicas); err != nil {
-			// Validate a user-editable preservation annotation before changing
-			// ownership metadata, but leave the maintained floor to the Deployment
-			// or HPA/KEDA controller after the one-time conversion.
-			return reconcile.Result{}, err
 		}
 		if ensurePDBControllerOwnership(&pdb, deploymentName, deploymentUID) {
 			changed = true
@@ -253,8 +248,8 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
 	_, adopted := pdb.Annotations[OriginalMaxUnavailableAnnotationKey]
 	if adopted {
-		// Adopted PDBs validate their preserved policy and reassert ownership later
-		// in this reconcile instead of honoring ownership metadata removal.
+		// Adopted PDBs reassert ownership later in this reconcile instead of
+		// honoring ownership metadata removal.
 		return nil
 	}
 

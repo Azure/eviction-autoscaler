@@ -309,6 +309,10 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 // from install-time env.
 var pdbFloorMutationEnabled = false
 
+// SetPDBFloorMutationEnabled sets the master switch for the PDB-floor pinning
+// feature. Wired from ENABLE_PDB_FLOOR_MUTATION at startup (main.go).
+func SetPDBFloorMutationEnabled(enabled bool) { pdbFloorMutationEnabled = enabled }
+
 // handleBlockedDrain runs the DisruptionsAllowed==0 surge path: it counts displaced pods,
 // computes the demand-driven surge target (capped at the maxSurge ceiling), pins the PDB
 // floor policy when we are driving our own surge, and either waits (already surged) or

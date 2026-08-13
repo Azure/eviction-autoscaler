@@ -217,6 +217,20 @@ func main() {
 	}
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
+	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set)
+	enablePDBFloorMutationStr := os.Getenv("ENABLE_PDB_FLOOR_MUTATION")
+	enablePDBFloorMutation := false
+	if enablePDBFloorMutationStr != "" {
+		var perr error
+		enablePDBFloorMutation, perr = strconv.ParseBool(enablePDBFloorMutationStr)
+		if perr != nil {
+			setupLog.Error(perr, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+			os.Exit(1)
+		}
+	}
+	setupLog.Info("PDB floor mutation configuration", "enablePDBFloorMutation", enablePDBFloorMutation)
+	controllers.SetPDBFloorMutationEnabled(enablePDBFloorMutation)
+
 	// Parse CONTROLLER_ENABLED environment variable (defaults to true). This is a
 	// global kill switch: when false, no reconcilers are registered, so the
 	// controller runs (serving health and metrics) but takes no action on any

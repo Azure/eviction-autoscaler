@@ -4,14 +4,12 @@ import (
 	"context"
 	"strconv"
 
-	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -98,16 +96,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if found {
-		// PDB already exists, check for EvictionAutoScaler and update if needed
-		EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
-		err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
-		if err != nil {
-			//TODO don't ignore not found. Retry and fix unittest DeploymentToPDBReconciler when a deployment is created [It] should not create a PodDisruptionBudget if one already matches
-			return reconcile.Result{}, client.IgnoreNotFound(err)
-		}
-		// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
-		// update pdb minReplicas to current deployment replicas
-		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, *pdb)
+		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, *pdb)
 	}
 
 	if !r.PDBCreationEnabled {
@@ -139,7 +128,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
-	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
+	deployment *v1.Deployment, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
 	// Check if PDB has the ownedBy annotation - if not, skip updates (user owns it)
@@ -161,18 +150,6 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	if hasAS {
 		logger.V(1).Info("HPA/KEDA controls this deployment, skipping PDB minAvailable update",
 			"target", deployment.Name)
-		return nil
-	}
-
-	// No autoscaler — only proceed if the deployment generation actually changed.
-	// Adopted PDBs are also reconciled on PDB ownership events, which closes an
-	// ordering race where the EAS controller observes a replica change before this
-	// controller and advances TargetGeneration first.
-	_, adopted, err := originalMaxUnavailable(&pdb)
-	if err != nil {
-		return err
-	}
-	if !adopted && EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
 		return nil
 	}
 

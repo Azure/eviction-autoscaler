@@ -3,7 +3,6 @@ package controllers
 import (
 	"context"
 
-	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -398,13 +397,38 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
 			deployment.Spec.Replicas = int32Ptr(5)
 			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
-			eas := &myappsv1.EvictionAutoScaler{Status: myappsv1.EvictionAutoScalerStatus{
-				TargetGeneration: deployment.Generation,
-			}}
-
-			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, eas, *pdb)).To(Succeed())
+			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, *pdb)).To(Succeed())
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdb)).To(Succeed())
 			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: 3}))
+		})
+
+		It("does not change an adopted PDB during its own Deployment surge", func() {
+			baselineFloor := intstr.FromInt32(3)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						PDBOwnedByAnnotationKey:             ControllerName,
+						OriginalMaxUnavailableAnnotationKey: `"25%"`,
+					},
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &baselineFloor,
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "example"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
+			deployment.Spec.Replicas = int32Ptr(7)
+			deployment.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "7"}
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+
+			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, *pdb)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pdb), pdb)).To(Succeed())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&baselineFloor))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(OriginalMaxUnavailableAnnotationKey, `"25%"`))
 		})
 	})
 })

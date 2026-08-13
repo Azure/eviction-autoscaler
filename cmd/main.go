@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	k8senv "k8s.io/utils/env"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -42,6 +44,12 @@ import (
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	// +kubebuilder:scaffold:imports
 )
+
+// reconcilerSetup is the shared shape of every controller's manager registration; collecting
+// reconcilers behind it lets the kill-switch gate register them in one flat loop.
+type reconcilerSetup interface {
+	SetupWithManager(mgr ctrl.Manager) error
+}
 
 var (
 	scheme   = runtime.NewScheme()
@@ -214,14 +222,10 @@ func main() {
 	// controller runs (serving health and metrics) but takes no action on any
 	// namespace or PDB — letting operators fully disable the feature in place via
 	// config, without uninstalling the extension.
-	controllerEnabled := true
-	if v := os.Getenv("CONTROLLER_ENABLED"); v != "" {
-		var err error
-		controllerEnabled, err = strconv.ParseBool(v)
-		if err != nil {
-			setupLog.Error(err, "Failed to parse CONTROLLER_ENABLED env variable")
-			os.Exit(1)
-		}
+	controllerEnabled, err := k8senv.GetBool("CONTROLLER_ENABLED", true)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse CONTROLLER_ENABLED env variable")
+		os.Exit(1)
 	}
 	setupLog.Info("Controller enable configuration", "controllerEnabled", controllerEnabled)
 
@@ -235,65 +239,42 @@ func main() {
 	}
 
 	if controllerEnabled {
-		evictionAutoScalerReconciler := &controllers.EvictionAutoScalerReconciler{
-			Client:            mgr.GetClient(),
-			Scheme:            mgr.GetScheme(),
-			Filter:            nsfilter,
-			ZeroSurgeOverride: zeroSurgeOverride,
+		// Build the set of reconcilers to register (inline, where nsfilter is in scope), then
+		// set them up in one flat loop — keeping the kill-switch gate free of deep nesting.
+		reconcilers := []reconcilerSetup{
+			&controllers.EvictionAutoScalerReconciler{
+				Client:            mgr.GetClient(),
+				Scheme:            mgr.GetScheme(),
+				Filter:            nsfilter,
+				ZeroSurgeOverride: zeroSurgeOverride,
+			},
 		}
-		if err = evictionAutoScalerReconciler.SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "EvictionAutoScaler")
-			os.Exit(1)
-		}
-		setupLog.Info("EvictionAutoScalerReconciler setup completed")
-
 		if pdbCreate {
-			if err = (&controllers.DeploymentToPDBReconciler{
-				Client: mgr.GetClient(),
-				Scheme: mgr.GetScheme(),
-				Filter: nsfilter,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "DeploymentToPDBReconciler")
+			reconcilers = append(reconcilers,
+				&controllers.DeploymentToPDBReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Filter: nsfilter},
+				// AutoscalerToPDBReconciler watches HPA and KEDA ScaledObject changes to keep the
+				// PDB minAvailable in sync with the autoscaler's min replicas floor.
+				&controllers.AutoscalerToPDBReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Filter: nsfilter},
+			)
+		}
+		reconcilers = append(reconcilers,
+			&controllers.PDBToEvictionAutoScalerReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), Filter: nsfilter},
+			&controllers.NodeReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme()},
+		)
+		for _, r := range reconcilers {
+			if err = r.SetupWithManager(mgr); err != nil {
+				setupLog.Error(err, "unable to set up controller", "controller", fmt.Sprintf("%T", r))
 				os.Exit(1)
 			}
-			setupLog.Info("DeploymentToPDBReconciler setup completed")
-
-			// Watches both HPA and KEDA ScaledObject changes to keep PDB minAvailable
-			// in sync with the autoscaler's min replicas floor.
-			if err = (&controllers.AutoscalerToPDBReconciler{
-				Client: mgr.GetClient(),
-				Scheme: mgr.GetScheme(),
-				Filter: nsfilter,
-			}).SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to create controller", "controller", "AutoscalerToPDBReconciler")
-				os.Exit(1)
-			}
-			setupLog.Info("AutoscalerToPDBReconciler setup completed")
 		}
-
-		if err = (&controllers.PDBToEvictionAutoScalerReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-			Filter: nsfilter,
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "PDBToEvictionAutoScalerReconciler")
-			os.Exit(1)
-		}
-		setupLog.Info("PDBToEvictionAutoScalerReconciler setup completed")
-
-		if err = (&controllers.NodeReconciler{
-			Client: mgr.GetClient(),
-			Scheme: mgr.GetScheme(),
-		}).SetupWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create controller", "controller", "NodeReconciler")
-			os.Exit(1)
-		}
+		setupLog.Info("Reconcilers registered", "count", len(reconcilers))
 	} else {
 		// Manager still starts, so /metrics and the health endpoints stay up. This controller's
 		// metric families are registered in metrics.init() (import-time, not per-reconciler), so
 		// they stay exposed — but with no reconcilers running nothing updates them: the *Vec
 		// metrics report no series, and the plain NodeCordoningCounter sits at 0.
-		setupLog.Info("Controller is disabled (CONTROLLER_ENABLED=false); no reconcilers registered — serving health and metrics only")
+		setupLog.Info("Controller is disabled (CONTROLLER_ENABLED=false); " +
+			"no reconcilers registered — serving health and metrics only")
 	}
 	// +kubebuilder:scaffold:builder
 

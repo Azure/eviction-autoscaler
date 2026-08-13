@@ -7,6 +7,18 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+var _ = Describe("deploymentReplicas", func() {
+	It("uses the Kubernetes default when replicas is omitted", func() {
+		Expect(deploymentReplicas(&appsv1.Deployment{})).To(Equal(int32(1)))
+	})
+
+	It("preserves an explicit zero", func() {
+		replicas := int32(0)
+		deployment := &appsv1.Deployment{Spec: appsv1.DeploymentSpec{Replicas: &replicas}}
+		Expect(deploymentReplicas(deployment)).To(Equal(int32(0)))
+	})
+})
+
 var _ = Describe("DeploymentWrapper.GetMaxSurge", func() {
 	It("returns the explicit maxSurge when RollingUpdate strategy is fully specified", func() {
 		surge := intstr.FromInt32(5)
@@ -72,7 +84,7 @@ var _ = Describe("DeploymentWrapper.GetMaxSurge", func() {
 		dep := &appsv1.Deployment{
 			Spec: appsv1.DeploymentSpec{
 				Strategy: appsv1.DeploymentStrategy{
-					Type: appsv1.RollingUpdateDeploymentStrategyType,
+					Type:          appsv1.RollingUpdateDeploymentStrategyType,
 					RollingUpdate: &appsv1.RollingUpdateDeployment{
 						// MaxSurge intentionally nil
 					},

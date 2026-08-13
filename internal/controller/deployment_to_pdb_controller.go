@@ -158,6 +158,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 	//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 	//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
 	// no surge happened but customer already increased deployment replicas, then annotation would not exist
+	replicas := deploymentReplicas(deployment)
 	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 		newReplicas, err := strconv.Atoi(surgeReplicas)
 		if err != nil {
@@ -165,7 +166,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 				"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
 			return err
 		}
-		if int32(newReplicas) == *deployment.Spec.Replicas {
+		if int32(newReplicas) == replicas {
 			return nil
 		}
 	}
@@ -175,7 +176,7 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	minAvailable, err := managedMinAvailable(&pdb, *deployment.Spec.Replicas)
+	minAvailable, err := managedMinAvailable(&pdb, replicas)
 	if err != nil {
 		return err
 	}

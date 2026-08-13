@@ -36,10 +36,7 @@ func (d *DeploymentWrapper) Obj() client.Object {
 }
 
 func (d *DeploymentWrapper) GetReplicas() int32 {
-	if d.obj.Spec.Replicas == nil {
-		return 1 // Default value in Kubernetes if not set
-	}
-	return *d.obj.Spec.Replicas
+	return deploymentReplicas(d.obj)
 }
 
 func (d *DeploymentWrapper) SetReplicas(replicas int32) {

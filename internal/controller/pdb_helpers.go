@@ -76,50 +76,28 @@ func managedMinAvailable(pdb *policyv1.PodDisruptionBudget, replicas int32) (int
 	return minAvailableForMaxUnavailable(maxUnavailable, replicas)
 }
 
-// normalizeMaxUnavailable converts a PDB to an absolute minAvailable policy. A live
-// maxUnavailable is authoritative and replaces any previously preserved allowance;
-// otherwise an existing preserved allowance is used to refresh the absolute floor.
-func normalizeMaxUnavailable(pdb *policyv1.PodDisruptionBudget, replicas int32) (bool, error) {
-	var (
-		maxUnavailable *intstr.IntOrString
-		encoded        []byte
-		err            error
-	)
-	if pdb.Spec.MaxUnavailable != nil {
-		value := *pdb.Spec.MaxUnavailable
-		maxUnavailable = &value
-		encoded, err = json.Marshal(maxUnavailable)
-		if err != nil {
-			return false, fmt.Errorf("encoding maxUnavailable: %w", err)
-		}
-	} else {
-		var adopted bool
-		maxUnavailable, adopted, err = originalMaxUnavailable(pdb)
-		if err != nil {
-			return false, err
-		}
-		if !adopted {
-			return false, nil
-		}
-		encoded = []byte(pdb.Annotations[OriginalMaxUnavailableAnnotationKey])
+// adoptMaxUnavailable preserves a live maxUnavailable policy and converts it to
+// the equivalent absolute minAvailable floor.
+func adoptMaxUnavailable(pdb *policyv1.PodDisruptionBudget, replicas int32) error {
+	if pdb.Spec.MaxUnavailable == nil {
+		return fmt.Errorf("adopting maxUnavailable: value is not set")
 	}
-
-	minAvailable, err := minAvailableForMaxUnavailable(maxUnavailable, replicas)
+	encoded, err := json.Marshal(pdb.Spec.MaxUnavailable)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("encoding maxUnavailable: %w", err)
+	}
+	minAvailable, err := minAvailableForMaxUnavailable(pdb.Spec.MaxUnavailable, replicas)
+	if err != nil {
+		return err
 	}
 	desired := intstr.FromInt32(minAvailable)
-	changed := pdb.Spec.MaxUnavailable != nil || !intstrPtrEqual(pdb.Spec.MinAvailable, &desired)
 	if pdb.Annotations == nil {
 		pdb.Annotations = map[string]string{}
 	}
-	if pdb.Annotations[OriginalMaxUnavailableAnnotationKey] != string(encoded) {
-		pdb.Annotations[OriginalMaxUnavailableAnnotationKey] = string(encoded)
-		changed = true
-	}
+	pdb.Annotations[OriginalMaxUnavailableAnnotationKey] = string(encoded)
 	pdb.Spec.MaxUnavailable = nil
 	pdb.Spec.MinAvailable = &desired
-	return changed, nil
+	return nil
 }
 
 // shouldSkipPDBCreation checks if PDB creation should be skipped for a deployment
@@ -193,10 +171,7 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 
 	// Use KEDA/HPA minReplicas when available instead of deployment.spec.replicas,
 	// since the autoscaler controls the actual replica count and may have scaled above its floor.
-	var deployReplicas int32 = 1
-	if deployment.Spec.Replicas != nil {
-		deployReplicas = *deployment.Spec.Replicas
-	}
+	deployReplicas := deploymentReplicas(deployment)
 	minAvailable, _, err := ResolveMinReplicas(ctx, c, deployment.Namespace, deployment.Name, ResourceTypeDeployment, deployReplicas)
 	if err != nil {
 		return err

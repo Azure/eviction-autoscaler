@@ -9,15 +9,14 @@ import (
 )
 
 var _ = Describe("maxUnavailable PDB adoption helpers", func() {
-	DescribeTable("normalizes a relative policy",
+	DescribeTable("adopts a relative policy",
 		func(maxUnavailable intstr.IntOrString, replicas, expected int32, annotation string) {
 			pdb := &policyv1.PodDisruptionBudget{
 				Spec: policyv1.PodDisruptionBudgetSpec{MaxUnavailable: &maxUnavailable},
 			}
 
-			changed, err := normalizeMaxUnavailable(pdb, replicas)
+			err := adoptMaxUnavailable(pdb, replicas)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(changed).To(BeTrue())
 			Expect(pdb.Spec.MaxUnavailable).To(BeNil())
 			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: expected}))
 			Expect(pdb.Annotations).To(HaveKeyWithValue(OriginalMaxUnavailableAnnotationKey, annotation))
@@ -27,30 +26,19 @@ var _ = Describe("maxUnavailable PDB adoption helpers", func() {
 		Entry("allowance larger than replicas", intstr.FromInt32(10), int32(3), int32(0), "10"),
 	)
 
-	It("leaves a minAvailable-only PDB unchanged", func() {
+	It("does not partially mutate a PDB with an invalid live value", func() {
 		minAvailable := intstr.FromInt32(2)
-		pdb := &policyv1.PodDisruptionBudget{Spec: policyv1.PodDisruptionBudgetSpec{MinAvailable: &minAvailable}}
-		before := pdb.DeepCopy()
-
-		changed, err := normalizeMaxUnavailable(pdb, 5)
-		Expect(err).NotTo(HaveOccurred())
-		Expect(changed).To(BeFalse())
-		Expect(pdb).To(Equal(before))
-	})
-
-	It("does not partially mutate a PDB with an invalid preserved value", func() {
-		minAvailable := intstr.FromInt32(2)
+		maxUnavailable := intstr.FromString("not-a-percentage")
 		pdb := &policyv1.PodDisruptionBudget{
-			ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
-				OriginalMaxUnavailableAnnotationKey: `"not-a-percentage"`,
-			}},
-			Spec: policyv1.PodDisruptionBudgetSpec{MinAvailable: &minAvailable},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable:   &minAvailable,
+				MaxUnavailable: &maxUnavailable,
+			},
 		}
 		before := pdb.DeepCopy()
 
-		changed, err := normalizeMaxUnavailable(pdb, 5)
+		err := adoptMaxUnavailable(pdb, 5)
 		Expect(err).To(HaveOccurred())
-		Expect(changed).To(BeFalse())
 		Expect(pdb).To(Equal(before))
 	})
 

@@ -96,15 +96,15 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	var deploymentName string
-	_, hasPreservedMaxUnavailable, annotationErr := originalMaxUnavailable(&pdb)
-	if annotationErr != nil {
-		return reconcile.Result{}, annotationErr
+	preservedMaxUnavailable, alreadyAdopted, err := originalMaxUnavailable(&pdb)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
 	// The feature switch gates new takeovers. Once a PDB carries the preservation
 	// annotation, continue managing it so disabling the switch cannot abandon an
 	// already-converted policy or its ownership metadata.
-	shouldAdopt := r.AdoptMaxUnavailable && pdb.Spec.MaxUnavailable != nil
-	if shouldAdopt || hasPreservedMaxUnavailable {
+	newAdoption := r.AdoptMaxUnavailable && pdb.Spec.MaxUnavailable != nil
+	if newAdoption || alreadyAdopted {
 		var deploymentUID k8s_types.UID
 		deploymentName, deploymentUID, err = r.discoverDeployment(ctx, &pdb)
 		if err != nil {
@@ -117,21 +117,18 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if deployment.UID != "" {
 			deploymentUID = deployment.UID
 		}
-		replicas := int32(1)
-		if deployment.Spec.Replicas != nil {
-			replicas = *deployment.Spec.Replicas
-		}
+		replicas := deploymentReplicas(&deployment)
 		changed := false
 		if pdb.Spec.MaxUnavailable != nil {
 			// Convert here during adoption because the ownership update only enqueues
 			// the Deployment controller; it does not enqueue AutoscalerToPDBReconciler
-			// for HPA/KEDA targets. After this initial value is set, the Deployment or
-			// autoscaler controller maintains minAvailable for its respective target.
-			changed, err = normalizeMaxUnavailable(&pdb, replicas)
-			if err != nil {
+			// for HPA/KEDA targets. This initial value uses Deployment replicas; the
+			// autoscaler floor is applied on the next autoscaler reconciliation.
+			if err = adoptMaxUnavailable(&pdb, replicas); err != nil {
 				return reconcile.Result{}, err
 			}
-		} else if _, err := managedMinAvailable(&pdb, replicas); err != nil {
+			changed = true
+		} else if _, err := minAvailableForMaxUnavailable(preservedMaxUnavailable, replicas); err != nil {
 			// Validate a user-editable preservation annotation before changing
 			// ownership metadata, but leave the maintained floor to the Deployment
 			// or HPA/KEDA controller after the one-time conversion.
@@ -256,8 +253,8 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
 	_, adopted := pdb.Annotations[OriginalMaxUnavailableAnnotationKey]
 	if adopted {
-		// normalizeMaxUnavailable validates the preserved policy before atomically
-		// reasserting both the annotation and owner reference later in this reconcile.
+		// Adopted PDBs validate their preserved policy and reassert ownership later
+		// in this reconcile instead of honoring ownership metadata removal.
 		return nil
 	}
 
@@ -306,17 +303,7 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 			return err
 		}
 
-		controller := true
-		blockOwnerDeletion := true
-
-		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         "apps/v1",
-			Kind:               ResourceTypeDeployment,
-			Name:               deploymentName,
-			UID:                deploymentUID,
-			Controller:         &controller,
-			BlockOwnerDeletion: &blockOwnerDeletion,
-		})
+		ensurePDBControllerOwnership(pdb, deploymentName, deploymentUID)
 
 		if err := r.Update(ctx, pdb); err != nil {
 			logger.Error(err, "Failed to add owner reference to PDB",

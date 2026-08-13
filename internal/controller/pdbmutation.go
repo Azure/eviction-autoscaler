@@ -29,7 +29,28 @@ const (
 	// AnnotationPinnedFloor records the pinned floor on the PDB so it survives a lost
 	// CR status write (Status.PDBFloorPinned).
 	AnnotationPinnedFloor = "eviction-autoscaler.azure.com/pinned-floor"
+
+	// PDBFloorFinalizer is placed on the EvictionAutoScaler while its partner PDB
+	// carries a floor mutation, so a mid-drain CR delete is held until the actuator
+	// restores the partner PDB (or determines restore is moot). Removing it releases
+	// the CR for garbage collection.
+	PDBFloorFinalizer = "eviction-autoscaler.azure.com/pdb-floor"
 )
+
+// hasFloorAnnotation reports raw presence of either floor annotation, without
+// parsing/validating the value. Used to decide whether teardown metadata is fully
+// cleared: a malformed AnnotationPinnedFloor (which pinnedFloorFromPDB rejects) still
+// counts as residue that must be removed before the finalizer is dropped.
+func hasFloorAnnotation(pdb *policyv1.PodDisruptionBudget) bool {
+	if pdb == nil || pdb.Annotations == nil {
+		return false
+	}
+	if _, ok := pdb.Annotations[AnnotationOriginalPDBSpec]; ok {
+		return true
+	}
+	_, ok := pdb.Annotations[AnnotationPinnedFloor]
+	return ok
+}
 
 // isMutated reports whether the PDB carries our original-spec snapshot annotation.
 func isMutated(pdb *policyv1.PodDisruptionBudget) bool {

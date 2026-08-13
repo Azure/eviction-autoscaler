@@ -754,7 +754,8 @@ var _ = Describe("controller", Ordered, func() {
 			By("finding a node hosting a target pod")
 			var pods corev1.PodList
 			EventuallyWithOffset(1, func() error {
-				if err := clientset.List(ctx, &pods, client.InNamespace(testNs), client.MatchingLabels{"app": depName}); err != nil {
+				err := clientset.List(ctx, &pods, client.InNamespace(testNs), client.MatchingLabels{"app": depName})
+				if err != nil {
 					return err
 				}
 				if len(pods.Items) == 0 {

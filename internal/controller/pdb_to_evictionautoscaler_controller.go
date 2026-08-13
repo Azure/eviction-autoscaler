@@ -123,6 +123,10 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		}
 		changed := false
 		if pdb.Spec.MaxUnavailable != nil {
+			// Convert here during adoption because the ownership update only enqueues
+			// the Deployment controller; it does not enqueue AutoscalerToPDBReconciler
+			// for HPA/KEDA targets. After this initial value is set, the Deployment or
+			// autoscaler controller maintains minAvailable for its respective target.
 			changed, err = normalizeMaxUnavailable(&pdb, replicas)
 			if err != nil {
 				return reconcile.Result{}, err

@@ -113,9 +113,10 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		maxUnavailable := intstr.FromInt(0) // Explicitly set to 0 to ensure PDB is created
 		// Create the reconciler instance
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient, // Use the fake client
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient, // Use the fake client
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 
 		// Define a Deployment to test using helper
@@ -126,6 +127,21 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 	})
 
 	Describe("when a deployment is created", func() {
+		It("does not create a PDB when creation is disabled", func() {
+			r.PDBCreationEnabled = false
+			req := reconcile.Request{NamespacedName: client.ObjectKey{
+				Namespace: namespace,
+				Name:      deploymentName,
+			}}
+
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = r.Client.Get(ctx, req.NamespacedName, pdb)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
 		It("should create a PodDisruptionBudget", func() {
 			var err error
 			req := reconcile.Request{
@@ -423,9 +439,10 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient,
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 
 		// Use helper to create deployment
@@ -481,9 +498,10 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 		Expect(autoscalingv2.AddToScheme(s)).To(Succeed())
 
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient,
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 	})
 

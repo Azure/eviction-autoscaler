@@ -28,9 +28,10 @@ var errOwnerNotFound error = fmt.Errorf("owner not found")
 // PDBToEvictionAutoScalerReconciler reconciles a PodDisruptionBudget object.
 type PDBToEvictionAutoScalerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Filter   filter
+	Scheme              *runtime.Scheme
+	Recorder            record.EventRecorder
+	Filter              filter
+	AdoptMaxUnavailable bool
 }
 
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;create;watch;update
@@ -99,7 +100,11 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	if annotationErr != nil {
 		return reconcile.Result{}, annotationErr
 	}
-	if pdb.Spec.MaxUnavailable != nil || hasPreservedMaxUnavailable {
+	// The feature switch gates new takeovers. Once a PDB carries the preservation
+	// annotation, continue managing it so disabling the switch cannot abandon an
+	// already-converted policy or its ownership metadata.
+	shouldAdopt := r.AdoptMaxUnavailable && pdb.Spec.MaxUnavailable != nil
+	if shouldAdopt || hasPreservedMaxUnavailable {
 		var deploymentUID k8s_types.UID
 		deploymentName, deploymentUID, err = r.discoverDeployment(ctx, &pdb)
 		if err != nil {

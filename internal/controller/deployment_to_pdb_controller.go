@@ -35,9 +35,10 @@ type filter interface {
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Filter   filter
+	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
+	Filter             filter
+	PDBCreationEnabled bool
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
@@ -90,13 +91,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, nil
 	}
 
-	// Check if PDB creation should be skipped for this deployment
-	if shouldSkip, reason := shouldSkipPDBCreation(&deployment); shouldSkip {
-		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
-			"namespace", deployment.Namespace, "reason", reason)
-		return reconcile.Result{}, nil
-	}
-
 	// Check if PDB already exists for this Deployment (any PDB, not just controller-owned)
 	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, false)
 	if err != nil {
@@ -114,6 +108,18 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
 		// update pdb minReplicas to current deployment replicas
 		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, *pdb)
+	}
+
+	if !r.PDBCreationEnabled {
+		return reconcile.Result{}, nil
+	}
+
+	// Check if PDB creation should be skipped for this deployment. This is evaluated
+	// only when no PDB exists; existing controller-owned PDBs still need maintenance.
+	if shouldSkip, reason := shouldSkipPDBCreation(&deployment); shouldSkip {
+		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
+			"namespace", deployment.Namespace, "reason", reason)
+		return reconcile.Result{}, nil
 	}
 
 	// Create a new PDB for the Deployment using helper function.

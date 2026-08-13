@@ -142,7 +142,7 @@ az k8s-extension create \
     --name eviction-autoscaler \
     --resource-group <your-resource-group-name> \
     --release-train dev \
-    --configuration-settings controllerConfig.namespaces.enabledByDefault=true controllerConfig.pdb.create=true\
+    --configuration-settings controllerConfig.namespaces.enabledByDefault=true controllerConfig.pdb.create=true controllerConfig.pdb.adoptMaxUnavailable=true \
     --config AgentTimeoutInMinutes=30 \
     --subscription <your-subscription-id> \
     --version 0.1.16 \
@@ -152,6 +152,7 @@ az k8s-extension create \
 **Configuration Options:**
 
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: true)
+- `controllerConfig.pdb.adoptMaxUnavailable=true` - Converts existing `maxUnavailable` PDBs to controller-managed absolute `minAvailable` policies (default: false)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
@@ -261,8 +262,9 @@ This annotation instructs eviction-autoscaler not to create a PDB for that deplo
 
 ### PDBs with `maxUnavailable`
 
-When eviction-autoscaler is enabled for a namespace, an existing PDB that selects a
-Deployment and uses `maxUnavailable` is adopted by the controller. The controller:
+When `PDB_MAX_UNAVAILABLE_ADOPTION=true` and eviction-autoscaler is enabled for a
+namespace, an existing PDB that selects a Deployment and uses `maxUnavailable` is
+adopted by the controller. The controller:
 
 - Stores the exact integer or percentage in the
   `eviction-autoscaler.azure.com/original-max-unavailable` annotation.
@@ -322,6 +324,7 @@ Eviction autoscaler provides flexible namespace-level control with two operation
   - `true`: Namespaces enabled by default - all namespaces enabled unless disabled
 - **`ACTIONED_NAMESPACES`**: Comma-separated list of namespaces with special behavior
 - **`PDB_CREATE`**: Enable automatic PDB creation for deployments (default: `false`)
+- **`PDB_MAX_UNAVAILABLE_ADOPTION`**: Adopt and convert existing `maxUnavailable` PDBs (default: `false`)
 - **`ZERO_SURGE_OVERRIDE`**: Lets the controller surge a workload whose `maxSurge` resolves to 0 (an explicit `maxSurge: 0`, or a `Recreate` strategy) during a drain instead of refusing to surge. The value is an int-or-percentage, mirroring Kubernetes `maxSurge`: `"25%"` of `minReplicas` (rounded up) or an absolute `"10"`. Unset, or a value that resolves to zero (`"0"`/`"0%"`), leaves the feature off (default), so such a workload degrades as before; a negative or malformed value fails fast at startup. The actual surge stays demand-driven (`minReplicas + displaced`) and is capped at this amount, so larger drains proceed in waves. **Note:** workloads that omit `maxSurge` entirely (or omit the strategy altogether) are _not_ affected — Kubernetes defaults those to `25%` at admission time, so they already have a non-zero surge and the override does not apply.
 
 #### Mode 1: `ENABLED_BY_DEFAULT=false` (Default)
@@ -502,6 +505,8 @@ spec:
         - name: ACTIONED_NAMESPACES
           value: "kube-system,production,staging"
         - name: PDB_CREATE
+          value: "true"
+        - name: PDB_MAX_UNAVAILABLE_ADOPTION
           value: "true"
 ```
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
-	"strings"
 
 	"github.com/go-logr/logr"
 	v1 "k8s.io/api/apps/v1"
@@ -35,15 +34,14 @@ func originalMaxUnavailable(pdb *policyv1.PodDisruptionBudget) (*intstr.IntOrStr
 	if !ok {
 		return nil, false, nil
 	}
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" || (trimmed[0] != '"' && trimmed[0] != '-' && (trimmed[0] < '0' || trimmed[0] > '9')) {
-		return nil, true, fmt.Errorf("decoding preserved maxUnavailable: expected an integer or percentage string")
-	}
-	var value intstr.IntOrString
+	var value *intstr.IntOrString
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return nil, true, fmt.Errorf("decoding preserved maxUnavailable: %w", err)
 	}
-	return &value, true, nil
+	if value == nil {
+		return nil, true, fmt.Errorf("decoding preserved maxUnavailable: value is null")
+	}
+	return value, true, nil
 }
 
 // minAvailableForMaxUnavailable converts a relative disruption allowance to the

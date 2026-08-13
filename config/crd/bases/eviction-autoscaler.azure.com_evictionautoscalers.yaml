@@ -133,6 +133,12 @@ spec:
               minReplicas:
                 format: int32
                 type: integer
+              pdbFloorPinned:
+                description: |-
+                  PDBFloorPinned signals that a PDB minAvailable floor is currently held during a drain so a
+                  replica surge converts into DisruptionsAllowed; false when no floor is held. The authoritative
+                  floor value lives on the PDB annotations, so this is only an on/off marker of our intent.
+                type: boolean
             required:
             - deploymentGeneration
             - minReplicas

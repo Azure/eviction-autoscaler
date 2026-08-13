@@ -628,9 +628,21 @@ func controllerPodStatus(ctx context.Context, c client.Client) (string, int32, e
 	if len(pods.Items) == 0 {
 		return "", 0, fmt.Errorf("no controller-manager pod found")
 	}
-	pod := pods.Items[0]
-	if pod.Status.Phase != corev1.PodRunning {
-		return pod.Name, 0, fmt.Errorf("controller pod %s in %s phase", pod.Name, pod.Status.Phase)
+	// The single-replica manager can be replaced by earlier specs (node drains,
+	// evictions). The old pod exits 0 on SIGTERM and lingers as Succeeded until
+	// GC, so pick the live pod rather than whichever sorts first.
+	var pod *corev1.Pod
+	for i := range pods.Items {
+		p := &pods.Items[i]
+		if p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning {
+			continue
+		}
+		pod = p
+		break
+	}
+	if pod == nil {
+		return pods.Items[0].Name, 0, fmt.Errorf("no Running controller pod found (%d pod(s), first in %s phase)",
+			len(pods.Items), pods.Items[0].Status.Phase)
 	}
 	var restarts int32
 	for _, cs := range pod.Status.ContainerStatuses {

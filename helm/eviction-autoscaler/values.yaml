@@ -17,6 +17,25 @@ resources:
     cpu: 10m
     memory: 64Mi
 
+# Controller pod scheduling
+# nodeSelector pins the controller to nodes matching these labels (node affinity
+# by label). affinity accepts a full Kubernetes affinity spec (nodeAffinity,
+# podAffinity, podAntiAffinity). tolerations allow scheduling onto tainted nodes.
+# Example:
+#   nodeSelector:
+#     kubernetes.io/os: linux
+#   affinity:
+#     nodeAffinity:
+#       requiredDuringSchedulingIgnoredDuringExecution:
+#         nodeSelectorTerms:
+#           - matchExpressions:
+#               - key: agentpool
+#                 operator: In
+#                 values: ["system"]
+nodeSelector: {}
+affinity: {}
+tolerations: []
+
 # Controller configuration - the main settings users need to customize
 controllerConfig:
   # Global enable/disable for the entire controller (kill switch).

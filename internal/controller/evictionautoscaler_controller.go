@@ -54,7 +54,11 @@ type EvictionAutoScalerReconciler struct {
 	ZeroSurgeOverride *intstr.IntOrString
 }
 
-const cooldown = 1 * time.Minute
+const (
+	cooldown                = 1 * time.Minute
+	surgeForbiddenReason    = "SurgeForbidden"
+	pdbWriteForbiddenReason = "PDBWriteForbidden"
+)
 
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/status,verbs=get;update;patch
@@ -120,6 +124,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
 		// Don't process evictions for namespaces without the annotation
+		return ctrl.Result{}, nil
+	}
+
+	if terminalWriteErrorReported(EvictionAutoScaler, surgeForbiddenReason) ||
+		terminalWriteErrorReported(EvictionAutoScaler, pdbWriteForbiddenReason) {
+		logger.Info("Terminal write error already reported for current generation, not retrying")
 		return ctrl.Result{}, nil
 	}
 
@@ -358,10 +368,8 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 
 	if err := surgeApplier.ApplySurge(ctx, surgeTarget); err != nil {
 		logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
-		if apierrors.IsForbidden(err) {
-			meta.RemoveStatusCondition(&EvictionAutoScaler.Status.Conditions, "Ready")
-			degraded(EvictionAutoScaler, "SurgeForbidden", err.Error())
-			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		if handled, statusErr := handleTerminalWriteError(ctx, r.Client, EvictionAutoScaler, surgeForbiddenReason, err); handled {
+			return ctrl.Result{}, statusErr
 		}
 		return ctrl.Result{}, err
 	}
@@ -438,6 +446,31 @@ func degraded(eas *myappsv1.EvictionAutoScaler, reason string, message string) {
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+}
+
+func handleTerminalWriteError(ctx context.Context, c client.Client, eas *myappsv1.EvictionAutoScaler, reason string, writeErr error) (bool, error) {
+	if !apierrors.IsForbidden(writeErr) {
+		return false, nil
+	}
+
+	if terminalWriteErrorReported(eas, reason) {
+		return true, nil
+	}
+
+	meta.RemoveStatusCondition(&eas.Status.Conditions, "Ready")
+	degraded(eas, reason, writeErr.Error())
+	meta.FindStatusCondition(eas.Status.Conditions, "Degraded").ObservedGeneration = eas.Generation
+	return true, c.Status().Update(ctx, eas)
+}
+
+func terminalWriteErrorReported(eas *myappsv1.EvictionAutoScaler, reason string) bool {
+	existing := meta.FindStatusCondition(eas.Status.Conditions, "Degraded")
+	return !eas.Status.PDBFloorPinned &&
+		meta.FindStatusCondition(eas.Status.Conditions, "Ready") == nil &&
+		existing != nil &&
+		existing.Status == metav1.ConditionTrue &&
+		existing.Reason == reason &&
+		existing.ObservedGeneration == eas.Generation
 }
 
 func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {

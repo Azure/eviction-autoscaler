@@ -152,3 +152,7 @@ func (h *HPASurgeApplier) IsSurgeActive() bool {
 func (h *HPASurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(h.hpa.Annotations)
 }
+
+func (h *HPASurgeApplier) RecordedBaseline() (int32, bool) {
+	return recordedBaselineFromAnnotations(h.hpa.Annotations)
+}

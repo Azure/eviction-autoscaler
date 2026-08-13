@@ -218,15 +218,10 @@ func main() {
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
 	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set)
-	enablePDBFloorMutationStr := os.Getenv("ENABLE_PDB_FLOOR_MUTATION")
-	enablePDBFloorMutation := false
-	if enablePDBFloorMutationStr != "" {
-		var perr error
-		enablePDBFloorMutation, perr = strconv.ParseBool(enablePDBFloorMutationStr)
-		if perr != nil {
-			setupLog.Error(perr, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
-			os.Exit(1)
-		}
+	enablePDBFloorMutation, err := k8senv.GetBool("ENABLE_PDB_FLOOR_MUTATION", false)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+		os.Exit(1)
 	}
 	setupLog.Info("PDB floor mutation configuration", "enablePDBFloorMutation", enablePDBFloorMutation)
 	controllers.SetPDBFloorMutationEnabled(enablePDBFloorMutation)

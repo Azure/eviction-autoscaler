@@ -192,11 +192,13 @@ func (d *DeploymentSurgeApplier) ApplySurge(ctx context.Context, surgeReplicas i
 func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas int32) error {
 	// Prefer the durable baseline recorded on the deployment over the passed value, so a
 	// revert driven by an EAS with a lost/zero Status.MinReplicas still returns to the true
-	// pre-surge count.
+	// pre-surge count. Only trust the annotation when it parses to a positive value — a
+	// tampered/corrupt non-positive annotation must not override a valid passed baseline and
+	// wedge the deployment surged via the guard below.
 	revertTo := originalMinReplicas
 	if anns := d.target.Obj().GetAnnotations(); anns != nil {
 		if v, ok := anns[OriginalMinReplicasAnnotationKey]; ok {
-			if parsed, err := strconv.ParseInt(v, 10, 32); err == nil {
+			if parsed, err := strconv.ParseInt(v, 10, 32); err == nil && parsed > 0 {
 				revertTo = int32(parsed)
 			}
 		}

@@ -69,6 +69,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		return reconcile.Result{}, err
 	}
 	if !isEnabled {
+		// Namespace disabled: restore the partner PDB if we left a floor pinned.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
 		// Only delete EvictionAutoScaler for user-owned PDbs
 		// Controller-owned PDbs will be deleted by DeploymentToPDBReconciler, which cascade-deletes the EvictionAutoScaler
@@ -92,6 +98,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	if err != nil {
 		if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
+		}
+		// EvictionAutoScaler gone but the PDB still carries our floor: restore it.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
 		}
 
 		deploymentName, _, e := r.discoverDeployment(ctx, &pdb)
@@ -138,14 +150,125 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		if err != nil {
 			return reconcile.Result{}, fmt.Errorf("unable to create EvictionAutoScaler: %v", err)
 		}
-
 		// Track EvictionAutoScaler creation
 		metrics.EvictionAutoScalerCreationCounter.WithLabelValues(pdb.Namespace, pdb.Name, deploymentName).Inc()
-
 		logger.Info("Created EvictionAutoScaler")
+	} else if !EvictionAutoScaler.DeletionTimestamp.IsZero() {
+		// EvictionAutoScaler is being deleted: restore the partner PDB if we pinned it.
+		if pdbCarriesFloorAnnotations(&pdb) {
+			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
+		return reconcile.Result{}, nil
 	}
-	// Return no error and no requeue
+
+	// Converge the PDB floor toward the EAS policy (pin / edit-honor / restore).
+	if err := r.actuatePDBFloor(ctx, &pdb, &EvictionAutoScaler); err != nil {
+		return reconcile.Result{}, err
+	}
 	return reconcile.Result{}, nil
+}
+
+func pdbCarriesFloorAnnotations(pdb *policyv1.PodDisruptionBudget) bool {
+	if isMutated(pdb) {
+		return true
+	}
+	_, ok := pinnedFloorFromPDB(pdb)
+	return ok
+}
+
+// actuatePDBFloor converges the partner PDB toward the EAS's pin policy. It honors the user's
+// intent: the user's disruption policy is authoritative at all times, and we only ever express
+// it *temporarily* as an absolute minAvailable floor so a replica surge converts into real
+// DisruptionsAllowed (a relative policy would scale its required-healthy count up with the surge
+// and eat the headroom). Whatever the user's current policy is, that is what we restore to.
+//
+// Why honor intent (re-baseline) rather than "own the PDB for the drain" (hold our first floor
+// and override every edit): the pin is a temporary re-expression of the user's own policy, not a
+// value we author. So if the user changes that policy mid-drain — via `kubectl edit`, a Helm
+// upgrade, or a GitOps reconciler re-applying a manifest — we adopt the new policy: re-snapshot
+// it (it becomes what we restore to) and re-derive the floor from it. We never freeze a stale
+// floor over a policy the user has since changed.
+//
+// The single source of truth for "is this spec our pin?" is the floor WE recorded on the PDB
+// (pinnedFloor annotation), matched against the live spec — not a freshly recomputed value.
+// Recognizing our own pin by identity is what lets us tell "we are holding" (leave it, the
+// user's policy is safely stashed in the snapshot) from "the live spec is the user's policy"
+// (first pin, or they overwrote our pin) without conflating the two.
+//
+// Status.PDBFloorPinned is only the enable/disable signal here; the authoritative floor and the
+// policy-to-restore live on the PDB annotations, re-baselined to the user's current intent.
+//
+// Edge cases:
+//   - User switches abs<->percentage or minAvailable<->maxUnavailable mid-drain: the live spec
+//     no longer matches our recorded floor, so we treat it as the user's new policy, snapshot it,
+//     and re-pin a floor derived from it. Restore later returns that new policy.
+//   - GitOps re-applies the original spec every sync: each reconcile we re-snapshot (same value)
+//     and re-pin — a bounded tug-of-war for the duration of the (short) drain. Consistent and
+//     honoring: the floor keeps tracking the declared policy, and on release GitOps stops fighting.
+//   - User sets minAvailable to a value that equals our recorded floor: indistinguishable from
+//     our pin, and harmless — it *is* the floor we would hold.
+//   - HPA/KEDA deleted mid-surge: the recorded surge lives on the autoscaler, so it is lost with
+//     it. The PDB is only un-pinned once the EAS controller clears Status.PDBFloorPinned (via the
+//     deployment-strategy fallback scale-down); restore here is gated on that clear, so if the
+//     fallback cannot complete the PDB may not be reverted to the user's original.
+//   - MinReplicas (the surge baseline) is frozen while a surge is active, so a held floor cannot
+//     go stale against it; we therefore no-op while holding rather than recomputing every pass.
+func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
+	active := eas != nil && eas.Status.PDBFloorPinned
+	if active {
+		// Holding our own pin? Recognize it by the floor WE recorded (identity), not by a
+		// recomputed value. If the live spec still carries that floor, the user's policy is
+		// safely stashed in the snapshot and there is nothing to do.
+		if storedFloor, ok := pinnedFloorFromPDB(pdb); ok && pdbCarriesFloor(pdb, storedFloor) {
+			return nil
+		}
+		// Not holding our pin, so the live spec IS the user's current policy — either the first
+		// time we pin, or they have overwritten our pin with a new policy. Honor it: snapshot the
+		// live spec as the policy we will restore to (re-baseline to the user's latest intent),
+		// then express it as an absolute floor so the surge yields headroom.
+		floor, err := desiredHealthyAt(pdb.Spec, eas.Status.MinReplicas)
+		if err != nil {
+			return err
+		}
+		if floor <= 0 {
+			return nil
+		}
+		if err := snapshotPDBSpec(pdb); err != nil {
+			return err
+		}
+		pinPDBFloor(pdb, floor)
+		return r.updatePDBConflictAware(ctx, pdb)
+	}
+
+	// Pin cleared (drain handled, feature disabled, or EAS/namespace gone): restore the user's
+	// current policy.
+	if f, ok := pinnedFloorFromPDB(pdb); ok && pdbCarriesFloor(pdb, f) {
+		// We are still holding our pin — restore the stashed policy from the snapshot.
+		changed, err := restorePDBSpec(pdb)
+		if err != nil {
+			return err
+		}
+		if changed {
+			return r.updatePDBConflictAware(ctx, pdb)
+		}
+	} else if isMutated(pdb) {
+		// The user overwrote our pin with their own spec before we released — that spec is
+		// already their intent, so honor it: just drop our annotations and leave it in place.
+		delete(pdb.Annotations, AnnotationOriginalPDBSpec)
+		delete(pdb.Annotations, AnnotationPinnedFloor)
+		return r.updatePDBConflictAware(ctx, pdb)
+	}
+	return nil
+}
+
+func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
+	err := r.Update(ctx, pdb)
+	if apierrors.IsConflict(err) {
+		log.FromContext(ctx).V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
+	}
+	return err
 }
 
 // handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
@@ -230,15 +353,16 @@ func (r *PDBToEvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) e
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&policyv1.PodDisruptionBudget{}).
 		Watches(&corev1.Namespace{}, handler.EnqueueRequestsFromMapFunc(requeuePDBsOnNamespaceChange(r.Client))).
+		Watches(&types.EvictionAutoScaler{}, handler.EnqueueRequestsFromMapFunc(func(_ context.Context, obj client.Object) []reconcile.Request {
+			return []reconcile.Request{{NamespacedName: k8s_types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}}}
+		})).
 		WithEventFilter(predicate.Funcs{
 			// Trigger for Create and Update events
 			UpdateFunc: func(e event.UpdateEvent) bool {
-				// Only filter PDB updates; let Namespace updates through so namespace
-				// annotation changes (enable/disable) trigger cleanup of EvictionAutoScalers
 				if _, ok := e.ObjectNew.(*policyv1.PodDisruptionBudget); ok {
 					return triggerOnPDBAnnotationChange(e, logger)
 				}
-				// For non-PDB objects (e.g. Namespace), always trigger
+				// For non-PDB objects (e.g. Namespace, EvictionAutoScaler), always trigger
 				return true
 			},
 			DeleteFunc: func(e event.DeleteEvent) bool { return false },

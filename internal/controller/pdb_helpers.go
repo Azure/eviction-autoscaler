@@ -182,8 +182,15 @@ func tryGet(m map[string]string, key string) string {
 	return m[key]
 }
 
+func intstrPtrEqual(a, b *intstr.IntOrString) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
 // triggerOnPDBAnnotationChange checks if a PDB update event should trigger reconciliation
-// by comparing the ownedBy annotation between old and new PDB
+// by comparing the ownedBy annotation and PDB floor fields between old and new PDB.
 func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool {
 	oldPDB, okOld := e.ObjectOld.(*policyv1.PodDisruptionBudget)
 	newPDB, okNew := e.ObjectNew.(*policyv1.PodDisruptionBudget)
@@ -194,6 +201,11 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 			logger.Info("PDB update event detected, ownedBy annotation changed",
 				"namespace", newPDB.Namespace, "name", newPDB.Name,
 				"oldValue", oldVal, "newValue", newVal)
+			return true
+		}
+		if !intstrPtrEqual(oldPDB.Spec.MinAvailable, newPDB.Spec.MinAvailable) || !intstrPtrEqual(oldPDB.Spec.MaxUnavailable, newPDB.Spec.MaxUnavailable) {
+			logger.Info("PDB update event detected, disruption spec changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name)
 			return true
 		}
 	}

@@ -118,7 +118,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// recreates it — can never strand the target permanently surged. Held by
 	// EASSurgeFinalizer, which this reconciler owns (single-writer: we write the target).
 	if !EvictionAutoScaler.DeletionTimestamp.IsZero() {
-		return r.reconcileSurgeTeardown(ctx, EvictionAutoScaler)
+		return ctrl.Result{}, r.reconcileSurgeTeardown(ctx, EvictionAutoScaler)
 	}
 
 	// Flag-off clear: if the master switch is off but a pinned-floor policy is still
@@ -438,10 +438,10 @@ func (r *EvictionAutoScalerReconciler) recoverBaselineForActiveSurge(ctx context
 // Single-writer: only this reconciler reverts the surge (the PDB actuator restores the
 // partner PDB under its own PDBFloorFinalizer). Revert is conditional (ownsActiveSurge) so a
 // partner that has since taken over the target's replica count is never fought.
-func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Context, eas *myappsv1.EvictionAutoScaler) (ctrl.Result, error) {
+func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Context, eas *myappsv1.EvictionAutoScaler) error {
 	logger := log.FromContext(ctx)
 	if !controllerutil.ContainsFinalizer(eas, EASSurgeFinalizer) {
-		return ctrl.Result{}, nil // not ours to hold — nothing blocks GC
+		return nil // not ours to hold — nothing blocks GC
 	}
 
 	// Resolve the target + applier to check ownership and revert. A missing target, an
@@ -468,10 +468,10 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 				case errors.Is(detErr, errUnsupportedAutoscalerConfig):
 					// Unsupported config never reached ApplySurge — nothing to revert.
 				case detErr != nil:
-					return ctrl.Result{}, detErr // transient — keep finalizer, retry
+					return detErr // transient — keep finalizer, retry
 				case ownsActiveSurge(target, surgeApplier):
 					if err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
-						return ctrl.Result{}, err // keep finalizer, retry
+						return err // keep finalizer, retry
 					}
 					logger.Info("Reverted surge on EvictionAutoScaler deletion, releasing surge finalizer",
 						"kind", eas.Spec.TargetKind, "targetname", eas.Spec.TargetName, "namespace", eas.Namespace)
@@ -479,13 +479,13 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 			case apierrors.IsNotFound(getErr):
 				// Target already gone — nothing to revert.
 			default:
-				return ctrl.Result{}, getErr // transient — keep finalizer, retry
+				return getErr // transient — keep finalizer, retry
 			}
 		}
 	}
 
 	controllerutil.RemoveFinalizer(eas, EASSurgeFinalizer)
-	return ctrl.Result{}, r.Update(ctx, eas)
+	return r.Update(ctx, eas)
 }
 
 // ownsActiveSurge reports whether the applier still owns an active surge we may safely revert.

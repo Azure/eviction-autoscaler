@@ -141,7 +141,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 			changed = true
 		}
 		if changed {
-			if err := r.updatePDBConflictAware(ctx, &pdb); err != nil {
+			if err := r.Update(ctx, &pdb); err != nil {
 				return reconcile.Result{}, err
 			}
 			logger.Info("Adopted maxUnavailable PDB as an absolute minAvailable policy",
@@ -202,14 +202,6 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	return reconcile.Result{}, nil
-}
-
-func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
-	err := r.Update(ctx, pdb)
-	if apierrors.IsConflict(err) {
-		log.FromContext(ctx).V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
-	}
-	return err
 }
 
 // ensurePDBControllerOwnership makes an adopted PDB structurally equivalent to a

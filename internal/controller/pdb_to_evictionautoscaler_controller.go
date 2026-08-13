@@ -43,7 +43,7 @@ type PDBToEvictionAutoScalerReconciler struct {
 func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req reconcile.Request) (reconcile.Result, error) {
 	defer recordPanic("pdbtoevictionautoscaler", req.Namespace, &req.Name)
 	logger := log.FromContext(ctx)
-	logger.WithValues("pdb", req.Name, "namespace", req.Namespace)
+	logger = logger.WithValues("pdb", req.Name, "namespace", req.Namespace)
 	ctx = log.IntoContext(ctx, logger)
 	// Fetch the PDB and EAS independently (they share the request key); tolerate NotFound
 	// so a terminating EAS whose PDB is already gone can still shed its finalizer.

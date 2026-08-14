@@ -39,6 +39,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -1242,14 +1243,23 @@ var _ = Describe("controller", Ordered, func() {
 
 			By("waiting for the DS policy to become enforced")
 			EventuallyWithOffset(1, func() error {
-				probe := exec.Command("kubectl", "-n", testNs, "annotate", "deployment", "nginx-ds",
-					"ds-probe=1", "--overwrite")
-				out, perr := utils.Run(probe)
-				if perr == nil {
+				var deployment appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-ds"}, &deployment); err != nil {
+					return err
+				}
+				if deployment.Annotations == nil {
+					deployment.Annotations = map[string]string{}
+				}
+				deployment.Annotations["ds-probe"] = "1"
+				err := clientset.Update(ctx, &deployment)
+				if err == nil {
 					return fmt.Errorf("expected DS policy to block the deployment write, but it succeeded")
 				}
-				if !strings.Contains(string(out), "Deployment Safeguards: writes to Deployments are blocked") {
-					return fmt.Errorf("expected DS policy denial, got: %v", perr)
+				if !errors.IsForbidden(err) {
+					return fmt.Errorf("expected HTTP 403 Forbidden from DS policy, got: %w", err)
+				}
+				if !strings.Contains(err.Error(), "Deployment Safeguards: writes to Deployments are blocked") {
+					return fmt.Errorf("expected DS policy denial message, got: %w", err)
 				}
 				return nil
 			}, time.Minute, 2*time.Second).Should(Succeed())
@@ -1274,6 +1284,25 @@ var _ = Describe("controller", Ordered, func() {
 			node.Spec.Unschedulable = true
 			err = clientset.Update(ctx, &node)
 			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the controller records the forbidden surge as terminal")
+			EventuallyWithOffset(1, func() error {
+				var ea types.EvictionAutoScaler
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: "nginx-ds"}, &ea); err != nil {
+					return err
+				}
+				condition := meta.FindStatusCondition(ea.Status.Conditions, "Degraded")
+				if condition == nil {
+					return fmt.Errorf("expected Degraded condition")
+				}
+				if meta.FindStatusCondition(ea.Status.Conditions, "Ready") != nil {
+					return fmt.Errorf("expected Ready condition to be removed")
+				}
+				if condition.Reason != "SurgeForbidden" {
+					return fmt.Errorf("expected SurgeForbidden reason, got %q", condition.Reason)
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying the deployment never surges because the write is blocked")
 			ConsistentlyWithOffset(1, func() (int32, error) {

@@ -440,10 +440,10 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
 
 			controllerReconciler := &EvictionAutoScalerReconciler{
-				Client:                  k8sClient,
-				Scheme:                  k8sClient.Scheme(),
-				Filter:                  &evictionTestFilter{},
-				ZeroSurgeOverride:       overridePercent("25%"),
+				Client:            k8sClient,
+				Scheme:            k8sClient.Scheme(),
+				Filter:            &evictionTestFilter{},
+				ZeroSurgeOverride: overridePercent("25%"),
 			}
 
 			node := &corev1.Node{

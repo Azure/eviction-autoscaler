@@ -2,7 +2,6 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
@@ -14,15 +13,11 @@ import (
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -140,36 +135,6 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	createEASWithFloorPolicy := func(pinned bool) *v1.EvictionAutoScaler {
-		eas := &v1.EvictionAutoScaler{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec:       v1.EvictionAutoScalerSpec{TargetName: name, TargetKind: "deployment"},
-		}
-		Expect(k8sClient.Create(ctx, eas)).To(Succeed())
-		eas.Status.MinReplicas = 5
-		eas.Status.PDBFloorPinned = pinned
-		eas.Status.Conditions = []metav1.Condition{{
-			Type:               "Ready",
-			Status:             metav1.ConditionTrue,
-			Reason:             "TestReady",
-			Message:            "ready before PDB write",
-			LastTransitionTime: metav1.Now(),
-		}}
-		Expect(k8sClient.Status().Update(ctx, eas)).To(Succeed())
-		return eas
-	}
-
-	reconcilePDBWith := func(intercepts interceptor.Funcs) (reconcile.Result, error) {
-		watchClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
-		Expect(err).NotTo(HaveOccurred())
-		blockedReconciler := &PDBToEvictionAutoScalerReconciler{
-			Client: interceptor.NewClient(watchClient, intercepts),
-			Scheme: k8sClient.Scheme(),
-			Filter: &evictionTestFilter{},
-		}
-		return blockedReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
-	}
-
 	// surgeAndPin drives the initial reconcile (baseline) then the surge reconcile,
 	// leaving the PDB pinned to minAvailable=4 and the deployment surged to 7.
 	surgeAndPin := func(pdb *policyv1.PodDisruptionBudget) *v1.EvictionAutoScaler {
@@ -201,114 +166,6 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).To(HaveKey(AnnotationOriginalPDBSpec))
 		return ea
 	}
-
-	It("keeps a forbidden PDB pin terminal across the scheduled EAS reconcile", func() {
-		createDeployment(5, intstr.FromInt32(2))
-		makeBlockedPDB()
-		cordonWithPods(2)
-
-		eas := &v1.EvictionAutoScaler{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
-			Spec:       v1.EvictionAutoScalerSpec{TargetName: name, TargetKind: "deployment"},
-		}
-		Expect(k8sClient.Create(ctx, eas)).To(Succeed())
-		_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		eas.Spec.LastEviction = v1.Eviction{PodName: "p", EvictionTime: metav1.Now()}
-		Expect(k8sClient.Update(ctx, eas)).To(Succeed())
-
-		surgeResult, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(surgeResult.RequeueAfter).To(Equal(cooldown))
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		Expect(eas.Status.PDBFloorPinned).To(BeTrue())
-
-		result, err := reconcilePDBWith(forbidWritesInNamespace(ns))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
-
-		pdb := &policyv1.PodDisruptionBudget{}
-		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
-		Expect(pdb.Spec.MinAvailable).To(BeNil())
-		Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
-		Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
-		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
-		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
-
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		Expect(eas.Status.PDBFloorPinned).To(BeFalse())
-		Expect(meta.FindStatusCondition(eas.Status.Conditions, "Ready")).To(BeNil())
-		condition := meta.FindStatusCondition(eas.Status.Conditions, "Degraded")
-		Expect(condition).NotTo(BeNil())
-		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
-		Expect(condition.Reason).To(Equal(pdbWriteForbiddenReason))
-		Expect(condition.Message).To(ContainSubstring("forbidden"))
-		Expect(condition.ObservedGeneration).To(Equal(eas.Generation))
-		firstResourceVersion := eas.ResourceVersion
-
-		result, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		Expect(eas.ResourceVersion).To(Equal(firstResourceVersion))
-		Expect(eas.Status.PDBFloorPinned).To(BeFalse())
-		Expect(meta.FindStatusCondition(eas.Status.Conditions, "Ready")).To(BeNil())
-		Expect(meta.FindStatusCondition(eas.Status.Conditions, "Degraded").Reason).To(Equal(pdbWriteForbiddenReason))
-
-		deployment := &appsv1.Deployment{}
-		Expect(k8sClient.Get(ctx, nsName, deployment)).To(Succeed())
-		Expect(*deployment.Spec.Replicas).To(Equal(int32(7)))
-	})
-
-	It("returns non-forbidden PDB write errors so controller-runtime retries them", func() {
-		makeBlockedPDB()
-		createEASWithFloorPolicy(true)
-
-		result, err := reconcilePDBWith(rejectWritesInNamespace(ns, func(obj client.Object) error {
-			return apierrors.NewConflict(
-				schema.GroupResource{Resource: "poddisruptionbudgets"},
-				obj.GetName(),
-				errors.New("simulated conflict"),
-			)
-		}))
-		Expect(apierrors.IsConflict(err)).To(BeTrue())
-		Expect(result).To(Equal(reconcile.Result{}))
-
-		eas := &v1.EvictionAutoScaler{}
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		Expect(eas.Status.PDBFloorPinned).To(BeTrue())
-		Expect(meta.FindStatusCondition(eas.Status.Conditions, "Ready")).NotTo(BeNil())
-		Expect(meta.FindStatusCondition(eas.Status.Conditions, "Degraded")).To(BeNil())
-	})
-
-	It("does not churn EAS status after reporting a forbidden PDB restore", func() {
-		pdb := makeBlockedPDB()
-		Expect(snapshotPDBSpec(pdb)).To(Succeed())
-		pinPDBFloor(pdb, 4)
-		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
-		createEASWithFloorPolicy(false)
-
-		result, err := reconcilePDBWith(forbidWritesInNamespace(ns))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
-
-		eas := &v1.EvictionAutoScaler{}
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		firstResourceVersion := eas.ResourceVersion
-		condition := meta.FindStatusCondition(eas.Status.Conditions, "Degraded")
-		Expect(condition).NotTo(BeNil())
-		Expect(condition.Reason).To(Equal(pdbWriteForbiddenReason))
-
-		result, err = reconcilePDBWith(forbidWritesInNamespace(ns))
-		Expect(err).NotTo(HaveOccurred())
-		Expect(result).To(Equal(reconcile.Result{}))
-
-		Expect(k8sClient.Get(ctx, nsName, eas)).To(Succeed())
-		Expect(eas.ResourceVersion).To(Equal(firstResourceVersion))
-		Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
-		Expect(pdbCarriesFloor(pdb, 4)).To(BeTrue())
-	})
 
 	It("pins on surge, widens DisruptionsAllowed, and restores the partner PDB exactly on scale-down", func() {
 		createDeployment(5, intstr.FromInt32(2))

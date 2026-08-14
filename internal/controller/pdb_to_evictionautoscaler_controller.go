@@ -239,7 +239,7 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 			return err
 		}
 		pinPDBFloor(pdb, floor)
-		return r.updatePDBConflictAware(ctx, pdb, eas)
+		return r.updatePDBConflictAware(ctx, pdb)
 	}
 
 	// Pin cleared (drain handled, feature disabled, or EAS/namespace gone): restore the user's
@@ -251,35 +251,22 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 			return err
 		}
 		if changed {
-			return r.updatePDBConflictAware(ctx, pdb, eas)
+			return r.updatePDBConflictAware(ctx, pdb)
 		}
 	} else if isMutated(pdb) {
 		// The user overwrote our pin with their own spec before we released — that spec is
 		// already their intent, so honor it: just drop our annotations and leave it in place.
 		delete(pdb.Annotations, AnnotationOriginalPDBSpec)
 		delete(pdb.Annotations, AnnotationPinnedFloor)
-		return r.updatePDBConflictAware(ctx, pdb, eas)
+		return r.updatePDBConflictAware(ctx, pdb)
 	}
 	return nil
 }
 
-func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
+func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
 	err := r.Update(ctx, pdb)
-	if err == nil {
-		return nil
-	}
-	logger := log.FromContext(ctx)
-	if eas != nil {
-		alreadyReported := terminalWriteErrorReported(eas, pdbWriteForbiddenReason)
-		if handled, statusErr := handleTerminalWriteError(ctx, r.Client, eas, pdbWriteForbiddenReason, err); handled {
-			if !alreadyReported {
-				logger.Error(err, "PDB write forbidden, marking EvictionAutoScaler degraded", "pdb", pdb.Name, "namespace", pdb.Namespace)
-			}
-			return statusErr
-		}
-	}
 	if apierrors.IsConflict(err) {
-		logger.V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
+		log.FromContext(ctx).V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
 	}
 	return err
 }

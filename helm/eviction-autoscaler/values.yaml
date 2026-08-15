@@ -70,6 +70,9 @@ controllerConfig:
   # PDB creation configuration
   pdb:
     create: true
+    # Adopt existing PDBs that use maxUnavailable by preserving the relative
+    # allowance and converting them to controller-managed absolute minAvailable.
+    adoptMaxUnavailable: false
 
   # Zero-maxSurge drain override (fleet-wide, install-time)
   # When a workload's rollout maxSurge resolves to 0 — an explicit maxSurge: 0, a

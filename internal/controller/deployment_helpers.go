@@ -16,6 +16,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
+// deploymentReplicas returns the desired replica count using the Kubernetes
+// default for an omitted Deployment spec.replicas.
+func deploymentReplicas(deployment *v1.Deployment) int32 {
+	if deployment.Spec.Replicas == nil {
+		return 1
+	}
+	return *deployment.Spec.Replicas
+}
+
 // hasNonZeroMaxUnavailable returns true if the deployment has maxUnavailable set to a non-zero value.
 // Deployments with maxUnavailable != 0 already tolerate downtime, so PDB creation is skipped.
 func hasNonZeroMaxUnavailable(deployment *v1.Deployment) bool {

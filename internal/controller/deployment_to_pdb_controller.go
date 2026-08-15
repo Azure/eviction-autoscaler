@@ -4,14 +4,12 @@ import (
 	"context"
 	"strconv"
 
-	myappsv1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	v1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -35,9 +33,10 @@ type filter interface {
 // DeploymentToPDBReconciler reconciles a Deployment object and ensures an associated PDB is created and deleted
 type DeploymentToPDBReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
-	Filter   filter
+	Scheme             *runtime.Scheme
+	Recorder           record.EventRecorder
+	Filter             filter
+	PDBCreationEnabled bool
 }
 
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;update;watch
@@ -90,13 +89,6 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return reconcile.Result{}, nil
 	}
 
-	// Check if PDB creation should be skipped for this deployment
-	if shouldSkip, reason := shouldSkipPDBCreation(&deployment); shouldSkip {
-		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
-			"namespace", deployment.Namespace, "reason", reason)
-		return reconcile.Result{}, nil
-	}
-
 	// Check if PDB already exists for this Deployment (any PDB, not just controller-owned)
 	pdb, found, err := findPDBForDeployment(ctx, r.Client, &deployment, false)
 	if err != nil {
@@ -104,16 +96,19 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 
 	if found {
-		// PDB already exists, check for EvictionAutoScaler and update if needed
-		EvictionAutoScaler := &myappsv1.EvictionAutoScaler{}
-		err := r.Get(ctx, types.NamespacedName{Name: pdb.Name, Namespace: pdb.Namespace}, EvictionAutoScaler)
-		if err != nil {
-			//TODO don't ignore not found. Retry and fix unittest DeploymentToPDBReconciler when a deployment is created [It] should not create a PodDisruptionBudget if one already matches
-			return reconcile.Result{}, client.IgnoreNotFound(err)
-		}
-		// if pdb exists get EvictionAutoScaler --> compare targetGeneration field for deployment if both not same deployment was not changed by pdb watcher
-		// update pdb minReplicas to current deployment replicas
-		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, EvictionAutoScaler, *pdb)
+		return reconcile.Result{}, r.updateMinAvailableAsNecessary(ctx, &deployment, *pdb)
+	}
+
+	if !r.PDBCreationEnabled {
+		return reconcile.Result{}, nil
+	}
+
+	// Check if PDB creation should be skipped for this deployment. This is evaluated
+	// only when no PDB exists; existing controller-owned PDBs still need maintenance.
+	if shouldSkip, reason := shouldSkipPDBCreation(&deployment); shouldSkip {
+		log.Info("Skipping PDB creation for deployment", "deployment", deployment.Name,
+			"namespace", deployment.Namespace, "reason", reason)
+		return reconcile.Result{}, nil
 	}
 
 	// Create a new PDB for the Deployment using helper function.
@@ -133,7 +128,7 @@ func (r *DeploymentToPDBReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 }
 
 func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Context,
-	deployment *v1.Deployment, EvictionAutoScaler *myappsv1.EvictionAutoScaler, pdb policyv1.PodDisruptionBudget) error {
+	deployment *v1.Deployment, pdb policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
 	// Check if PDB has the ownedBy annotation - if not, skip updates (user owns it)
@@ -158,16 +153,12 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 		return nil
 	}
 
-	// No autoscaler — only proceed if the deployment generation actually changed
-	if EvictionAutoScaler.Status.TargetGeneration == deployment.GetGeneration() {
-		return nil
-	}
-
 	// Track deployment.spec.replicas directly.
 	// But skip if the replica change was caused by our own eviction surge.
 	//EvictionAutoScaler can fail between updating deployment and EvictionAutoScaler targetGeneration;
 	//hence we need to rely on checking if annotation exists and compare with deployment.Spec.Replicas
 	// no surge happened but customer already increased deployment replicas, then annotation would not exist
+	replicas := deploymentReplicas(deployment)
 	if surgeReplicas, exists := deployment.Annotations[EvictionSurgeReplicasAnnotationKey]; exists {
 		newReplicas, err := strconv.Atoi(surgeReplicas)
 		if err != nil {
@@ -175,17 +166,27 @@ func (r *DeploymentToPDBReconciler) updateMinAvailableAsNecessary(ctx context.Co
 				"namespace", deployment.Namespace, "name", deployment.Name, "replicas", surgeReplicas)
 			return err
 		}
-		if int32(newReplicas) == *deployment.Spec.Replicas {
+		if int32(newReplicas) == replicas {
 			return nil
 		}
 	}
-	minAvailable := *deployment.Spec.Replicas
+	// A live maxUnavailable means the PDB controller is processing a new or updated
+	// relative policy. It owns that conversion and preservation step.
+	if pdb.Spec.MaxUnavailable != nil {
+		return nil
+	}
 
-	if pdb.Spec.MinAvailable != nil && pdb.Spec.MinAvailable.IntVal == minAvailable {
+	minAvailable, err := managedMinAvailable(&pdb, replicas)
+	if err != nil {
+		return err
+	}
+	desired := intstr.FromInt32(minAvailable)
+
+	if intstrPtrEqual(pdb.Spec.MinAvailable, &desired) {
 		return nil // already correct
 	}
 
-	pdb.Spec.MinAvailable = &intstr.IntOrString{IntVal: minAvailable}
+	pdb.Spec.MinAvailable = &desired
 	if err = r.Update(ctx, &pdb); err != nil {
 		logger.Error(err, "unable to update pdb minAvailable",
 			"namespace", pdb.Namespace, "name", pdb.Name, "minAvailable", minAvailable)

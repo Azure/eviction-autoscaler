@@ -31,30 +31,8 @@ type SurgeApplier interface {
 	// IsSurgeActive returns true if a surge is currently in progress on the target.
 	// Used during generation tracking to distinguish our own scaling from external changes.
 	IsSurgeActive() bool
-	// RecordedSurge returns the replica count recorded by the last ApplySurge (from the
-	// evictionSurgeReplicas annotation) and whether it is present. Used by the
-	// bail-on-replica-change guard to detect an external replica edit mid-surge.
-	RecordedSurge() (int32, bool)
 	// Name returns a human-readable name for logging
 	Name() string
-}
-
-// recordedSurgeFromAnnotations reads the evictionSurgeReplicas annotation set by
-// ApplySurge and returns the recorded surge replica count. Returns (0,false) when
-// the annotation is absent or unparseable.
-func recordedSurgeFromAnnotations(annotations map[string]string) (int32, bool) {
-	if annotations == nil {
-		return 0, false
-	}
-	v, ok := annotations[EvictionSurgeReplicasAnnotationKey]
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(v, 10, 32)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	return int32(n), true
 }
 
 // errUnsupportedAutoscalerConfig is returned when KEDA + standalone HPA both target
@@ -171,8 +149,4 @@ func (d *DeploymentSurgeApplier) Name() string {
 
 func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 	return hasTargetAnnotation(d.target)
-}
-
-func (d *DeploymentSurgeApplier) RecordedSurge() (int32, bool) {
-	return recordedSurgeFromAnnotations(d.target.Obj().GetAnnotations())
 }

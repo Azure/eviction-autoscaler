@@ -112,9 +112,10 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 		maxUnavailable := intstr.FromInt(0) // Explicitly set to 0 to ensure PDB is created
 		// Create the reconciler instance
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient, // Use the fake client
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient, // Use the fake client
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 
 		// Define a Deployment to test using helper
@@ -125,6 +126,21 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 	})
 
 	Describe("when a deployment is created", func() {
+		It("does not create a PDB when creation is disabled", func() {
+			r.PDBCreationEnabled = false
+			req := reconcile.Request{NamespacedName: client.ObjectKey{
+				Namespace: namespace,
+				Name:      deploymentName,
+			}}
+
+			_, err := r.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			err = r.Client.Get(ctx, req.NamespacedName, pdb)
+			Expect(errors.IsNotFound(err)).To(BeTrue())
+		})
+
 		It("should create a PodDisruptionBudget", func() {
 			var err error
 			req := reconcile.Request{
@@ -359,6 +375,61 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 
 			Expect(err).ToNot(HaveOccurred())
 		})
+
+		It("preserves an adopted percentage allowance when deployment replicas change", func() {
+			minAvailable := intstr.FromInt32(2)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						PDBOwnedByAnnotationKey:             ControllerName,
+						OriginalMaxUnavailableAnnotationKey: `"25%"`,
+					},
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &minAvailable,
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "example"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
+			deployment.Spec.Replicas = int32Ptr(5)
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, *pdb)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdb)).To(Succeed())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: 3}))
+		})
+
+		It("does not change an adopted PDB during its own Deployment surge", func() {
+			baselineFloor := intstr.FromInt32(3)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      deploymentName,
+					Namespace: namespace,
+					Annotations: map[string]string{
+						PDBOwnedByAnnotationKey:             ControllerName,
+						OriginalMaxUnavailableAnnotationKey: `"25%"`,
+					},
+				},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &baselineFloor,
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "example"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
+			deployment.Spec.Replicas = int32Ptr(7)
+			deployment.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "7"}
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+
+			Expect(r.updateMinAvailableAsNecessary(ctx, deployment, *pdb)).To(Succeed())
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(pdb), pdb)).To(Succeed())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&baselineFloor))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(OriginalMaxUnavailableAnnotationKey, `"25%"`))
+		})
 	})
 })
 
@@ -392,9 +463,10 @@ var _ = Describe("DeploymentToPDBReconciler PDB creation control", func() {
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient,
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 
 		// Use helper to create deployment
@@ -450,9 +522,10 @@ var _ = Describe("DeploymentToPDBReconciler with HPA", func() {
 		Expect(autoscalingv2.AddToScheme(s)).To(Succeed())
 
 		r = &DeploymentToPDBReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &deploymentTestFilter{},
+			Client:             k8sClient,
+			Scheme:             s,
+			Filter:             &deploymentTestFilter{},
+			PDBCreationEnabled: true,
 		}
 	})
 

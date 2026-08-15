@@ -75,9 +75,10 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 		Expect(policyv1.AddToScheme(s)).To(Succeed())
 		// Initialize the reconciler with the fake client
 		reconciler = &PDBToEvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &pdbTestFilter{},
+			Client:              k8sClient,
+			Scheme:              s,
+			Filter:              &pdbTestFilter{},
+			AdoptMaxUnavailable: true,
 		}
 
 		surge := intstr.FromInt(1)
@@ -205,6 +206,32 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 	})
 
 	Context("When the PDB exists", func() {
+		It("leaves maxUnavailable untouched when adoption is disabled", func() {
+			reconciler.AdoptMaxUnavailable = false
+			maxUnavailable := intstr.FromInt32(1)
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: namespace},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MaxUnavailable: &maxUnavailable,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app": deploymentName,
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace}}
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, req.NamespacedName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).To(Equal(&maxUnavailable))
+			Expect(pdb.Spec.MinAvailable).To(BeNil())
+			Expect(pdb.Annotations).NotTo(HaveKey(OriginalMaxUnavailableAnnotationKey))
+			Expect(pdb.Annotations).NotTo(HaveKey(PDBOwnedByAnnotationKey))
+			Expect(pdb.OwnerReferences).To(BeEmpty())
+		})
+
 		It("should create a EvictionAutoScaler if it doesn't already exist", func() {
 			// Prepare a PodDisruptionBudget in the "test" namespace
 			pdb := &policyv1.PodDisruptionBudget{
@@ -243,6 +270,63 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler", func() {
 			// Verify that the EvictionAutoScaler was created
 			err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, EvictionAutoScaler)
 			Expect(err).Should(Succeed()) // EvictionAutoScaler should now exist
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, pdb)).To(Succeed())
+			Expect(pdb.Annotations).NotTo(HaveKey(PDBOwnedByAnnotationKey))
+			Expect(pdb.OwnerReferences).To(BeEmpty())
+		})
+
+		It("adopts maxUnavailable and reasserts the preserved policy and ownership", func() {
+			deployment := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, deployment)).To(Succeed())
+			deployment.Spec.Replicas = int32Ptr(5)
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+
+			maxUnavailable := intstr.FromString("25%")
+			pdb := &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: deploymentName, Namespace: namespace},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MaxUnavailable: &maxUnavailable,
+					Selector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						"app": deploymentName,
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace}}
+
+			_, err := reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, req.NamespacedName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: 3}))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(OriginalMaxUnavailableAnnotationKey, `"25%"`))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(PDBOwnedByAnnotationKey, ControllerName))
+			Expect(pdb.OwnerReferences).To(ContainElement(And(
+				HaveField("Kind", ResourceTypeDeployment),
+				HaveField("Name", deploymentName),
+			)))
+
+			// A later relative-policy edit is authoritative. Ownership removals in the
+			// same update are repaired without restoring the relative field first.
+			newMaxUnavailable := intstr.FromInt32(1)
+			pdb.Spec.MinAvailable = nil
+			pdb.Spec.MaxUnavailable = &newMaxUnavailable
+			delete(pdb.Annotations, PDBOwnedByAnnotationKey)
+			pdb.OwnerReferences = nil
+			Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+			reconciler.AdoptMaxUnavailable = false
+
+			_, err = reconciler.Reconcile(ctx, req)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(k8sClient.Get(ctx, req.NamespacedName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).To(BeNil())
+			Expect(pdb.Spec.MinAvailable).To(Equal(&intstr.IntOrString{Type: intstr.Int, IntVal: 4}))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(OriginalMaxUnavailableAnnotationKey, "1"))
+			Expect(pdb.Annotations).To(HaveKeyWithValue(PDBOwnedByAnnotationKey, ControllerName))
+			Expect(pdb.OwnerReferences).To(ContainElement(And(
+				HaveField("Kind", ResourceTypeDeployment),
+				HaveField("Name", deploymentName),
+			)))
 		})
 	})
 
@@ -314,9 +398,10 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 		Expect(types.AddToScheme(s)).To(Succeed())
 
 		reconciler = &PDBToEvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &pdbTestFilter{},
+			Client:              k8sClient,
+			Scheme:              s,
+			Filter:              &pdbTestFilter{},
+			AdoptMaxUnavailable: true,
 		}
 
 		// Create deployment
@@ -509,9 +594,10 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler with enable annotation", fun
 		Expect(types.AddToScheme(s)).To(Succeed())
 
 		reconciler = &PDBToEvictionAutoScalerReconciler{
-			Client: k8sClient,
-			Scheme: s,
-			Filter: &pdbKubeSystemTestFilter{},
+			Client:              k8sClient,
+			Scheme:              s,
+			Filter:              &pdbKubeSystemTestFilter{},
+			AdoptMaxUnavailable: true,
 		}
 	})
 

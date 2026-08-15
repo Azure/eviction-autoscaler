@@ -49,6 +49,8 @@ spec:
         env:
           - name: PDB_CREATE
             value: {{ .Values.controllerConfig.pdb.create | quote }}
+          - name: PDB_MAX_UNAVAILABLE_ADOPTION
+            value: {{ .Values.controllerConfig.pdb.adoptMaxUnavailable | quote }}
           - name: ENABLED_BY_DEFAULT
             value: {{ .Values.controllerConfig.namespaces.enabledByDefault | quote }}
           - name: ACTIONED_NAMESPACES

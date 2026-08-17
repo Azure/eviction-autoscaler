@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v7
 
       - name: Verify Go version
         run: go version 
@@ -32,10 +32,10 @@ jobs:
         run: make helm-validate
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+        uses: docker/setup-qemu-action@v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2        
+        uses: docker/setup-buildx-action@v4        
 
       - name: Install kind
         run: go install sigs.k8s.io/kind@v0.26.0
@@ -45,7 +45,7 @@ jobs:
 
       - name: Upload e2e logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: e2e-logs
           path: /tmp/e2e-logs/

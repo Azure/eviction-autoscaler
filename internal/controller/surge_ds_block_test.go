@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
@@ -13,6 +14,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -23,25 +25,31 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// forbidWritesInNamespace simulates Deployment Safeguards: it rejects every write to any
-// resource in the given protected namespace, matching how DS flatly rejects any write to an
-// AKS-owned namespace regardless of resource type. Only the main Update hook is set, so the
-// controller's own status-subresource writes still succeed and the block lands on the surge write.
-func forbidWritesInNamespace(namespace string) interceptor.Funcs {
+// rejectWritesInNamespace rejects main-resource updates in the given namespace using the supplied
+// error. Status-subresource writes still reach the underlying client.
+func rejectWritesInNamespace(namespace string, rejection func(client.Object) error) interceptor.Funcs {
 	return interceptor.Funcs{
 		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 			if obj.GetNamespace() == namespace {
-				return apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, obj.GetName(), nil)
+				return rejection(obj)
 			}
 			return c.Update(ctx, obj, opts...)
 		},
 	}
 }
 
+// forbidWritesInNamespace simulates Deployment Safeguards rejecting every main-resource write in
+// an AKS-owned namespace while allowing the controller to persist status.
+func forbidWritesInNamespace(namespace string) interceptor.Funcs {
+	return rejectWritesInNamespace(namespace, func(obj client.Object) error {
+		return apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, obj.GetName(), nil)
+	})
+}
+
 // Drives the real EvictionAutoScaler reconcile loop against envtest with Deployment Safeguards
 // blocking writes to the (protected) namespace, across all three surge strategies (Deployment,
-// HPA, KEDA). Each path must return the forbidden error (so the reconcile requeues), not scale
-// the deployment, and not panic.
+// HPA, KEDA). Each path must record the forbidden write as terminal, not requeue, not scale the
+// deployment, and not panic.
 var _ = Describe("EvictionAutoScaler controller when Deployment Safeguards blocks writes to the namespace", func() {
 	ctx := context.Background()
 	const resourceName = "ds-block-resource"
@@ -108,10 +116,7 @@ var _ = Describe("EvictionAutoScaler controller when Deployment Safeguards block
 		}
 	})
 
-	// assertBlockedSurge runs a setup reconcile, logs an eviction, then runs the surge reconcile
-	// with all writes to the namespace blocked. It asserts the reconcile does not panic, returns
-	// the forbidden error, and leaves the deployment unscaled.
-	assertBlockedSurge := func() {
+	reconcileSurgeWith := func(intercepts interceptor.Funcs) (reconcile.Result, error) {
 		setupReconciler := &EvictionAutoScalerReconciler{
 			Client: k8sClient, Scheme: k8sClient.Scheme(), Filter: &evictionTestFilter{},
 		}
@@ -126,28 +131,62 @@ var _ = Describe("EvictionAutoScaler controller when Deployment Safeguards block
 		watchClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
 		Expect(err).NotTo(HaveOccurred())
 		dsReconciler := &EvictionAutoScalerReconciler{
-			Client: interceptor.NewClient(watchClient, forbidWritesInNamespace(namespace)),
+			Client: interceptor.NewClient(watchClient, intercepts),
 			Scheme: k8sClient.Scheme(),
 			Filter: &evictionTestFilter{},
 		}
+		return dsReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaKey})
+	}
 
+	// assertBlockedSurge runs a setup reconcile, logs an eviction, then runs the surge reconcile
+	// with all writes to the namespace blocked. It asserts the reconcile does not panic or
+	// requeue, records a Degraded condition, and leaves the deployment unscaled.
+	assertBlockedSurge := func() {
+		var result reconcile.Result
 		var reconcileErr error
 		Expect(func() {
-			_, reconcileErr = dsReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: eaKey})
+			result, reconcileErr = reconcileSurgeWith(forbidWritesInNamespace(namespace))
 		}).NotTo(Panic())
-		Expect(reconcileErr).To(HaveOccurred())
-		Expect(apierrors.IsForbidden(reconcileErr)).To(BeTrue())
+		Expect(reconcileErr).NotTo(HaveOccurred())
+		Expect(result).To(Equal(reconcile.Result{}))
 
 		dep := &appsv1.Deployment{}
 		Expect(k8sClient.Get(ctx, depKey, dep)).To(Succeed())
 		Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+
+		updatedEA := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaKey, updatedEA)).To(Succeed())
+		condition := meta.FindStatusCondition(updatedEA.Status.Conditions, "Degraded")
+		Expect(meta.FindStatusCondition(updatedEA.Status.Conditions, "Ready")).To(BeNil())
+		Expect(condition).NotTo(BeNil())
+		Expect(condition.Status).To(Equal(metav1.ConditionTrue))
+		Expect(condition.Reason).To(Equal("SurgeForbidden"))
+		Expect(condition.Message).To(ContainSubstring("forbidden"))
 	}
 
-	It("Deployment surge path: returns forbidden, does not scale, does not panic", func() {
+	It("returns non-forbidden write errors so controller-runtime retries them", func() {
+		result, err := reconcileSurgeWith(rejectWritesInNamespace(namespace, func(obj client.Object) error {
+			return apierrors.NewConflict(
+				schema.GroupResource{Resource: "resource"},
+				obj.GetName(),
+				errors.New("simulated conflict"),
+			)
+		}))
+
+		Expect(apierrors.IsConflict(err)).To(BeTrue())
+		Expect(result).To(Equal(reconcile.Result{}))
+
+		updatedEA := &v1.EvictionAutoScaler{}
+		Expect(k8sClient.Get(ctx, eaKey, updatedEA)).To(Succeed())
+		condition := meta.FindStatusCondition(updatedEA.Status.Conditions, "Degraded")
+		Expect(condition).To(BeNil())
+	})
+
+	It("Deployment surge path: records forbidden, does not retry, scale, or panic", func() {
 		assertBlockedSurge()
 	})
 
-	It("HPA surge path: returns forbidden, does not scale, does not panic", func() {
+	It("HPA surge path: records forbidden, does not retry, scale, or panic", func() {
 		hpa := &autoscalingv2.HorizontalPodAutoscaler{
 			ObjectMeta: metav1.ObjectMeta{Name: "ds-hpa", Namespace: namespace},
 			Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
@@ -160,7 +199,7 @@ var _ = Describe("EvictionAutoScaler controller when Deployment Safeguards block
 		assertBlockedSurge()
 	})
 
-	It("KEDA surge path: returns forbidden, does not scale, does not panic", func() {
+	It("KEDA surge path: records forbidden, does not retry, scale, or panic", func() {
 		so := &kedav1alpha1.ScaledObject{
 			ObjectMeta: metav1.ObjectMeta{Name: "ds-so", Namespace: namespace},
 			Spec: kedav1alpha1.ScaledObjectSpec{

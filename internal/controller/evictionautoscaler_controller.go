@@ -358,6 +358,11 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 
 	if err := surgeApplier.ApplySurge(ctx, surgeTarget); err != nil {
 		logger.Error(err, "failed to apply surge", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "strategy", surgeApplier.Name())
+		if apierrors.IsForbidden(err) {
+			meta.RemoveStatusCondition(&EvictionAutoScaler.Status.Conditions, "Ready")
+			degraded(EvictionAutoScaler, "SurgeForbidden", err.Error())
+			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+		}
 		return ctrl.Result{}, err
 	}
 

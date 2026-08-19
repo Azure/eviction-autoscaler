@@ -111,6 +111,16 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 		}
 	}
 
+	// Guard: never revert the HPA floor to a non-positive value from a lost/invalid baseline
+	// (Status.MinReplicas==0 and the annotation missing/unparseable) — setting minReplicas to 0
+	// would let the HPA scale the workload to zero. Leave the surge in place (over-provisioned
+	// but safe) and surface it, matching DeploymentSurgeApplier.RevertSurge.
+	if revertTo <= 0 {
+		logger.Error(nil, "refusing to revert HPA minReplicas to a non-positive baseline; leaving surge in place",
+			"hpa", h.hpa.Name, "namespace", h.hpa.Namespace, "revertTo", revertTo)
+		return nil
+	}
+
 	// Revert HPA minReplicas and remove both surge annotations in a single write.
 	hpa := h.hpa.DeepCopy()
 	hpa.Spec.MinReplicas = &revertTo
@@ -151,4 +161,8 @@ func (h *HPASurgeApplier) IsSurgeActive() bool {
 
 func (h *HPASurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(h.hpa.Annotations)
+}
+
+func (h *HPASurgeApplier) RecordedBaseline() (int32, bool) {
+	return recordedBaselineFromAnnotations(h.hpa.Annotations)
 }

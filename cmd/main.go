@@ -224,7 +224,6 @@ func main() {
 		os.Exit(1)
 	}
 	setupLog.Info("PDB floor mutation configuration", "enablePDBFloorMutation", enablePDBFloorMutation)
-	controllers.SetPDBFloorMutationEnabled(enablePDBFloorMutation)
 
 	// Parse CONTROLLER_ENABLED environment variable (defaults to true). This is a
 	// global kill switch: when false, no reconcilers are registered, so the
@@ -252,10 +251,11 @@ func main() {
 		// set them up in one flat loop — keeping the kill-switch gate free of deep nesting.
 		reconcilers := []reconcilerSetup{
 			&controllers.EvictionAutoScalerReconciler{
-				Client:            mgr.GetClient(),
-				Scheme:            mgr.GetScheme(),
-				Filter:            nsfilter,
-				ZeroSurgeOverride: zeroSurgeOverride,
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Filter:                  nsfilter,
+				ZeroSurgeOverride:       zeroSurgeOverride,
+				PDBFloorMutationEnabled: enablePDBFloorMutation,
 			},
 		}
 		if pdbCreate {

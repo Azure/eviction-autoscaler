@@ -15,8 +15,8 @@ import (
 
 // clearPinnedFloorIfDisabled clears a recorded pinned-floor policy when the master switch is
 // off. Returns true if it cleared one (the caller then persists status).
-func clearPinnedFloorIfDisabled(eas *myappsv1.EvictionAutoScaler) bool {
-	if pdbFloorMutationEnabled || !eas.Status.PDBFloorPinned {
+func (r *EvictionAutoScalerReconciler) clearPinnedFloorIfDisabled(eas *myappsv1.EvictionAutoScaler) bool {
+	if r.PDBFloorMutationEnabled || !eas.Status.PDBFloorPinned {
 		return false
 	}
 	eas.Status.PDBFloorPinned = false
@@ -49,8 +49,8 @@ func bailPinnedFloorOnExternalChange(eas *myappsv1.EvictionAutoScaler, target Su
 // write self-heals on the next pass while we still hold the surge. A replica change we didn't make
 // (HPA-above-min, manual scale) matches neither and returns false (no pin). Returns false when the
 // feature is off or the derived floor is not positive.
-func shouldPinFloorForOwnSurge(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier, pdb *policyv1.PodDisruptionBudget) bool {
-	if !pdbFloorMutationEnabled {
+func (r *EvictionAutoScalerReconciler) shouldPinFloorForOwnSurge(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier, pdb *policyv1.PodDisruptionBudget) bool {
+	if !r.PDBFloorMutationEnabled {
 		return false
 	}
 	recordedSurge, hasRecordedSurge := surgeApplier.RecordedSurge()

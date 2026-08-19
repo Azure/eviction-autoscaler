@@ -125,6 +125,16 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 		}
 	}
 
+	// Guard: never revert the ScaledObject floor to a non-positive value from a lost/invalid
+	// baseline (Status.MinReplicas==0 and the annotation missing/unparseable) — setting
+	// minReplicaCount to 0 would let KEDA/HPA scale the workload to zero. Leave the surge in
+	// place (over-provisioned but safe) and surface it, matching DeploymentSurgeApplier.RevertSurge.
+	if revertTo <= 0 {
+		logger.Error(nil, "refusing to revert ScaledObject minReplicaCount to a non-positive baseline; leaving surge in place",
+			"scaledObject", k.scaledObject.GetName(), "namespace", k.scaledObject.GetNamespace(), "revertTo", revertTo)
+		return nil
+	}
+
 	// Revert ScaledObject minReplicaCount and remove both surge annotations in a single write.
 	obj := k.scaledObject.DeepCopy()
 	obj.Spec.MinReplicaCount = &revertTo

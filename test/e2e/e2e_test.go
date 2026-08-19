@@ -60,8 +60,6 @@ func init() {
 	utilruntime.Must(types.AddToScheme(scheme))
 }
 
-// Test namespace for eviction-autoscaler
-const namespace = "eviction-autoscaler"
 const kindClusterName = "e2e"
 
 var cleanEnv = true
@@ -665,6 +663,197 @@ var _ = Describe("controller", Ordered, func() {
 			By("cleaning up eviction-autoscaler-test namespace")
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
+		})
+
+		It("should pin and restore percentage PDB floors during drains", func() {
+			ctx := context.Background()
+			testNs := "test-pdb-floor-pinning"
+			depName := "nginx-pdb-floor"
+			pdbPercent := "80%"
+
+			setPDBFloorMutation := func(enabled bool) {
+				cmd := exec.Command("helm", "upgrade", "eviction-autoscaler", "helm/eviction-autoscaler",
+					"--namespace", namespace, "--reuse-values",
+					"--set", fmt.Sprintf("controllerConfig.pdbFloorMutation.enabled=%t", enabled))
+				_, err := utils.Run(cmd)
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+				cmd = exec.Command("kubectl", "rollout", "status",
+					"deployment/eviction-autoscaler",
+					"--namespace", namespace, "--timeout=300s")
+				_, err = utils.Run(cmd)
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+
+				cmd = exec.Command("kubectl", "wait", "--for=condition=available",
+					"deployment/eviction-autoscaler",
+					"--namespace", namespace, "--timeout=300s")
+				_, err = utils.Run(cmd)
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+			}
+
+			DeferCleanup(func() {
+				By("disabling PDB floor mutation for subsequent specs")
+				setPDBFloorMutation(false)
+			})
+
+			By("enabling PDB floor mutation and waiting for the controller rollout")
+			setPDBFloorMutation(true)
+
+			By("uncordoning all nodes to ensure clean state from prior tests")
+			cmd := exec.Command("kubectl", "get", "nodes", "-o", "jsonpath={.items[*].metadata.name}")
+			output, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			for _, nodeName := range strings.Fields(string(output)) {
+				cmd = exec.Command("kubectl", "uncordon", nodeName)
+				_, _ = utils.Run(cmd)
+			}
+
+			By("creating a test namespace with enable annotation")
+			cmd = exec.Command("kubectl", "create", "namespace", testNs)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			cmd = exec.Command("kubectl", "annotate", "namespace", testNs,
+				"eviction-autoscaler.azure.com/enable=true")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Always remove the namespace, even if the spec fails partway, so it can't
+			// leak into later Ordered specs.
+			DeferCleanup(func() {
+				delCmd := exec.Command("kubectl", "delete", "namespace", testNs, "--ignore-not-found")
+				_, _ = utils.Run(delCmd)
+			})
+
+			By("creating a three-replica deployment")
+			err = createDeployment(deploymentConfig{
+				Name:           depName,
+				Namespace:      testNs,
+				Replicas:       3,
+				MaxUnavailable: 0,
+				Annotations: map[string]string{
+					"eviction-autoscaler.azure.com/pdb-create": "false",
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("waiting for the deployment to be ready")
+			Expect(waitForDeployment(depName, testNs)).To(Succeed())
+
+			By("creating a percentage PDB for the deployment")
+			err = createPDBPercent(depName, testNs, pdbPercent, map[string]string{"app": depName})
+			Expect(err).NotTo(HaveOccurred())
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			By("verifying the PDB and EvictionAutoScaler are created")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbCreated(ctx, clientset, testNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+			EventuallyWithOffset(1, func() error {
+				return verifyEvictionAutoScalerCreated(ctx, clientset, testNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("finding a node hosting a target pod")
+			var pods corev1.PodList
+			EventuallyWithOffset(1, func() error {
+				err := clientset.List(ctx, &pods, client.InNamespace(testNs), client.MatchingLabels{"app": depName})
+				if err != nil {
+					return err
+				}
+				if len(pods.Items) == 0 {
+					return fmt.Errorf("expected at least one pod for %s", depName)
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+			nodeName := pods.Items[0].Spec.NodeName
+
+			By("cordoning the node to trigger an eviction surge")
+			var node corev1.Node
+			err = clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+			Expect(err).NotTo(HaveOccurred())
+			node.Spec.Unschedulable = true
+			err = clientset.Update(ctx, &node)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Always uncordon the node, even if the spec fails before the explicit
+			// uncordon below, so a cordoned node can't break later specs.
+			DeferCleanup(func() {
+				var n corev1.Node
+				if getErr := clientset.Get(ctx, client.ObjectKey{Name: nodeName}, &n); getErr != nil {
+					return
+				}
+				if n.Spec.Unschedulable {
+					n.Spec.Unschedulable = false
+					_ = clientset.Update(ctx, &n)
+				}
+			})
+
+			By("verifying the deployment gets the evictionSurgeReplicas annotation")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; !ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not added yet")
+				}
+				return nil
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the percentage PDB is pinned to an absolute floor during the drain")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbPinnedFloor(ctx, clientset, testNs, depName)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("draining the node to complete the eviction")
+			drain := func() error {
+				var podList corev1.PodList
+				if err := clientset.List(ctx, &podList, client.InNamespace(testNs),
+					client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+					return err
+				}
+				for _, pod := range podList.Items {
+					if pod.Labels["app"] != depName || pod.DeletionTimestamp != nil {
+						continue
+					}
+					err := evictionClient.PolicyV1().Evictions(pod.Namespace).Evict(ctx, &policy.Eviction{
+						ObjectMeta: pod.ObjectMeta,
+					})
+					if errors.IsTooManyRequests(err) {
+						return fmt.Errorf("failed to evict %s/%s: %w", pod.Namespace, pod.Name, err)
+					}
+					if err != nil && !errors.IsNotFound(err) {
+						return fmt.Errorf("failed to evict %s/%s: %w", pod.Namespace, pod.Name, err)
+					}
+				}
+				return nil
+			}
+			EventuallyWithOffset(1, drain, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the deployment scales back down and clears the surge annotation")
+			EventuallyWithOffset(1, func() error {
+				var dep appsv1.Deployment
+				if err := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &dep); err != nil {
+					return err
+				}
+				if dep.Spec.Replicas == nil || *dep.Spec.Replicas != 3 {
+					return fmt.Errorf("expected 3 replicas after cooldown, got %v", dep.Spec.Replicas)
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; ok {
+					return fmt.Errorf("evictionSurgeReplicas annotation not removed")
+				}
+				return nil
+			}, 2*time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the PDB is restored to the original percentage policy")
+			EventuallyWithOffset(1, func() error {
+				return verifyPdbRestoredPercent(ctx, clientset, testNs, depName, pdbPercent)
+			}, time.Minute, time.Second).Should(Succeed())
 		})
 
 		// Test 2: Namespace filtering modes - enabled_by_default configuration

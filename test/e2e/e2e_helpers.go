@@ -23,17 +23,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"text/template"
 
 	types "github.com/azure/eviction-autoscaler/api/v1"
+	controller "github.com/azure/eviction-autoscaler/internal/controller"
 	"github.com/azure/eviction-autoscaler/test/utils"
 	. "github.com/onsi/gomega"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+const namespace = "eviction-autoscaler"
 
 // deploymentConfig holds deployment configuration
 type deploymentConfig struct {
@@ -144,6 +149,31 @@ spec:
 	return err
 }
 
+// createPDBPercent creates a PodDisruptionBudget with a percentage minAvailable.
+func createPDBPercent(name, namespace, percent string, matchLabels map[string]string) error {
+	minAvailable := intstr.FromString(percent)
+	var labelsYaml strings.Builder
+	for k, v := range matchLabels {
+		labelsYaml.WriteString(fmt.Sprintf("      %s: %s\n", k, v))
+	}
+
+	pdbYaml := fmt.Sprintf(`apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  minAvailable: %q
+  selector:
+    matchLabels:
+%s`, name, namespace, minAvailable.StrVal, labelsYaml.String())
+
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(pdbYaml)
+	_, err := utils.Run(cmd)
+	return err
+}
+
 // waitForDeployment waits for a deployment to be ready
 func waitForDeployment(name, namespace string) error {
 	cmd := exec.Command("kubectl", "wait", "--for=condition=available",
@@ -203,6 +233,68 @@ func verifyPdbMinAvailable(ctx context.Context, clientset client.Client, ns, nam
 	actualMin := pdb.Spec.MinAvailable.IntVal
 	if actualMin != expectedMin {
 		return fmt.Errorf("expected PDB minAvailable to be %d, got %d", expectedMin, actualMin)
+	}
+	return nil
+}
+
+// verifyPdbPinnedFloor checks that the PDB is pinned to an absolute minAvailable floor.
+func verifyPdbPinnedFloor(ctx context.Context, clientset client.Client, ns, name string) error {
+	var pdb policy.PodDisruptionBudget
+	if err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb); err != nil {
+		return err
+	}
+	if pdb.Spec.MinAvailable == nil {
+		return fmt.Errorf("PDB minAvailable is nil")
+	}
+	if pdb.Spec.MinAvailable.Type != intstr.Int {
+		return fmt.Errorf("expected PDB minAvailable to be an int, got %v", pdb.Spec.MinAvailable)
+	}
+	if pdb.Spec.MaxUnavailable != nil {
+		return fmt.Errorf("expected PDB maxUnavailable to be nil, got %v", pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Annotations == nil {
+		return fmt.Errorf("expected PDB pin annotations, got none")
+	}
+	pinnedFloor, ok := pdb.Annotations[controller.AnnotationPinnedFloor]
+	if !ok {
+		return fmt.Errorf("expected PDB annotation %q", controller.AnnotationPinnedFloor)
+	}
+	floor, err := strconv.ParseInt(pinnedFloor, 10, 32)
+	if err != nil {
+		return fmt.Errorf("failed to parse pinned floor %q: %w", pinnedFloor, err)
+	}
+	if int32(floor) != pdb.Spec.MinAvailable.IntVal {
+		return fmt.Errorf("expected pinned floor annotation %d to match minAvailable %d",
+			floor, pdb.Spec.MinAvailable.IntVal)
+	}
+	if _, ok := pdb.Annotations[controller.AnnotationOriginalPDBSpec]; !ok {
+		return fmt.Errorf("expected PDB annotation %q", controller.AnnotationOriginalPDBSpec)
+	}
+	return nil
+}
+
+// verifyPdbRestoredPercent checks that the PDB's percentage minAvailable is restored.
+func verifyPdbRestoredPercent(ctx context.Context, clientset client.Client, ns, name, expectedPercent string) error {
+	var pdb policy.PodDisruptionBudget
+	if err := clientset.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &pdb); err != nil {
+		return err
+	}
+	if pdb.Spec.MinAvailable == nil {
+		return fmt.Errorf("PDB minAvailable is nil")
+	}
+	if pdb.Spec.MinAvailable.Type != intstr.String || pdb.Spec.MinAvailable.StrVal != expectedPercent {
+		return fmt.Errorf("expected PDB minAvailable to be %q, got %v", expectedPercent, pdb.Spec.MinAvailable)
+	}
+	if pdb.Spec.MaxUnavailable != nil {
+		return fmt.Errorf("expected PDB maxUnavailable to be nil, got %v", pdb.Spec.MaxUnavailable)
+	}
+	if pdb.Annotations != nil {
+		if _, ok := pdb.Annotations[controller.AnnotationPinnedFloor]; ok {
+			return fmt.Errorf("annotation %q should not be present", controller.AnnotationPinnedFloor)
+		}
+		if _, ok := pdb.Annotations[controller.AnnotationOriginalPDBSpec]; ok {
+			return fmt.Errorf("annotation %q should not be present", controller.AnnotationOriginalPDBSpec)
+		}
 	}
 	return nil
 }

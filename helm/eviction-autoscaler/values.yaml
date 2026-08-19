@@ -78,6 +78,10 @@ controllerConfig:
   pdb:
     create: true
 
+  # PDB-floor mutation configuration
+  pdbFloorMutation:
+    enabled: false
+
   # Zero-maxSurge drain override (fleet-wide, install-time)
   # When a workload's rollout maxSurge resolves to 0 — an explicit maxSurge: 0, a
   # Recreate strategy, or an unset RollingUpdate — the controller normally cannot

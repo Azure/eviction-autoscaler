@@ -52,6 +52,11 @@ type EvictionAutoScalerReconciler struct {
 	// default) preserves today's degrade-on-zero behavior, so Cosmic — not
 	// individual workload owners — decides whether it applies.
 	ZeroSurgeOverride *intstr.IntOrString
+	// PDBFloorMutationEnabled is the master switch for the PDB-floor pinning feature.
+	// It ships OFF (dormant) and is wired from the ENABLE_PDB_FLOOR_MUTATION controller
+	// env var at startup (main.go). Held as a per-reconciler field (not a package var)
+	// so config is declared at construction and tests set it per instance.
+	PDBFloorMutationEnabled bool
 }
 
 const cooldown = 1 * time.Minute
@@ -100,7 +105,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Flag-off clear: if the master switch is off but a pinned-floor policy is still
 	// recorded, clear it unconditionally. Placed before namespace/target/surge lookups
 	// (all of which can early-return) so turning the flag off always un-pins.
-	if clearPinnedFloorIfDisabled(EvictionAutoScaler) {
+	if r.clearPinnedFloorIfDisabled(EvictionAutoScaler) {
 		logger.Info("PDB floor mutation disabled, clearing pinned PDB floor policy")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
@@ -304,11 +309,6 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 }
 
-// pdbFloorMutationEnabled is the master switch for the PDB-floor pinning feature; it
-// ships OFF (dormant). A package var (not const) so tests can enable it. PR4 wires it
-// from install-time env.
-var pdbFloorMutationEnabled = false
-
 // handleBlockedDrain runs the DisruptionsAllowed==0 surge path: it counts displaced pods,
 // computes the demand-driven surge target (capped at the maxSurge ceiling), pins the PDB
 // floor policy when we are driving our own surge, and either waits (already surged) or
@@ -329,7 +329,7 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	}
 
 	// Pin the PDB floor whenever WE are driving the surge (baseline OR our recorded surge).
-	if shouldPinFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb) {
+	if r.shouldPinFloorForOwnSurge(EvictionAutoScaler, target, surgeApplier, pdb) {
 		EvictionAutoScaler.Status.PDBFloorPinned = true
 	}
 

@@ -217,6 +217,14 @@ func main() {
 	}
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
+	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set)
+	enablePDBFloorMutation, err := k8senv.GetBool("ENABLE_PDB_FLOOR_MUTATION", false)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse ENABLE_PDB_FLOOR_MUTATION env variable")
+		os.Exit(1)
+	}
+	setupLog.Info("PDB floor mutation configuration", "enablePDBFloorMutation", enablePDBFloorMutation)
+
 	// Parse CONTROLLER_ENABLED environment variable (defaults to true). This is a
 	// global kill switch: when false, no reconcilers are registered, so the
 	// controller runs (serving health and metrics) but takes no action on any
@@ -243,10 +251,11 @@ func main() {
 		// set them up in one flat loop — keeping the kill-switch gate free of deep nesting.
 		reconcilers := []reconcilerSetup{
 			&controllers.EvictionAutoScalerReconciler{
-				Client:            mgr.GetClient(),
-				Scheme:            mgr.GetScheme(),
-				Filter:            nsfilter,
-				ZeroSurgeOverride: zeroSurgeOverride,
+				Client:                  mgr.GetClient(),
+				Scheme:                  mgr.GetScheme(),
+				Filter:                  nsfilter,
+				ZeroSurgeOverride:       zeroSurgeOverride,
+				PDBFloorMutationEnabled: enablePDBFloorMutation,
 			},
 		}
 		if pdbCreate {

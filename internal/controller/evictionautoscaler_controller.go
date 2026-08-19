@@ -348,6 +348,15 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	// we return the error (nothing surged yet) and retry.
 	if controllerutil.AddFinalizer(EvictionAutoScaler, EASSurgeFinalizer) {
 		if err := r.Update(ctx, EvictionAutoScaler); err != nil {
+			// A forbidden write (e.g. Deployment Safeguards on an AKS-owned namespace) is
+			// terminal, not transient: record it and stop rather than hot-looping. Nothing
+			// has surged yet, so there is nothing to revert. Mirrors the ApplySurge path.
+			if apierrors.IsForbidden(err) {
+				logger.Error(err, "forbidden to add surge-revert finalizer; recording Degraded and not retrying")
+				meta.RemoveStatusCondition(&EvictionAutoScaler.Status.Conditions, "Ready")
+				degraded(EvictionAutoScaler, "SurgeForbidden", err.Error())
+				return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+			}
 			return ctrl.Result{}, err
 		}
 	}

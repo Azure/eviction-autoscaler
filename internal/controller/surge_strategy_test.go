@@ -65,6 +65,86 @@ var _ = Describe("DeploymentSurgeApplier", func() {
 		Expect(updated.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
 	})
 
+	It("should stamp the durable original-min-replicas baseline once on ApplySurge", func() {
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-baseline", namespace, "surge-baseline", 5, &maxUnavailable)
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		target := &DeploymentWrapper{obj: dep}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
+		Expect(applier.ApplySurge(ctx, 8)).To(Succeed())
+
+		var updated appsv1.Deployment
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), &updated)).To(Succeed())
+		Expect(updated.Annotations).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "5"))
+
+		// A second surge must NOT overwrite the recorded pre-surge baseline.
+		target2 := &DeploymentWrapper{obj: &updated}
+		applier2 := &DeploymentSurgeApplier{client: k8sClient, target: target2}
+		Expect(applier2.ApplySurge(ctx, 10)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), &updated)).To(Succeed())
+		Expect(updated.Annotations).To(HaveKeyWithValue(OriginalMinReplicasAnnotationKey, "5"))
+	})
+
+	It("should prefer the durable baseline over the passed value and remove both annotations on RevertSurge", func() {
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-revert-baseline", namespace, "surge-revert-baseline", 9, &maxUnavailable)
+		dep.Annotations = map[string]string{
+			EvictionSurgeReplicasAnnotationKey: "9",
+			OriginalMinReplicasAnnotationKey:   "4",
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		target := &DeploymentWrapper{obj: dep}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
+		// Passed a lost/zero baseline; the durable annotation (4) must win.
+		Expect(applier.RevertSurge(ctx, 0)).To(Succeed())
+
+		var updated appsv1.Deployment
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), &updated)).To(Succeed())
+		Expect(*updated.Spec.Replicas).To(Equal(int32(4)))
+		Expect(updated.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+		Expect(updated.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+	})
+
+	It("should fall back to a valid passed baseline when the durable annotation is non-positive", func() {
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-revert-tampered", namespace, "surge-revert-tampered", 9, &maxUnavailable)
+		dep.Annotations = map[string]string{
+			EvictionSurgeReplicasAnnotationKey: "9",
+			OriginalMinReplicasAnnotationKey:   "0", // tampered/corrupt
+		}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		target := &DeploymentWrapper{obj: dep}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
+		// A corrupt non-positive annotation must not override the valid passed baseline (6).
+		Expect(applier.RevertSurge(ctx, 6)).To(Succeed())
+
+		var updated appsv1.Deployment
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), &updated)).To(Succeed())
+		Expect(*updated.Spec.Replicas).To(Equal(int32(6)))
+		Expect(updated.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+		Expect(updated.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+	})
+
+	It("should no-op (leave the deployment surged) when no positive baseline is available", func() {
+		maxUnavailable := intstr.FromInt(0)
+		dep := createDeployment("surge-revert-guard", namespace, "surge-revert-guard", 9, &maxUnavailable)
+		dep.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "9"}
+		Expect(k8sClient.Create(ctx, dep)).To(Succeed())
+
+		target := &DeploymentWrapper{obj: dep}
+		applier := &DeploymentSurgeApplier{client: k8sClient, target: target}
+		// Annotation absent and passed value 0: refuse to scale to zero — leave it surged.
+		Expect(applier.RevertSurge(ctx, 0)).To(Succeed())
+
+		var updated appsv1.Deployment
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(dep), &updated)).To(Succeed())
+		Expect(*updated.Spec.Replicas).To(Equal(int32(9)))
+		Expect(updated.Annotations).To(HaveKeyWithValue(EvictionSurgeReplicasAnnotationKey, "9"))
+	})
+
 	It("should return 'deployment' as Name", func() {
 		maxUnavailable := intstr.FromInt(0)
 		dep := createDeployment("surge-name", namespace, "surge-name", 1, &maxUnavailable)

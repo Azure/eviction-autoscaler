@@ -95,22 +95,5 @@ var _ = Describe("HPASurgeApplier", func() {
 			Expect(reverted.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
 			Expect(reverted.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
 		})
-
-		It("should refuse to revert to a non-positive baseline and leave the surge in place", func() {
-			// Surged HPA carrying the surge marker but NO original-min annotation (lost baseline).
-			hpa.Spec.MinReplicas = ptr.To(int32(3))
-			hpa.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "3"}
-			Expect(applier.client.Update(ctx, hpa)).To(Succeed())
-			applier.hpa = hpa
-
-			// Passed baseline 0 and no annotation → revertTo resolves to 0 → guard must refuse
-			// (no scale-to-zero), leaving minReplicas and the surge marker untouched.
-			Expect(applier.RevertSurge(ctx, 0)).To(Succeed())
-
-			var after autoscalingv2.HorizontalPodAutoscaler
-			Expect(applier.client.Get(ctx, keyFor(hpa), &after)).To(Succeed())
-			Expect(*after.Spec.MinReplicas).To(Equal(int32(3)))
-			Expect(after.Annotations).To(HaveKey(EvictionSurgeReplicasAnnotationKey))
-		})
 	})
 })

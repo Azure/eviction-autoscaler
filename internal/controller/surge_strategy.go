@@ -35,31 +35,8 @@ type SurgeApplier interface {
 	// evictionSurgeReplicas annotation) and whether it is present. Used by the
 	// bail-on-replica-change guard to detect an external replica edit mid-surge.
 	RecordedSurge() (int32, bool)
-	// RecordedBaseline returns the pre-surge baseline recorded by ApplySurge (from the
-	// original-min-replicas annotation) and whether it is present. Used to recover the
-	// true baseline for an EvictionAutoScaler that lost its Status.MinReplicas (e.g. a
-	// freshly recreated CR that started at 0 while a surge was already active).
-	RecordedBaseline() (int32, bool)
 	// Name returns a human-readable name for logging
 	Name() string
-}
-
-// recordedBaselineFromAnnotations reads the original-min-replicas annotation set by
-// ApplySurge and returns the recorded pre-surge baseline. Returns (0,false) when the
-// annotation is absent or unparseable.
-func recordedBaselineFromAnnotations(annotations map[string]string) (int32, bool) {
-	if annotations == nil {
-		return 0, false
-	}
-	v, ok := annotations[OriginalMinReplicasAnnotationKey]
-	if !ok {
-		return 0, false
-	}
-	n, err := strconv.ParseInt(v, 10, 32)
-	if err != nil || n < 0 {
-		return 0, false
-	}
-	return int32(n), true
 }
 
 // recordedSurgeFromAnnotations reads the evictionSurgeReplicas annotation set by
@@ -177,42 +154,14 @@ type DeploymentSurgeApplier struct {
 var _ SurgeApplier = &DeploymentSurgeApplier{}
 
 func (d *DeploymentSurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) error {
-	// Persist the pre-surge baseline on the deployment (once) so it survives loss of the
-	// EvictionAutoScaler — otherwise the baseline lives only on the CR's Status.MinReplicas
-	// and an EAS deleted/recreated mid-surge would revert to a wrong (zero) value. Mirrors
-	// the original-min-replicas annotation the HPA/KEDA appliers already write.
-	if anns := d.target.Obj().GetAnnotations(); anns == nil || anns[OriginalMinReplicasAnnotationKey] == "" {
-		d.target.AddAnnotation(OriginalMinReplicasAnnotationKey, strconv.FormatInt(int64(d.target.GetReplicas()), 10))
-	}
 	d.target.SetReplicas(surgeReplicas)
 	d.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(surgeReplicas), 10))
 	return d.client.Update(ctx, d.target.Obj())
 }
 
 func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas int32) error {
-	// Prefer the durable baseline recorded on the deployment over the passed value, so a
-	// revert driven by an EAS with a lost/zero Status.MinReplicas still returns to the true
-	// pre-surge count. Only trust the annotation when it parses to a positive value — a
-	// tampered/corrupt non-positive annotation must not override a valid passed baseline and
-	// wedge the deployment surged via the guard below.
-	revertTo := originalMinReplicas
-	if anns := d.target.Obj().GetAnnotations(); anns != nil {
-		if v, ok := anns[OriginalMinReplicasAnnotationKey]; ok {
-			if parsed, err := strconv.ParseInt(v, 10, 32); err == nil && parsed > 0 {
-				revertTo = int32(parsed)
-			}
-		}
-	}
-	// Guard: never scale a running workload to zero from a lost/invalid baseline. Leave it
-	// surged (over-provisioned but safe) and surface it, rather than driving replicas to 0.
-	if revertTo <= 0 {
-		log.FromContext(ctx).Error(nil, "refusing to revert surge to a non-positive baseline; leaving deployment surged",
-			"target", d.target.Obj().GetName(), "namespace", d.target.Obj().GetNamespace(), "revertTo", revertTo)
-		return nil
-	}
-	d.target.SetReplicas(revertTo)
+	d.target.SetReplicas(originalMinReplicas)
 	d.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
-	d.target.RemoveAnnotation(OriginalMinReplicasAnnotationKey)
 	return d.client.Update(ctx, d.target.Obj())
 }
 
@@ -226,8 +175,4 @@ func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 
 func (d *DeploymentSurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(d.target.Obj().GetAnnotations())
-}
-
-func (d *DeploymentSurgeApplier) RecordedBaseline() (int32, bool) {
-	return recordedBaselineFromAnnotations(d.target.Obj().GetAnnotations())
 }

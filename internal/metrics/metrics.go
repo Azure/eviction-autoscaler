@@ -166,21 +166,6 @@ var (
 			Help: "1 when the controller is enabled (reconcilers registered), 0 when disabled via the CONTROLLER_ENABLED kill switch",
 		},
 	)
-
-	// PDBFloorTeardownUnrestorableCounter tracks PDB-floor teardowns where the partner
-	// PDB could not be restored to its original spec because the snapshot annotation was
-	// missing (only reachable via external annotation tampering — the snapshot and pin
-	// annotations are otherwise written/removed atomically). The floor finalizer is
-	// released anyway to avoid a stuck Terminating CR, leaving the (over-protective, never
-	// availability-regressing) pinned floor in place for an operator to notice.
-	// Labels: namespace, pdb_name
-	PDBFloorTeardownUnrestorableCounter = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "eviction_autoscaler_pdb_floor_teardown_unrestorable_total",
-			Help: "Total number of PDB-floor teardowns where the original spec could not be restored (snapshot missing); finalizer released to avoid a stuck Terminating CR.",
-		},
-		[]string{"namespace", "pdb_name"},
-	)
 )
 
 // Constants for PDB creation tracking
@@ -253,6 +238,5 @@ func init() {
 		PDBInfoGauge,
 		PDBCounter,
 		PanicCounter,
-		PDBFloorTeardownUnrestorableCounter,
 	)
 }

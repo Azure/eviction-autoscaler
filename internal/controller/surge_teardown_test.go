@@ -20,6 +20,8 @@ import (
 // deletion. These cases exercise the two ownsActiveSurge arms the reconcile-level teardown
 // relies on: the HPA/KEDA arm ("active marker is enough") and the deployment-marker fingerprint
 // winning over a late-added HPA (so detectSurgeApplier can't mis-select and strand a surge).
+// Kept as fast fake-client unit tests (no envtest): the Ginkgo suite covers the end-to-end
+// pin/restore path, while these isolate the applier-selection branches.
 
 const stdTeardownName, stdTeardownNS = "td-app", "td-ns"
 
@@ -37,7 +39,9 @@ func teardownEA() *v1.EvictionAutoScaler {
 	return &v1.EvictionAutoScaler{
 		ObjectMeta: metav1.ObjectMeta{Name: stdTeardownName, Namespace: stdTeardownNS, Finalizers: []string{EASSurgeFinalizer}},
 		Spec:       v1.EvictionAutoScalerSpec{TargetName: stdTeardownName, TargetKind: "deployment"},
-		Status:     v1.EvictionAutoScalerStatus{MinReplicas: 1},
+		// MinReplicas is deliberately distinct from the recorded original-min-replicas ("1") so
+		// that a revert to 1 proves the durable-annotation baseline was used, not this fallback.
+		Status: v1.EvictionAutoScalerStatus{MinReplicas: 9},
 	}
 }
 

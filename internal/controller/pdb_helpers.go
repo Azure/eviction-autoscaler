@@ -110,7 +110,7 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
-					APIVersion:         "apps/v1",
+					APIVersion:         APIVersionAppsV1,
 					Kind:               ResourceTypeDeployment,
 					Name:               deployment.Name,
 					UID:                deployment.UID,

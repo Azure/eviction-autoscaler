@@ -493,7 +493,9 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 }
 
 // externalReplicaChange reports whether the target's replica count changed outside our
-// surge: a generation mismatch, or live desired replicas != the recorded surge count.
+// surge: a generation mismatch, or live desired replicas != the recorded surge count. Unlike
+// ownsActiveSurge (a pure Surger/SurgeApplier predicate that lives in surge_strategy.go), this
+// is coupled to the CR — it reads eas.Status.TargetGeneration — so it stays with the reconciler.
 func externalReplicaChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {
 	if eas.Status.TargetGeneration != 0 && eas.Status.TargetGeneration != target.Obj().GetGeneration() {
 		return true

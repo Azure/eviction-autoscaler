@@ -452,7 +452,7 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		blockOwnerDeletion := true
 
 		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         "apps/v1",
+			APIVersion:         APIVersionAppsV1,
 			Kind:               ResourceTypeDeployment,
 			Name:               deploymentName,
 			UID:                deploymentUID,

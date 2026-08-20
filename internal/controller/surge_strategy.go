@@ -220,16 +220,12 @@ func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinRep
 			}
 		}
 	}
-	// Guard: never scale a running workload to zero from a lost/invalid baseline. Leave it
-	// surged (over-provisioned but safe) and surface it, rather than driving replicas to 0.
-	//
-	// This applier stays STRICT (> 0), unlike HPASurgeApplier/KEDASurgeApplier which honor a
-	// recorded 0. The difference is what a "0 baseline" means per applier: for HPA/KEDA,
-	// minReplicas/minReplicaCount: 0 is a legitimate, explicitly-configured scale-to-zero
-	// floor, so a *recorded* 0 (from the annotation) is honored — while a bare fallback 0
-	// (unknown baseline) is still refused there too. A plain Deployment has no configured
-	// floor: the recorded baseline is just the pre-surge replica count, so a 0 here is never a
-	// legitimate scale-to-zero — only a lost/unknown baseline or tampering — and is refused.
+	// Guard: refuse a non-positive baseline — leave it surged (over-provisioned but safe)
+	// rather than scaling to 0. Strict > 0 here, unlike HPA/KEDA which honor a *recorded* 0.
+	// The distinction is intent: minReplicaCount/minReplicas: 0 is a floor a partner can
+	// deliberately configure, so a recorded 0 there is real (a bare fallback 0 is still
+	// refused). A Deployment has no such setting — nothing lets a partner declare 0 as a
+	// baseline — so a 0 is only ever a lost/raced/tampered value, never intent; refuse it.
 	if revertTo <= 0 {
 		log.FromContext(ctx).Error(nil, "refusing to revert surge to a non-positive baseline; leaving deployment surged",
 			"target", d.target.Obj().GetName(), "namespace", d.target.Obj().GetNamespace(), "revertTo", revertTo)

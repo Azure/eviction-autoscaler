@@ -102,6 +102,14 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				return reconcile.Result{}, err
 			}
 		}
+		// Keep the floor finalizer in sync now the PDB is clean: a still-present EAS (e.g. a
+		// controller-owned PDB, which is not deleted below) must not linger holding
+		// PDBFloorFinalizer once its partner PDB has been restored. Mirrors the enabled path.
+		if easFound {
+			if err := r.reconcileFloorFinalizer(ctx, &EvictionAutoScaler, &pdb); err != nil {
+				return reconcile.Result{}, err
+			}
+		}
 		logger.V(1).Info("Eviction autoscaler not enabled for namespace", "namespace", pdb.Namespace)
 		// Only delete EvictionAutoScaler for user-owned PDbs
 		// Controller-owned PDbs will be deleted by DeploymentToPDBReconciler, which cascade-deletes the EvictionAutoScaler

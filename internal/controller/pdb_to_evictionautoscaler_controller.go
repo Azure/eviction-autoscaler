@@ -185,105 +185,6 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	return reconcile.Result{}, nil
 }
 
-// easOwnsPDB reports whether the live PDB is the same object the EAS was created for: a
-// same-name replacement PDB gets a new UID, and must not be mutated by the stale EAS. The
-// EAS is owned by its PDB, so the recorded UID is the owner ref's; a legacy EAS with no
-// recorded UID falls back to name identity (all that is available).
-func easOwnsPDB(eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) bool {
-	for _, ref := range eas.OwnerReferences {
-		if ref.Kind == ResourceTypePDB {
-			return ref.UID == pdb.UID
-		}
-	}
-	return true
-}
-
-// removeFloorFinalizer removes the PDB-floor finalizer from the EAS if present,
-// persisting the change. Idempotent: a no-op when already absent.
-func (r *PDBToEvictionAutoScalerReconciler) removeFloorFinalizer(ctx context.Context, eas *types.EvictionAutoScaler) error {
-	if controllerutil.RemoveFinalizer(eas, PDBFloorFinalizer) {
-		return r.Update(ctx, eas)
-	}
-	return nil
-}
-
-// reconcileFloorFinalizer keeps the EAS floor finalizer present iff the PDB still carries
-// our floor annotations — so a mid-drain CR delete is held until we restore, and a missing
-// finalizer on an already-held mutation is repaired. Add/RemoveFinalizer skip the write
-// when already in the desired state, so a steady-state reconcile is a no-op.
-func (r *PDBToEvictionAutoScalerReconciler) reconcileFloorFinalizer(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	if hasFloorAnnotationRaw(pdb) {
-		if controllerutil.AddFinalizer(eas, PDBFloorFinalizer) {
-			return r.Update(ctx, eas)
-		}
-		return nil
-	}
-	return r.removeFloorFinalizer(ctx, eas)
-}
-
-// retireStaleEAS deletes an EAS whose recorded partner PDB UID no longer matches the live
-// PDB (recreated with the same name), releasing the finalizer without ever mutating the
-// replacement. A fresh EAS is created for the replacement on a later reconcile.
-func (r *PDBToEvictionAutoScalerReconciler) retireStaleEAS(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	log.FromContext(ctx).Info("EAS partner UID mismatch (PDB recreated); retiring stale EAS without mutating replacement",
-		"pdb", pdb.Name, "namespace", pdb.Namespace)
-	if err := r.removeFloorFinalizer(ctx, eas); err != nil {
-		return err
-	}
-	return client.IgnoreNotFound(r.Delete(ctx, eas))
-}
-
-// reconcileEASDeletion tears down a terminating EAS that holds the floor finalizer:
-// restore the partner PDB, then release the finalizer for GC. Restore is skipped when moot
-// (PDB gone, deleting, or a UID-mismatched replacement) and force-released with a metric
-// when the restore snapshot is missing, so a tampered PDB cannot wedge the CR in Terminating.
-func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, pdbFound bool) error {
-	logger := log.FromContext(ctx)
-	// Proceed with best-effort restore even when the floor finalizer is absent: a pinned PDB
-	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
-	// crash window between pin and finalizer) is exactly the residue teardown must still clean
-	// up. removeFloorFinalizer is idempotent, so the release below simply no-ops when there is
-	// nothing to remove.
-
-	// Restore is moot: no live, same-identity partner PDB to restore.
-	if !pdbFound || !pdb.DeletionTimestamp.IsZero() || !easOwnsPDB(eas, pdb) {
-		logger.Info("EAS terminating with no restorable partner PDB, releasing floor finalizer",
-			"pdb", eas.Name, "namespace", eas.Namespace, "pdbFound", pdbFound)
-		return r.removeFloorFinalizer(ctx, eas)
-	}
-
-	// Snapshot-missing while still pinned (external tampering): we cannot recover the
-	// original spec. Emit a metric and release the finalizer rather than wedge the CR in
-	// Terminating — the stranded floor is over-protective (never below baseline). Uses raw
-	// annotation presence so a malformed pinned-floor value is cleaned here too (rather
-	// than tripping the teardown-incomplete guard below).
-	if !isMutated(pdb) && hasFloorAnnotationRaw(pdb) {
-		logger.Info("EAS terminating with a pinned PDB but no restore snapshot (tampered); releasing finalizer, floor left in place",
-			"pdb", pdb.Name, "namespace", pdb.Namespace)
-		metrics.PDBFloorTeardownUnrestorableCounter.WithLabelValues(pdb.Namespace, pdb.Name).Inc()
-		// Drop our stale pin annotation so we stop recognizing the object as ours.
-		if _, err := restorePDBSpec(pdb); err != nil {
-			return err
-		}
-		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
-			return err
-		}
-		return r.removeFloorFinalizer(ctx, eas)
-	}
-
-	// Live, same-identity partner PDB: restore it. A transient error keeps the finalizer.
-	if carriesValidFloor(pdb) {
-		if err := r.actuatePDBFloor(ctx, pdb, nil); err != nil {
-			return err
-		}
-	}
-	if hasFloorAnnotationRaw(pdb) {
-		return fmt.Errorf("floor teardown incomplete for pdb %s/%s, requeueing", pdb.Namespace, pdb.Name)
-	}
-	logger.Info("Restored partner PDB on EAS deletion, releasing floor finalizer", "pdb", pdb.Name, "namespace", pdb.Namespace)
-	return r.removeFloorFinalizer(ctx, eas)
-}
-
 // actuatePDBFloor converges the partner PDB toward the EAS's pin policy. It honors the user's
 // intent: the user's disruption policy is authoritative at all times, and we only ever express
 // it *temporarily* as an absolute minAvailable floor so a replica surge converts into real
@@ -386,6 +287,105 @@ func (r *PDBToEvictionAutoScalerReconciler) updatePDBConflictAware(ctx context.C
 		log.FromContext(ctx).V(1).Info("PDB update conflict, requeueing", "pdb", pdb.Name, "namespace", pdb.Namespace)
 	}
 	return err
+}
+
+// easOwnsPDB reports whether the live PDB is the same object the EAS was created for: a
+// same-name replacement PDB gets a new UID, and must not be mutated by the stale EAS. The
+// EAS is owned by its PDB, so the recorded UID is the owner ref's; a legacy EAS with no
+// recorded UID falls back to name identity (all that is available).
+func easOwnsPDB(eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) bool {
+	for _, ref := range eas.OwnerReferences {
+		if ref.Kind == ResourceTypePDB {
+			return ref.UID == pdb.UID
+		}
+	}
+	return true
+}
+
+// removeFloorFinalizer removes the PDB-floor finalizer from the EAS if present,
+// persisting the change. Idempotent: a no-op when already absent.
+func (r *PDBToEvictionAutoScalerReconciler) removeFloorFinalizer(ctx context.Context, eas *types.EvictionAutoScaler) error {
+	if controllerutil.RemoveFinalizer(eas, PDBFloorFinalizer) {
+		return r.Update(ctx, eas)
+	}
+	return nil
+}
+
+// reconcileFloorFinalizer keeps the EAS floor finalizer present iff the PDB still carries
+// our floor annotations — so a mid-drain CR delete is held until we restore, and a missing
+// finalizer on an already-held mutation is repaired. Add/RemoveFinalizer skip the write
+// when already in the desired state, so a steady-state reconcile is a no-op.
+func (r *PDBToEvictionAutoScalerReconciler) reconcileFloorFinalizer(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
+	if hasFloorAnnotationRaw(pdb) {
+		if controllerutil.AddFinalizer(eas, PDBFloorFinalizer) {
+			return r.Update(ctx, eas)
+		}
+		return nil
+	}
+	return r.removeFloorFinalizer(ctx, eas)
+}
+
+// retireStaleEAS deletes an EAS whose recorded partner PDB UID no longer matches the live
+// PDB (recreated with the same name), releasing the finalizer without ever mutating the
+// replacement. A fresh EAS is created for the replacement on a later reconcile.
+func (r *PDBToEvictionAutoScalerReconciler) retireStaleEAS(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
+	log.FromContext(ctx).Info("EAS partner UID mismatch (PDB recreated); retiring stale EAS without mutating replacement",
+		"pdb", pdb.Name, "namespace", pdb.Namespace)
+	if err := r.removeFloorFinalizer(ctx, eas); err != nil {
+		return err
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, eas))
+}
+
+// reconcileEASDeletion tears down a terminating EAS that holds the floor finalizer:
+// restore the partner PDB, then release the finalizer for GC. Restore is skipped when moot
+// (PDB gone, deleting, or a UID-mismatched replacement) and force-released with a metric
+// when the restore snapshot is missing, so a tampered PDB cannot wedge the CR in Terminating.
+func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, pdbFound bool) error {
+	logger := log.FromContext(ctx)
+	// Proceed with best-effort restore even when the floor finalizer is absent: a pinned PDB
+	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
+	// crash window between pin and finalizer) is exactly the residue teardown must still clean
+	// up. removeFloorFinalizer is idempotent, so the release below simply no-ops when there is
+	// nothing to remove.
+
+	// Restore is moot: no live, same-identity partner PDB to restore.
+	if !pdbFound || !pdb.DeletionTimestamp.IsZero() || !easOwnsPDB(eas, pdb) {
+		logger.Info("EAS terminating with no restorable partner PDB, releasing floor finalizer",
+			"pdb", eas.Name, "namespace", eas.Namespace, "pdbFound", pdbFound)
+		return r.removeFloorFinalizer(ctx, eas)
+	}
+
+	// Snapshot-missing while still pinned (external tampering): we cannot recover the
+	// original spec. Emit a metric and release the finalizer rather than wedge the CR in
+	// Terminating — the stranded floor is over-protective (never below baseline). Uses raw
+	// annotation presence so a malformed pinned-floor value is cleaned here too (rather
+	// than tripping the teardown-incomplete guard below).
+	if !isMutated(pdb) && hasFloorAnnotationRaw(pdb) {
+		logger.Info("EAS terminating with a pinned PDB but no restore snapshot (tampered); releasing finalizer, floor left in place",
+			"pdb", pdb.Name, "namespace", pdb.Namespace)
+		metrics.PDBFloorTeardownUnrestorableCounter.WithLabelValues(pdb.Namespace, pdb.Name).Inc()
+		// Drop our stale pin annotation so we stop recognizing the object as ours.
+		if _, err := restorePDBSpec(pdb); err != nil {
+			return err
+		}
+		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
+			return err
+		}
+		return r.removeFloorFinalizer(ctx, eas)
+	}
+
+	// Live, same-identity partner PDB: restore it. A transient error keeps the finalizer.
+	if carriesValidFloor(pdb) {
+		if err := r.actuatePDBFloor(ctx, pdb, nil); err != nil {
+			return err
+		}
+	}
+	if hasFloorAnnotationRaw(pdb) {
+		return fmt.Errorf("floor teardown incomplete for pdb %s/%s, requeueing", pdb.Namespace, pdb.Name)
+	}
+	logger.Info("Restored partner PDB on EAS deletion, releasing floor finalizer", "pdb", pdb.Name, "namespace", pdb.Namespace)
+	return r.removeFloorFinalizer(ctx, eas)
 }
 
 // handleOwnershipTransfer manages the owner reference based on the ownedBy annotation

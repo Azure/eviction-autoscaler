@@ -103,20 +103,20 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	// This is the pre-surge value stored during ApplySurge, making the HPA
 	// self-describing for revert without depending on EA.Status.MinReplicas.
 	revertTo := originalMinReplicas
-	if h.hpa.Annotations != nil {
-		if val, exists := h.hpa.Annotations[OriginalMinReplicasAnnotationKey]; exists {
-			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil {
-				revertTo = int32(parsed)
-			}
-		}
+	recorded, hasRecorded := recordedBaselineFromAnnotations(h.hpa.Annotations)
+	if hasRecorded {
+		revertTo = recorded
 	}
 
-	// Guard: never revert the HPA floor to a non-positive value from a lost/invalid baseline
-	// (Status.MinReplicas==0 and the annotation missing/unparseable) — setting minReplicas to 0
-	// would let the HPA scale the workload to zero. Leave the surge in place (over-provisioned
-	// but safe) and surface it, matching DeploymentSurgeApplier.RevertSurge.
-	if revertTo <= 0 {
-		logger.Error(nil, "refusing to revert HPA minReplicas to a non-positive baseline; leaving surge in place",
+	// Guard against a *lost* baseline, but honor an explicit scale-to-zero. By default an HPA's
+	// minReplicas must be >= 1, so a recorded 0 is unusual — but the alpha HPAScaleToZero feature
+	// gate makes minReplicas: 0 legal (with custom/external metrics), and ApplySurge records it
+	// explicitly (original-min-replicas="0"). Mirror the KEDA applier: refuse only when the
+	// baseline is truly unknown (no valid recorded baseline AND a non-positive passed-in
+	// fallback); a recorded 0 reverts to 0. Otherwise leave the surge in place (safe).
+	legitZero := hasRecorded && revertTo == 0
+	if revertTo <= 0 && !legitZero {
+		logger.Error(nil, "refusing to revert HPA minReplicas to a non-positive baseline from a lost/unknown floor; leaving surge in place",
 			"hpa", h.hpa.Name, "namespace", h.hpa.Namespace, "revertTo", revertTo)
 		return nil
 	}

@@ -222,6 +222,17 @@ func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinRep
 	}
 	// Guard: never scale a running workload to zero from a lost/invalid baseline. Leave it
 	// surged (over-provisioned but safe) and surface it, rather than driving replicas to 0.
+	//
+	// This applier stays STRICT (> 0), unlike HPASurgeApplier/KEDASurgeApplier which honor a
+	// recorded 0. The difference is what a "0 baseline" means per applier: for HPA/KEDA,
+	// minReplicas/minReplicaCount: 0 is a legitimate, explicitly-configured scale-to-zero
+	// floor, so a *recorded* 0 (from the annotation) is real and is honored — while a bare
+	// fallback 0 (unknown baseline) is still refused there too. For a plain Deployment there is
+	// no "configured floor": the baseline is the pre-surge replica count, and EAS only ever
+	// surges a workload that has displaced pods to drain (replicas >= 1). So a 0 here can only
+	// come from a lost/unknown baseline or tampering — never a legitimate scale-to-zero — and
+	// must be refused. (A partner genuinely wanting 0 is handled elsewhere: at 0 replicas EAS
+	// never surges, and a scale-to-0 during a surge is the externalReplicaChange bail path.)
 	if revertTo <= 0 {
 		log.FromContext(ctx).Error(nil, "refusing to revert surge to a non-positive baseline; leaving deployment surged",
 			"target", d.target.Obj().GetName(), "namespace", d.target.Obj().GetNamespace(), "revertTo", revertTo)

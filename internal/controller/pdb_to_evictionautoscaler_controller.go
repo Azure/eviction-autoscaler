@@ -239,9 +239,11 @@ func (r *PDBToEvictionAutoScalerReconciler) retireStaleEAS(ctx context.Context, 
 // when the restore snapshot is missing, so a tampered PDB cannot wedge the CR in Terminating.
 func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget, pdbFound bool) error {
 	logger := log.FromContext(ctx)
-	if !controllerutil.ContainsFinalizer(eas, PDBFloorFinalizer) {
-		return nil // not ours to hold — nothing blocks GC
-	}
+	// Proceed with best-effort restore even when the floor finalizer is absent: a pinned PDB
+	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
+	// crash window between pin and finalizer) is exactly the residue teardown must still clean
+	// up. removeFloorFinalizer is idempotent, so the release below simply no-ops when there is
+	// nothing to remove.
 
 	// Restore is moot: no live, same-identity partner PDB to restore.
 	if !pdbFound || !pdb.DeletionTimestamp.IsZero() || !easOwnsPDB(eas, pdb) {

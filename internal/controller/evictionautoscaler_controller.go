@@ -441,9 +441,10 @@ func (r *EvictionAutoScalerReconciler) recoverBaselineForActiveSurge(ctx context
 // partner that has since taken over the target's replica count is never fought.
 func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Context, eas *myappsv1.EvictionAutoScaler) error {
 	logger := log.FromContext(ctx)
-	if !controllerutil.ContainsFinalizer(eas, EASSurgeFinalizer) {
-		return nil // not ours to hold — nothing blocks GC
-	}
+	// Proceed with best-effort revert even when the surge finalizer is absent: an active surge
+	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
+	// crash window between surge and finalizer) is exactly what teardown must still revert. The
+	// finalizer release below is idempotent, so it no-ops when there is nothing to remove.
 
 	// Resolve the target + applier to check ownership and revert. A missing target, an
 	// unsupported target kind, or an unsupported autoscaler config means there is nothing we
@@ -485,8 +486,10 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 		}
 	}
 
-	controllerutil.RemoveFinalizer(eas, EASSurgeFinalizer)
-	return r.Update(ctx, eas)
+	if controllerutil.RemoveFinalizer(eas, EASSurgeFinalizer) {
+		return r.Update(ctx, eas)
+	}
+	return nil
 }
 
 // ownsActiveSurge reports whether the applier still owns an active surge we may safely revert.

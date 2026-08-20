@@ -6,9 +6,11 @@ package controllers
 // surge and owns EASSurgeFinalizer; the PDB actuator writes the partner PDB and owns
 // PDBFloorFinalizer. Each controller owns the finalizer for the object it writes.
 const (
-	// EASSurgeFinalizer is placed on the EvictionAutoScaler while it holds an active surge on
-	// its target, so a mid-drain CR delete is held until the EvictionAutoScaler reconciler
-	// reverts the surge. Removing it releases the CR for garbage collection.
+	// EASSurgeFinalizer is added to the EvictionAutoScaler when it first surges a target and is
+	// retained thereafter — it is NOT dropped when a surge is reverted during normal operation.
+	// It is removed only at deletion time, once reconcileSurgeTeardown has reverted any surge the
+	// CR still owns, so a mid-drain CR delete is held until that teardown runs. Removing it
+	// releases the CR for garbage collection.
 	EASSurgeFinalizer = "eviction-autoscaler.azure.com/surge-revert"
 
 	// PDBFloorFinalizer is placed on the EvictionAutoScaler while its partner PDB carries a

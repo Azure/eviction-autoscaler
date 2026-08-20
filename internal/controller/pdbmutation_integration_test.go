@@ -574,7 +574,7 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 	// restore the partner PDB and revert the surge, and must not strand either even when a
 	// finalizer or snapshot has been externally removed.
 	Context("teardown on EAS deletion", func() {
-		It("adds the PDB-floor finalizer to the EAS before pinning the partner PDB", func() {
+		It("persists the PDB-floor finalizer on the EAS when it pins the partner PDB", func() {
 			createDeployment(5, intstr.FromInt32(2))
 			pdb := makeBlockedPDB()
 			cordonWithPods(2)

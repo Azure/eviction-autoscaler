@@ -145,12 +145,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				Name:      pdb.Name,
 				Namespace: pdb.Namespace,
 				Annotations: map[string]string{
-					"ownedBy": "EvictionAutoScaler",
-					"target":  deploymentName,
+					PDBOwnedByAnnotationKey: ControllerName,
+					"target":                deploymentName,
 				},
 				OwnerReferences: []metav1.OwnerReference{
 					{
-						APIVersion:         "policy/v1",
+						APIVersion:         APIVersionPolicyV1,
 						Kind:               ResourceTypePDB,
 						Name:               pdb.Name,
 						UID:                pdb.UID,

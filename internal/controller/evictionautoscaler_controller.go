@@ -492,23 +492,6 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 	return nil
 }
 
-// ownsActiveSurge reports whether the applier still owns an active surge we may safely revert.
-// A plain-Deployment surge IS the deployment's replica count, so a live count that no longer
-// matches what we recorded means a partner has taken over — reverting would fight them (and
-// could scale them down), so we require an exact match. For HPA/KEDA the surge is a floor on
-// the autoscaler object and RevertSurge is a safe, idempotent reset of that floor (the HPA
-// legitimately moves deployment replicas), so an active surge marker alone is sufficient.
-func ownsActiveSurge(target Surger, surgeApplier SurgeApplier) bool {
-	if !surgeApplier.IsSurgeActive() {
-		return false
-	}
-	if _, isDeployment := surgeApplier.(*DeploymentSurgeApplier); isDeployment {
-		recorded, ok := surgeApplier.RecordedSurge()
-		return ok && target.GetReplicas() == recorded
-	}
-	return true
-}
-
 // externalReplicaChange reports whether the target's replica count changed outside our
 // surge: a generation mismatch, or live desired replicas != the recorded surge count.
 func externalReplicaChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {

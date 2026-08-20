@@ -28,6 +28,7 @@ const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
 const ResourceTypeDeployment = "Deployment"
 const ResourceTypePDB = "PodDisruptionBudget"
+const APIVersionPolicyV1 = "policy/v1"
 
 type filter interface {
 	Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error)

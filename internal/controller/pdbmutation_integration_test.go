@@ -64,12 +64,6 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		}
 	})
 
-	AfterEach(func() {
-		// Reset the master switch so it never leaks into specs that assume the
-		// feature is off (the var is package-global).
-		pdbFloorMutationEnabled = false
-	})
-
 	createDeployment := func(replicas int32, maxSurge intstr.IntOrString) *appsv1.Deployment {
 		dep := &appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},

@@ -27,6 +27,7 @@ const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
 const ResourceTypeDeployment = "Deployment"
+const ResourceTypePDB = "PodDisruptionBudget"
 
 type filter interface {
 	Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error)

@@ -29,19 +29,13 @@ const (
 	// AnnotationPinnedFloor records the pinned floor on the PDB so it survives a lost
 	// CR status write (Status.PDBFloorPinned).
 	AnnotationPinnedFloor = "eviction-autoscaler.azure.com/pinned-floor"
-
-	// PDBFloorFinalizer is placed on the EvictionAutoScaler while its partner PDB
-	// carries a floor mutation, so a mid-drain CR delete is held until the actuator
-	// restores the partner PDB (or determines restore is moot). Removing it releases
-	// the CR for garbage collection.
-	PDBFloorFinalizer = "eviction-autoscaler.azure.com/pdb-floor"
 )
 
-// hasFloorAnnotation reports raw presence of either floor annotation, without
+// hasFloorAnnotationRaw reports raw presence of either floor annotation, without
 // parsing/validating the value. Used to decide whether teardown metadata is fully
 // cleared: a malformed AnnotationPinnedFloor (which pinnedFloorFromPDB rejects) still
 // counts as residue that must be removed before the finalizer is dropped.
-func hasFloorAnnotation(pdb *policyv1.PodDisruptionBudget) bool {
+func hasFloorAnnotationRaw(pdb *policyv1.PodDisruptionBudget) bool {
 	if pdb == nil || pdb.Annotations == nil {
 		return false
 	}
@@ -49,6 +43,21 @@ func hasFloorAnnotation(pdb *policyv1.PodDisruptionBudget) bool {
 		return true
 	}
 	_, ok := pdb.Annotations[AnnotationPinnedFloor]
+	return ok
+}
+
+// carriesValidFloor reports whether the PDB carries a *valid* floor mutation from us — our
+// original-spec snapshot (isMutated) or a well-formed, positive pinned-floor annotation. It
+// differs from hasFloorAnnotationRaw, which reports the raw presence of either annotation
+// without validating the pinned-floor value: a malformed AnnotationPinnedFloor makes
+// hasFloorAnnotationRaw true but carriesValidFloor false. Teardown relies on exactly that
+// gap — carriesValidFloor gates whether there is a real pin to restore, hasFloorAnnotationRaw
+// gates whether any residue remains to clear before the finalizer is dropped.
+func carriesValidFloor(pdb *policyv1.PodDisruptionBudget) bool {
+	if isMutated(pdb) {
+		return true
+	}
+	_, ok := pinnedFloorFromPDB(pdb)
 	return ok
 }
 

@@ -68,7 +68,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	// Orphaned mutation (EAS gone, PDB still pinned): restore, then fall through to recreate.
-	if pdbFound && !easFound && pdbCarriesFloorAnnotations(&pdb) {
+	if pdbFound && !easFound && carriesValidFloor(&pdb) {
 		if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -97,7 +97,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 	if !isEnabled {
 		// Namespace disabled: restore the partner PDB if we left a floor pinned.
-		if pdbCarriesFloorAnnotations(&pdb) {
+		if carriesValidFloor(&pdb) {
 			if err := r.actuatePDBFloor(ctx, &pdb, nil); err != nil {
 				return reconcile.Result{}, err
 			}
@@ -143,7 +143,7 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 				OwnerReferences: []metav1.OwnerReference{
 					{
 						APIVersion:         "policy/v1",
-						Kind:               "PodDisruptionBudget",
+						Kind:               ResourceTypePDB,
 						Name:               pdb.Name,
 						UID:                pdb.UID,
 						Controller:         &controller,         // Mark as managed by this controller
@@ -185,21 +185,13 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	return reconcile.Result{}, nil
 }
 
-func pdbCarriesFloorAnnotations(pdb *policyv1.PodDisruptionBudget) bool {
-	if isMutated(pdb) {
-		return true
-	}
-	_, ok := pinnedFloorFromPDB(pdb)
-	return ok
-}
-
 // easOwnsPDB reports whether the live PDB is the same object the EAS was created for: a
 // same-name replacement PDB gets a new UID, and must not be mutated by the stale EAS. The
 // EAS is owned by its PDB, so the recorded UID is the owner ref's; a legacy EAS with no
 // recorded UID falls back to name identity (all that is available).
 func easOwnsPDB(eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) bool {
 	for _, ref := range eas.OwnerReferences {
-		if ref.Kind == "PodDisruptionBudget" {
+		if ref.Kind == ResourceTypePDB {
 			return ref.UID == pdb.UID
 		}
 	}
@@ -220,7 +212,7 @@ func (r *PDBToEvictionAutoScalerReconciler) removeFloorFinalizer(ctx context.Con
 // finalizer on an already-held mutation is repaired. Add/RemoveFinalizer skip the write
 // when already in the desired state, so a steady-state reconcile is a no-op.
 func (r *PDBToEvictionAutoScalerReconciler) reconcileFloorFinalizer(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	if hasFloorAnnotation(pdb) {
+	if hasFloorAnnotationRaw(pdb) {
 		if controllerutil.AddFinalizer(eas, PDBFloorFinalizer) {
 			return r.Update(ctx, eas)
 		}
@@ -263,7 +255,7 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Con
 	// Terminating — the stranded floor is over-protective (never below baseline). Uses raw
 	// annotation presence so a malformed pinned-floor value is cleaned here too (rather
 	// than tripping the teardown-incomplete guard below).
-	if !isMutated(pdb) && hasFloorAnnotation(pdb) {
+	if !isMutated(pdb) && hasFloorAnnotationRaw(pdb) {
 		logger.Info("EAS terminating with a pinned PDB but no restore snapshot (tampered); releasing finalizer, floor left in place",
 			"pdb", pdb.Name, "namespace", pdb.Namespace)
 		metrics.PDBFloorTeardownUnrestorableCounter.WithLabelValues(pdb.Namespace, pdb.Name).Inc()
@@ -278,12 +270,12 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Con
 	}
 
 	// Live, same-identity partner PDB: restore it. A transient error keeps the finalizer.
-	if pdbCarriesFloorAnnotations(pdb) {
+	if carriesValidFloor(pdb) {
 		if err := r.actuatePDBFloor(ctx, pdb, nil); err != nil {
 			return err
 		}
 	}
-	if hasFloorAnnotation(pdb) {
+	if hasFloorAnnotationRaw(pdb) {
 		return fmt.Errorf("floor teardown incomplete for pdb %s/%s, requeueing", pdb.Namespace, pdb.Name)
 	}
 	logger.Info("Restored partner PDB on EAS deletion, releasing floor finalizer", "pdb", pdb.Name, "namespace", pdb.Namespace)
@@ -346,6 +338,17 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 		}
 		if floor <= 0 {
 			return nil
+		}
+		// Establish the invariant "finalizer-on-EAS happens-before pin-on-PDB": persist the
+		// floor finalizer BEFORE the pin write, so a crash between the two can never leave a
+		// pinned PDB with no finalizer to drive teardown. This mirrors EASSurgeFinalizer, which
+		// is added before ApplySurge. Nothing is pinned yet, so an update failure is safe to
+		// retry; a crash after this but before the pin leaves a clean PDB, and
+		// reconcileFloorFinalizer simply drops the now-unneeded finalizer on the next pass.
+		if controllerutil.AddFinalizer(eas, PDBFloorFinalizer) {
+			if err := r.Update(ctx, eas); err != nil {
+				return err
+			}
 		}
 		if err := snapshotPDBSpec(pdb); err != nil {
 			return err

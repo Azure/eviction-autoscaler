@@ -34,14 +34,6 @@ import (
 const EvictionSurgeReplicasAnnotationKey = "evictionSurgeReplicas"
 const OriginalMinReplicasAnnotationKey = "eviction-autoscaler.azure.com/original-min-replicas"
 
-// EASSurgeFinalizer is placed on the EvictionAutoScaler while it holds an active surge on
-// its target, so a mid-drain CR delete is held until this reconciler reverts the surge. It
-// is distinct from PDBFloorFinalizer (owned by the PDB actuator, which restores the partner
-// PDB): each controller owns the finalizer for the object it writes — this reconciler writes
-// the Deployment/HPA/KEDA surge, the actuator writes the PDB. Removing it releases the CR
-// for garbage collection.
-const EASSurgeFinalizer = "eviction-autoscaler.azure.com/surge-revert"
-
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type EvictionAutoScalerReconciler struct {
 	client.Client

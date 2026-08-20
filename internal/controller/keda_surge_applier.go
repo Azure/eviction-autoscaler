@@ -114,23 +114,25 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	//   2. It was set atomically with the surge in ApplySurge
 	//   3. EA.Status.MinReplicas could be stale if the controller restarted
 	// Falls back to the passed-in originalMinReplicas (from EA.Status) if
-	// the annotation is missing (e.g., manual annotation removal).
+	// the annotation is missing/unparseable (e.g., manual annotation removal).
 	revertTo := originalMinReplicas
-	annotations := k.scaledObject.GetAnnotations()
-	if annotations != nil {
-		if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil {
-				revertTo = int32(parsed)
-			}
-		}
+	recorded, hasRecorded := recordedBaselineFromAnnotations(k.scaledObject.GetAnnotations())
+	if hasRecorded {
+		revertTo = recorded
 	}
 
-	// Guard: never revert the ScaledObject floor to a non-positive value from a lost/invalid
-	// baseline (Status.MinReplicas==0 and the annotation missing/unparseable) — setting
-	// minReplicaCount to 0 would let KEDA/HPA scale the workload to zero. Leave the surge in
-	// place (over-provisioned but safe) and surface it, matching DeploymentSurgeApplier.RevertSurge.
-	if revertTo <= 0 {
-		logger.Error(nil, "refusing to revert ScaledObject minReplicaCount to a non-positive baseline; leaving surge in place",
+	// Guard against a *lost* baseline, but honor a legitimate scale-to-zero. Unlike
+	// DeploymentSurgeApplier/HPASurgeApplier — where a 0 floor is never valid (an HPA's
+	// minReplicas must be >= 1) — minReplicaCount: 0 is a first-class KEDA configuration
+	// (scale-to-zero). ApplySurge records it explicitly (stamps original-min-replicas="0"),
+	// and recordedBaselineFromAnnotations returns (0, true) for it, so a recorded 0 is the
+	// workload's real floor and must be restored. Refuse only when the baseline is truly
+	// unknown: no valid recorded baseline AND a non-positive passed-in fallback — where
+	// setting minReplicaCount from a lost floor could leave the workload pinned above its
+	// true floor. In that case, leave the surge in place (over-provisioned but safe).
+	legitZero := hasRecorded && revertTo == 0
+	if revertTo <= 0 && !legitZero {
+		logger.Error(nil, "refusing to revert ScaledObject minReplicaCount to a non-positive baseline from a lost/unknown floor; leaving surge in place",
 			"scaledObject", k.scaledObject.GetName(), "namespace", k.scaledObject.GetNamespace(), "revertTo", revertTo)
 		return nil
 	}

@@ -226,7 +226,8 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)
 	}
 
-	// We use node cordon (Spec.Unschedulable) as the signal for "pods need to move".
+	// We use the node drain signal (cordon or a draining controller's taint, see
+	// nodeIsDraining) as the signal for "pods need to move".
 	// This is the best signal available today via the controller-runtime cache (no API server round-trip).
 	// In the future this may be replaced by a more direct pod-eviction signal — e.g. via an
 	// admission webhook interceptor or pod conditions — which would let us right-size the surge
@@ -237,7 +238,7 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 	}
 	cordoned := make(map[string]bool, len(nodeList.Items))
 	for _, node := range nodeList.Items {
-		cordoned[node.Name] = node.Spec.Unschedulable
+		cordoned[node.Name] = nodeIsDraining(&node)
 	}
 
 	var count int32

@@ -445,6 +445,13 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
 	// crash window between surge and finalizer) is exactly what teardown must still revert. The
 	// finalizer release below is idempotent, so it no-ops when there is nothing to remove.
+	//
+	// TODO: remove this finalizer-optional path once the finalizer-before-mutation ordering
+	// has been live long enough that no un-finalized surges remain (this branch then guards a
+	// state that can no longer occur). Make it data-driven: instrument the finalizer-absent
+	// case and drop it once flat-zero across the fleet for a sustained window — keeping at most
+	// a minimal guard for externally-stripped finalizers, which are not time-bounded. Mirrored
+	// in reconcileEASDeletion (PDB restore).
 
 	// Resolve the target + applier to check ownership and revert. A missing target, an
 	// unsupported target kind, or an unsupported autoscaler config means there is nothing we

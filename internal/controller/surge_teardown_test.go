@@ -136,6 +136,45 @@ func TestReconcileSurgeTeardownDeploymentMarkerWins(t *testing.T) {
 	g.Expect(gotEA.Finalizers).ToNot(ContainElement(EASSurgeFinalizer))
 }
 
+// TestReconcileSurgeTeardownKEDAOwnedSurge: the surge marker lives on the ScaledObject (KEDA/HPA
+// appliers mark their own object, not the deployment). resolveSurgeOwner checks the ScaledObject
+// FIRST, so this is the one owner arm with no other integrated teardown assertion — teardown must
+// drive resolveSurgeOwner -> KEDASurgeApplier.RevertSurge, reverting minReplicaCount to the
+// recorded baseline and clearing the surge annotations.
+func TestReconcileSurgeTeardownKEDAOwnedSurge(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+	key := client.ObjectKey{Name: stdTeardownName, Namespace: stdTeardownNS}
+	soKey := client.ObjectKey{Name: "td-so", Namespace: stdTeardownNS}
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: stdTeardownName, Namespace: stdTeardownNS},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+	}
+	// A ScaledObject that actually owns the surge: our marker + surged minReplicaCount (3).
+	so := createScaledObject("td-so", stdTeardownNS, stdTeardownName, 3, 10)
+	so.SetAnnotations(map[string]string{
+		EvictionSurgeReplicasAnnotationKey: "3",
+		OriginalMinReplicasAnnotationKey:   "1",
+	})
+	ea := teardownEA()
+	r := surgeTeardownReconciler(g, dep, so, ea)
+
+	g.Expect(r.reconcileSurgeTeardown(ctx, ea)).To(Succeed())
+
+	// ScaledObject minReplicaCount reverted to the recorded baseline (1); surge annotations cleared.
+	var gotSO kedav1alpha1.ScaledObject
+	g.Expect(r.Get(ctx, soKey, &gotSO)).To(Succeed())
+	g.Expect(gotSO.Spec.MinReplicaCount).ToNot(BeNil())
+	g.Expect(*gotSO.Spec.MinReplicaCount).To(Equal(int32(1)))
+	g.Expect(gotSO.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+	g.Expect(gotSO.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+	// Surge finalizer released.
+	var gotEA v1.EvictionAutoScaler
+	g.Expect(r.Get(ctx, key, &gotEA)).To(Succeed())
+	g.Expect(gotEA.Finalizers).ToNot(ContainElement(EASSurgeFinalizer))
+}
+
 // TestReconcileSurgeTeardownHPAMarkedDespiteLateKEDA: an HPA-surged deployment (marker on the
 // HPA) that later gains a KEDA ScaledObject. Apply-time detection would trip the
 // unsupported-config path (KEDA + standalone HPA) and drop the finalizer while the HPA stays

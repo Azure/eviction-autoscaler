@@ -28,7 +28,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=1 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
-    go build -trimpath -ldflags="-s -w" -a -o manager cmd/main.go
+    go build -trimpath -ldflags="-s -w" -o manager cmd/main.go
 
 # Use Azure Linux distroless base as FIPS-compliant runtime image.
 # 'base' variant includes glibc and libssl required by the CGO/OpenSSL-linked binary.

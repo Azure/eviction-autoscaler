@@ -168,6 +168,7 @@ func TestReconcileSurgeTeardownKEDAOwnedSurge(t *testing.T) {
 	g.Expect(gotSO.Spec.MinReplicaCount).ToNot(BeNil())
 	g.Expect(*gotSO.Spec.MinReplicaCount).To(Equal(int32(1)))
 	g.Expect(gotSO.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+	g.Expect(gotSO.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
 	// Surge finalizer released.
 	var gotEA v1.EvictionAutoScaler
 	g.Expect(r.Get(ctx, key, &gotEA)).To(Succeed())

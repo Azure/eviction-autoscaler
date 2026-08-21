@@ -1,5 +1,7 @@
-# Trivy vulnerability ignore list (auto-loaded by `trivy image` from the repo root
-# during hack/common.sh:trivy_scan). One CVE ID per line; `#` lines are comments.
+# Trivy vulnerability ignore list. `trivy image` auto-loads a `.trivyignore` from its
+# current working directory (unless --ignorefile is set). The release scripts
+# (hack/common.sh:trivy_scan, invoked by hack/release.sh) run trivy from the repo root,
+# so this root-level file is the one picked up. One CVE ID per line; `#` lines are comments.
 
 # CVE-2026-53572 — github.com/kedacore/keda/v2: PostgreSQL scaler connection-string
 # parameter injection via incomplete whitespace escaping. Fixed in KEDA 2.20.0.

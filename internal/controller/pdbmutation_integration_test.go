@@ -5,9 +5,11 @@ import (
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
+	metrics "github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
@@ -566,5 +568,139 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
 		Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
 		Expect(ea.Status.PDBFloorPinned).To(BeFalse())
+	})
+
+	// Reconcile-level teardown state machine: deleting an EAS mid-pin/mid-surge must
+	// restore the partner PDB and revert the surge, and must not strand either even when a
+	// finalizer or snapshot has been externally removed.
+	Context("teardown on EAS deletion", func() {
+		It("persists the PDB-floor finalizer on the EAS when it pins the partner PDB", func() {
+			createDeployment(5, intstr.FromInt32(2))
+			pdb := makeBlockedPDB()
+			cordonWithPods(2)
+
+			ea := surgeAndPin(pdb) // pins the PDB; finalizer must be persisted before the pin
+
+			Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+			Expect(ea.Finalizers).To(ContainElement(PDBFloorFinalizer))
+		})
+
+		It("restores the partner PDB and releases the floor finalizer when the EAS is deleted mid-pin", func() {
+			createDeployment(5, intstr.FromInt32(2))
+			pdb := makeBlockedPDB()
+			cordonWithPods(2)
+
+			ea := surgeAndPin(pdb)
+
+			// Finalizers hold the CR in Terminating; the teardown-first path must restore.
+			Expect(k8sClient.Delete(ctx, ea)).To(Succeed())
+			_, err := pdbReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MinAvailable).To(BeNil())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+			Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
+			Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+
+			// The floor finalizer is released (the CR may still exist under EASSurgeFinalizer).
+			if err := k8sClient.Get(ctx, nsName, ea); err == nil {
+				Expect(ea.Finalizers).NotTo(ContainElement(PDBFloorFinalizer))
+			}
+		})
+
+		It("still restores the partner PDB when the floor finalizer was externally removed", func() {
+			createDeployment(5, intstr.FromInt32(2))
+			pdb := makeBlockedPDB()
+			cordonWithPods(2)
+
+			ea := surgeAndPin(pdb)
+
+			// Strip the floor finalizer but keep the surge finalizer, so the CR still goes
+			// Terminating rather than being GC'd — reproducing a lost-finalizer pinned PDB.
+			Expect(k8sClient.Get(ctx, nsName, ea)).To(Succeed())
+			ea.Finalizers = []string{EASSurgeFinalizer}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+			Expect(k8sClient.Delete(ctx, ea)).To(Succeed())
+
+			_, err := pdbReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Best-effort teardown restored the PDB despite the missing floor finalizer.
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			Expect(pdb.Spec.MaxUnavailable).NotTo(BeNil())
+			Expect(pdb.Spec.MaxUnavailable.IntVal).To(Equal(int32(1)))
+			Expect(pdb.Annotations).NotTo(HaveKey(AnnotationOriginalPDBSpec))
+		})
+
+		It("force-releases and records the unrestorable metric when the restore snapshot is missing", func() {
+			createDeployment(5, intstr.FromInt32(2))
+			pdb := makeBlockedPDB()
+			cordonWithPods(2)
+
+			ea := surgeAndPin(pdb)
+
+			// Tamper: drop the snapshot annotation but leave the pinned-floor marker, so the
+			// PDB is recognizably ours yet unrestorable (isMutated=false, raw-annotation=true).
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			delete(pdb.Annotations, AnnotationOriginalPDBSpec)
+			Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+			before := testutil.ToFloat64(metrics.PDBFloorTeardownUnrestorableCounter.WithLabelValues(ns, name))
+
+			Expect(k8sClient.Delete(ctx, ea)).To(Succeed())
+			_, err := pdbReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Stale pin annotation cleared and the floor finalizer released — no wedged CR.
+			Expect(k8sClient.Get(ctx, nsName, pdb)).To(Succeed())
+			Expect(pdb.Annotations).NotTo(HaveKey(AnnotationPinnedFloor))
+			if err := k8sClient.Get(ctx, nsName, ea); err == nil {
+				Expect(ea.Finalizers).NotTo(ContainElement(PDBFloorFinalizer))
+			}
+			after := testutil.ToFloat64(metrics.PDBFloorTeardownUnrestorableCounter.WithLabelValues(ns, name))
+			Expect(after).To(BeNumerically(">", before))
+		})
+
+		It("reverts the surge and releases the surge finalizer when the EAS is deleted mid-surge", func() {
+			createDeployment(5, intstr.FromInt32(2))
+			pdb := makeBlockedPDB()
+			cordonWithPods(2)
+
+			ea := surgeAndPin(pdb) // deployment surged to 7, EASSurgeFinalizer held
+
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, nsName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(7)))
+
+			Expect(k8sClient.Delete(ctx, ea)).To(Succeed())
+			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nsName})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Surge reverted to the recorded baseline and the surge finalizer released.
+			Expect(k8sClient.Get(ctx, nsName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(5)))
+			if err := k8sClient.Get(ctx, nsName, ea); err == nil {
+				Expect(ea.Finalizers).NotTo(ContainElement(EASSurgeFinalizer))
+			}
+		})
+
+		It("easOwnsPDB rejects a same-name replacement PDB with a different UID", func() {
+			owned := &v1.EvictionAutoScaler{
+				ObjectMeta: metav1.ObjectMeta{
+					OwnerReferences: []metav1.OwnerReference{{Kind: ResourceTypePDB, UID: types.UID("uid-A")}},
+				},
+			}
+			livePDB := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{UID: types.UID("uid-B")}}
+			Expect(easOwnsPDB(owned, livePDB)).To(BeFalse())
+
+			livePDB.UID = types.UID("uid-A")
+			Expect(easOwnsPDB(owned, livePDB)).To(BeTrue())
+
+			// A legacy EAS with no PDB owner-ref falls back to name identity (owns).
+			legacy := &v1.EvictionAutoScaler{}
+			Expect(easOwnsPDB(legacy, livePDB)).To(BeTrue())
+		})
 	})
 })

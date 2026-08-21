@@ -31,6 +31,36 @@ const (
 	AnnotationPinnedFloor = "eviction-autoscaler.azure.com/pinned-floor"
 )
 
+// hasFloorAnnotationRaw reports raw presence of either floor annotation, without
+// parsing/validating the value. Used to decide whether teardown metadata is fully
+// cleared: a malformed AnnotationPinnedFloor (which pinnedFloorFromPDB rejects) still
+// counts as residue that must be removed before the finalizer is dropped.
+func hasFloorAnnotationRaw(pdb *policyv1.PodDisruptionBudget) bool {
+	if pdb == nil || pdb.Annotations == nil {
+		return false
+	}
+	if _, ok := pdb.Annotations[AnnotationOriginalPDBSpec]; ok {
+		return true
+	}
+	_, ok := pdb.Annotations[AnnotationPinnedFloor]
+	return ok
+}
+
+// carriesValidFloor reports whether the PDB carries a *valid* floor mutation from us — our
+// original-spec snapshot (isMutated) or a well-formed, positive pinned-floor annotation. It
+// differs from hasFloorAnnotationRaw, which reports the raw presence of either annotation
+// without validating the pinned-floor value: a malformed AnnotationPinnedFloor makes
+// hasFloorAnnotationRaw true but carriesValidFloor false. Teardown relies on exactly that
+// gap — carriesValidFloor gates whether there is a real pin to restore, hasFloorAnnotationRaw
+// gates whether any residue remains to clear before the finalizer is dropped.
+func carriesValidFloor(pdb *policyv1.PodDisruptionBudget) bool {
+	if isMutated(pdb) {
+		return true
+	}
+	_, ok := pinnedFloorFromPDB(pdb)
+	return ok
+}
+
 // isMutated reports whether the PDB carries our original-spec snapshot annotation.
 func isMutated(pdb *policyv1.PodDisruptionBudget) bool {
 	if pdb == nil || pdb.Annotations == nil {

@@ -95,5 +95,48 @@ var _ = Describe("HPASurgeApplier", func() {
 			Expect(reverted.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
 			Expect(reverted.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
 		})
+
+		It("should refuse to revert to a non-positive baseline and leave the surge in place", func() {
+			// Surged HPA carrying the surge marker but NO original-min annotation (lost baseline).
+			hpa.Spec.MinReplicas = ptr.To(int32(3))
+			hpa.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "3"}
+			Expect(applier.client.Update(ctx, hpa)).To(Succeed())
+			applier.hpa = hpa
+
+			// Passed baseline 0 and no annotation → revertTo resolves to 0 → guard must refuse
+			// (no scale-to-zero), leaving minReplicas and the surge marker untouched.
+			Expect(applier.RevertSurge(ctx, 0)).To(Succeed())
+
+			var after autoscalingv2.HorizontalPodAutoscaler
+			Expect(applier.client.Get(ctx, keyFor(hpa), &after)).To(Succeed())
+			Expect(*after.Spec.MinReplicas).To(Equal(int32(3)))
+			Expect(after.Annotations).To(HaveKey(EvictionSurgeReplicasAnnotationKey))
+		})
+
+		It("should honor a legitimate scale-to-zero baseline (recorded original-min-replicas=0)", func() {
+			// With the alpha HPAScaleToZero feature gate, minReplicas: 0 is legal; ApplySurge
+			// records it explicitly (original-min-replicas="0"). On revert the zero-guard must
+			// NOT misfire — it should restore minReplicas to 0 and clear the surge annotations,
+			// rather than leaving the HPA pinned above its true floor.
+			hpa.Spec.MinReplicas = ptr.To(int32(4))
+			hpa.Annotations = map[string]string{
+				EvictionSurgeReplicasAnnotationKey: "4",
+				OriginalMinReplicasAnnotationKey:   "0",
+			}
+			Expect(applier.client.Update(ctx, hpa)).To(Succeed())
+			applier.hpa = hpa
+
+			// Passed baseline 0, but the annotation explicitly records 0 → legitimate
+			// scale-to-zero, so the revert proceeds to 0 (not refused) and both surge
+			// annotations are removed.
+			Expect(applier.RevertSurge(ctx, 0)).To(Succeed())
+
+			var after autoscalingv2.HorizontalPodAutoscaler
+			Expect(applier.client.Get(ctx, keyFor(hpa), &after)).To(Succeed())
+			Expect(after.Spec.MinReplicas).ToNot(BeNil())
+			Expect(*after.Spec.MinReplicas).To(Equal(int32(0)))
+			Expect(after.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+			Expect(after.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+		})
 	})
 })

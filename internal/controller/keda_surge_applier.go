@@ -114,15 +114,30 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	//   2. It was set atomically with the surge in ApplySurge
 	//   3. EA.Status.MinReplicas could be stale if the controller restarted
 	// Falls back to the passed-in originalMinReplicas (from EA.Status) if
-	// the annotation is missing (e.g., manual annotation removal).
+	// the annotation is missing/unparseable (e.g., manual annotation removal).
 	revertTo := originalMinReplicas
-	annotations := k.scaledObject.GetAnnotations()
-	if annotations != nil {
-		if val, exists := annotations[OriginalMinReplicasAnnotationKey]; exists {
-			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil {
-				revertTo = int32(parsed)
-			}
-		}
+	recorded, hasRecorded := recordedBaselineFromAnnotations(k.scaledObject.GetAnnotations())
+	if hasRecorded {
+		revertTo = recorded
+	}
+
+	// Guard against a *lost* baseline, but honor a legitimate scale-to-zero. Unlike
+	// DeploymentSurgeApplier/HPASurgeApplier — where a 0 floor is never valid (an HPA's
+	// minReplicas must be >= 1) — minReplicaCount: 0 is a first-class KEDA configuration
+	// (scale-to-zero). ApplySurge records it explicitly (stamps original-min-replicas="0"),
+	// and recordedBaselineFromAnnotations returns (0, true) for it, so a recorded 0 is the
+	// workload's real floor and must be restored. Refuse only when the baseline is truly
+	// unknown: no valid recorded baseline AND a non-positive passed-in fallback — where
+	// setting minReplicaCount from a lost floor could leave the workload pinned above its
+	// true floor. In that case, leave the surge in place (over-provisioned but safe).
+	// Refuse only when the baseline is truly unknown: no valid recorded baseline AND a
+	// non-positive fallback. recordedBaselineFromAnnotations returns true only for a value
+	// >= 0, so a recorded 0 (a legitimate KEDA scale-to-zero) is honored — this reduces to
+	// "no recorded baseline and a non-positive fallback".
+	if !hasRecorded && revertTo <= 0 {
+		logger.Error(nil, "refusing to revert ScaledObject minReplicaCount to a non-positive baseline from a lost/unknown floor; leaving surge in place",
+			"scaledObject", k.scaledObject.GetName(), "namespace", k.scaledObject.GetNamespace(), "revertTo", revertTo)
+		return nil
 	}
 
 	// Revert ScaledObject minReplicaCount and remove both surge annotations in a single write.
@@ -170,4 +185,8 @@ func (k *KEDASurgeApplier) IsSurgeActive() bool {
 
 func (k *KEDASurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(k.scaledObject.GetAnnotations())
+}
+
+func (k *KEDASurgeApplier) RecordedBaseline() (int32, bool) {
+	return recordedBaselineFromAnnotations(k.scaledObject.GetAnnotations())
 }

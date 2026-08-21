@@ -35,8 +35,31 @@ type SurgeApplier interface {
 	// evictionSurgeReplicas annotation) and whether it is present. Used by the
 	// bail-on-replica-change guard to detect an external replica edit mid-surge.
 	RecordedSurge() (int32, bool)
+	// RecordedBaseline returns the pre-surge baseline recorded by ApplySurge (from the
+	// original-min-replicas annotation) and whether it is present. Used to recover the
+	// true baseline for an EvictionAutoScaler that lost its Status.MinReplicas (e.g. a
+	// freshly recreated CR that started at 0 while a surge was already active).
+	RecordedBaseline() (int32, bool)
 	// Name returns a human-readable name for logging
 	Name() string
+}
+
+// recordedBaselineFromAnnotations reads the original-min-replicas annotation set by
+// ApplySurge and returns the recorded pre-surge baseline. Returns (0,false) when the
+// annotation is absent or unparseable.
+func recordedBaselineFromAnnotations(annotations map[string]string) (int32, bool) {
+	if annotations == nil {
+		return 0, false
+	}
+	v, ok := annotations[OriginalMinReplicasAnnotationKey]
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return int32(n), true
 }
 
 // recordedSurgeFromAnnotations reads the evictionSurgeReplicas annotation set by
@@ -121,6 +144,49 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 	return &DeploymentSurgeApplier{client: c, target: target}, nil
 }
 
+// resolveSurgeOwner picks the applier that actually performed the surge, at TEARDOWN time, by
+// which object still carries our surge marker — independent of current topology. Unlike
+// detectSurgeApplier (which keys off live topology and is right at apply time, when nothing is
+// marked yet), the topology may have changed since the surge — an HPA/KEDA object added or
+// removed — so live detection can mis-select on teardown and strand the object we actually
+// surged. Matching the marker instead always reverts the right object. Precedence mirrors
+// ApplySurge's own object choice: KEDA and HPA mark their autoscaler object; a plain-Deployment
+// surge marks the Deployment. Returns (nil, nil) when nothing carries our marker — nobody owns
+// an active surge, so there is nothing to revert.
+func resolveSurgeOwner(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
+	if strings.EqualFold(targetKind, ResourceTypeDeployment) {
+		so, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, err
+		}
+		if so != nil && hasSurgeMarker(so.GetAnnotations()) {
+			return &KEDASurgeApplier{client: c, scaledObject: so, target: target}, nil
+		}
+		hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, err
+		}
+		if hpa != nil && hasSurgeMarker(hpa.GetAnnotations()) {
+			return &HPASurgeApplier{client: c, hpa: hpa, target: target}, nil
+		}
+	}
+	if hasTargetAnnotation(target) {
+		return &DeploymentSurgeApplier{client: c, target: target}, nil
+	}
+	// No object carries our marker: nobody owns an active surge, so there is nothing to
+	// revert. This is a valid, non-error outcome the caller handles explicitly.
+	return nil, nil //nolint:nilnil
+}
+
+// hasSurgeMarker reports whether the given annotations carry our active-surge marker.
+func hasSurgeMarker(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+	_, ok := annotations[EvictionSurgeReplicasAnnotationKey]
+	return ok
+}
+
 // hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation
 // with the expected value. Used by DeploymentSurgeApplier for idempotency checks.
 func hasTargetAnnotationWithValue(target Surger, value string) bool {
@@ -142,6 +208,23 @@ func hasTargetAnnotation(target Surger) bool {
 	return exists
 }
 
+// ownsActiveSurge reports whether the applier still owns an active surge we may safely revert.
+// A plain-Deployment surge IS the deployment's replica count, so a live count that no longer
+// matches what we recorded means a partner has taken over — reverting would fight them (and
+// could scale them down), so we require an exact match. For HPA/KEDA the surge is a floor on
+// the autoscaler object and RevertSurge is a safe, idempotent reset of that floor (the HPA
+// legitimately moves deployment replicas), so an active surge marker alone is sufficient.
+func ownsActiveSurge(target Surger, surgeApplier SurgeApplier) bool {
+	if !surgeApplier.IsSurgeActive() {
+		return false
+	}
+	if _, isDeployment := surgeApplier.(*DeploymentSurgeApplier); isDeployment {
+		recorded, ok := surgeApplier.RecordedSurge()
+		return ok && target.GetReplicas() == recorded
+	}
+	return true
+}
+
 // --- DeploymentSurgeApplier ---
 // Surges by modifying the deployment/statefulset spec.replicas directly.
 // This is the default strategy when no KEDA or HPA is present.
@@ -154,14 +237,46 @@ type DeploymentSurgeApplier struct {
 var _ SurgeApplier = &DeploymentSurgeApplier{}
 
 func (d *DeploymentSurgeApplier) ApplySurge(ctx context.Context, surgeReplicas int32) error {
+	// Persist the pre-surge baseline on the deployment (once) so it survives loss of the
+	// EvictionAutoScaler — otherwise the baseline lives only on the CR's Status.MinReplicas
+	// and an EAS deleted/recreated mid-surge would revert to a wrong (zero) value. Mirrors
+	// the original-min-replicas annotation the HPA/KEDA appliers already write.
+	if anns := d.target.Obj().GetAnnotations(); anns == nil || anns[OriginalMinReplicasAnnotationKey] == "" {
+		d.target.AddAnnotation(OriginalMinReplicasAnnotationKey, strconv.FormatInt(int64(d.target.GetReplicas()), 10))
+	}
 	d.target.SetReplicas(surgeReplicas)
 	d.target.AddAnnotation(EvictionSurgeReplicasAnnotationKey, strconv.FormatInt(int64(surgeReplicas), 10))
 	return d.client.Update(ctx, d.target.Obj())
 }
 
 func (d *DeploymentSurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas int32) error {
-	d.target.SetReplicas(originalMinReplicas)
+	// Prefer the durable baseline recorded on the deployment over the passed value, so a
+	// revert driven by an EAS with a lost/zero Status.MinReplicas still returns to the true
+	// pre-surge count. Only trust the annotation when it parses to a positive value — a
+	// tampered/corrupt non-positive annotation must not override a valid passed baseline and
+	// wedge the deployment surged via the guard below.
+	revertTo := originalMinReplicas
+	if anns := d.target.Obj().GetAnnotations(); anns != nil {
+		if v, ok := anns[OriginalMinReplicasAnnotationKey]; ok {
+			if parsed, err := strconv.ParseInt(v, 10, 32); err == nil && parsed > 0 {
+				revertTo = int32(parsed)
+			}
+		}
+	}
+	// Guard: refuse a non-positive baseline — leave it surged (over-provisioned but safe)
+	// rather than scaling to 0. Strict > 0 here, unlike HPA/KEDA which honor a *recorded* 0.
+	// The distinction is intent: minReplicaCount/minReplicas: 0 is a floor a partner can
+	// deliberately configure, so a recorded 0 there is real (a bare fallback 0 is still
+	// refused). A Deployment has no such setting — nothing lets a partner declare 0 as a
+	// baseline — so a 0 is only ever a lost/raced/tampered value, never intent; refuse it.
+	if revertTo <= 0 {
+		log.FromContext(ctx).Error(nil, "refusing to revert surge to a non-positive baseline; leaving deployment surged",
+			"target", d.target.Obj().GetName(), "namespace", d.target.Obj().GetNamespace(), "revertTo", revertTo)
+		return nil
+	}
+	d.target.SetReplicas(revertTo)
 	d.target.RemoveAnnotation(EvictionSurgeReplicasAnnotationKey)
+	d.target.RemoveAnnotation(OriginalMinReplicasAnnotationKey)
 	return d.client.Update(ctx, d.target.Obj())
 }
 
@@ -175,4 +290,8 @@ func (d *DeploymentSurgeApplier) IsSurgeActive() bool {
 
 func (d *DeploymentSurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(d.target.Obj().GetAnnotations())
+}
+
+func (d *DeploymentSurgeApplier) RecordedBaseline() (int32, bool) {
+	return recordedBaselineFromAnnotations(d.target.Obj().GetAnnotations())
 }

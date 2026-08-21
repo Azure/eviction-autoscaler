@@ -26,7 +26,14 @@ import (
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBOwnedByAnnotationKey = "ownedBy"
 const ControllerName = "EvictionAutoScaler"
-const ResourceTypeDeployment = "Deployment"
+
+// Owner-reference GVK parts used when wiring PDB <-> EvictionAutoScaler ownership.
+const (
+	ResourceTypeDeployment = "Deployment"
+	ResourceTypePDB        = "PodDisruptionBudget"
+	APIVersionAppsV1       = "apps/v1"
+	APIVersionPolicyV1     = "policy/v1"
+)
 
 type filter interface {
 	Filter(ctx context.Context, c namespacefilter.Reader, ns string) (bool, error)

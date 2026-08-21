@@ -246,6 +246,60 @@ var _ = Describe("KEDASurgeApplier", func() {
 			Expect(updated.Spec.MinReplicaCount).ToNot(BeNil())
 			Expect(*updated.Spec.MinReplicaCount).To(Equal(int32(2))) // passed-in fallback
 		})
+
+		It("should refuse to revert to a non-positive baseline and leave the surge in place", func() {
+			// Surged ScaledObject carrying the surge marker but NO original-min annotation.
+			noAnnSO := createScaledObject("guard-so", "default", "test-deploy", 3, 5)
+			noAnnSO.Annotations = map[string]string{EvictionSurgeReplicasAnnotationKey: "3"}
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy, noAnnSO).Build()
+
+			target := &DeploymentWrapper{obj: deploy}
+			guardApplier := &KEDASurgeApplier{client: fc, scaledObject: noAnnSO, target: target}
+
+			// Passed baseline 0 and no annotation → revertTo resolves to 0 → guard must refuse
+			// (no scale-to-zero), leaving minReplicaCount and the surge marker untouched.
+			Expect(guardApplier.RevertSurge(ctx, 0)).To(Succeed())
+
+			var after kedav1alpha1.ScaledObject
+			Expect(fc.Get(ctx, keyFor(noAnnSO), &after)).To(Succeed())
+			Expect(after.Spec.MinReplicaCount).ToNot(BeNil())
+			Expect(*after.Spec.MinReplicaCount).To(Equal(int32(3)))
+			Expect(after.Annotations).To(HaveKey(EvictionSurgeReplicasAnnotationKey))
+		})
+
+		It("should honor a legitimate KEDA scale-to-zero baseline (recorded original-min-replicas=0)", func() {
+			// A ScaledObject whose real floor is 0 (scale-to-zero, a first-class KEDA config):
+			// ApplySurge stamps original-min-replicas="0". On revert the zero-guard must NOT
+			// misfire — it should restore minReplicaCount to 0 and clear the surge annotations,
+			// rather than leaving the workload pinned above its true floor.
+			zeroSO := createScaledObject("zero-so", "default", "test-deploy", 4, 5)
+			zeroSO.Annotations = map[string]string{
+				EvictionSurgeReplicasAnnotationKey: "4",
+				OriginalMinReplicasAnnotationKey:   "0",
+			}
+			scheme := runtime.NewScheme()
+			Expect(appsv1.AddToScheme(scheme)).To(Succeed())
+			Expect(kedav1alpha1.AddToScheme(scheme)).To(Succeed())
+			fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(deploy, zeroSO).Build()
+
+			target := &DeploymentWrapper{obj: deploy}
+			zeroApplier := &KEDASurgeApplier{client: fc, scaledObject: zeroSO, target: target}
+
+			// Passed baseline 0, but the annotation explicitly records 0 → legitimate
+			// scale-to-zero, so the revert proceeds to 0 (not refused) and both surge
+			// annotations are removed.
+			Expect(zeroApplier.RevertSurge(ctx, 0)).To(Succeed())
+
+			var after kedav1alpha1.ScaledObject
+			Expect(fc.Get(ctx, keyFor(zeroSO), &after)).To(Succeed())
+			Expect(after.Spec.MinReplicaCount).ToNot(BeNil())
+			Expect(*after.Spec.MinReplicaCount).To(Equal(int32(0)))
+			Expect(after.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+			Expect(after.Annotations).ToNot(HaveKey(OriginalMinReplicasAnnotationKey))
+		})
 	})
 })
 

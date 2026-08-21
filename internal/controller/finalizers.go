@@ -1,0 +1,21 @@
+package controllers
+
+// Finalizers the controller places on an EvictionAutoScaler. Both live here so the full set
+// of teardown guarantees is discoverable in one place, even though each is actuated by a
+// different reconciler: the EvictionAutoScaler reconciler writes the Deployment/HPA/KEDA
+// surge and owns EASSurgeFinalizer; the PDB actuator writes the partner PDB and owns
+// PDBFloorFinalizer. Each controller owns the finalizer for the object it writes.
+const (
+	// EASSurgeFinalizer is added to the EvictionAutoScaler when it first surges a target and is
+	// retained thereafter — it is NOT dropped when a surge is reverted during normal operation.
+	// It is removed only at deletion time, once reconcileSurgeTeardown has reverted any surge the
+	// CR still owns, so a mid-drain CR delete is held until that teardown runs. Removing it
+	// releases the CR for garbage collection.
+	EASSurgeFinalizer = "eviction-autoscaler.azure.com/surge-revert"
+
+	// PDBFloorFinalizer is placed on the EvictionAutoScaler while its partner PDB carries a
+	// floor mutation, so a mid-drain CR delete is held until the PDB actuator restores the
+	// partner PDB (or determines restore is moot). Removing it releases the CR for garbage
+	// collection.
+	PDBFloorFinalizer = "eviction-autoscaler.azure.com/pdb-floor"
+)

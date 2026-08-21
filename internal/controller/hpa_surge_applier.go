@@ -103,12 +103,25 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	// This is the pre-surge value stored during ApplySurge, making the HPA
 	// self-describing for revert without depending on EA.Status.MinReplicas.
 	revertTo := originalMinReplicas
-	if h.hpa.Annotations != nil {
-		if val, exists := h.hpa.Annotations[OriginalMinReplicasAnnotationKey]; exists {
-			if parsed, err := strconv.ParseInt(val, 10, 32); err == nil {
-				revertTo = int32(parsed)
-			}
-		}
+	recorded, hasRecorded := recordedBaselineFromAnnotations(h.hpa.Annotations)
+	if hasRecorded {
+		revertTo = recorded
+	}
+
+	// Guard against a *lost* baseline, but honor an explicit scale-to-zero. By default an HPA's
+	// minReplicas must be >= 1, so a recorded 0 is unusual — but the alpha HPAScaleToZero feature
+	// gate makes minReplicas: 0 legal (with custom/external metrics), and ApplySurge records it
+	// explicitly (original-min-replicas="0"). Mirror the KEDA applier: refuse only when the
+	// baseline is truly unknown (no valid recorded baseline AND a non-positive passed-in
+	// fallback); a recorded 0 reverts to 0. Otherwise leave the surge in place (safe).
+	// Refuse only when the baseline is truly unknown: no valid recorded baseline AND a
+	// non-positive fallback. recordedBaselineFromAnnotations returns true only for a value
+	// >= 0, so a recorded 0 (a legitimate scale-to-zero) is honored — this reduces to
+	// "no recorded baseline and a non-positive fallback".
+	if !hasRecorded && revertTo <= 0 {
+		logger.Error(nil, "refusing to revert HPA minReplicas to a non-positive baseline from a lost/unknown floor; leaving surge in place",
+			"hpa", h.hpa.Name, "namespace", h.hpa.Namespace, "revertTo", revertTo)
+		return nil
 	}
 
 	// Revert HPA minReplicas and remove both surge annotations in a single write.
@@ -151,4 +164,8 @@ func (h *HPASurgeApplier) IsSurgeActive() bool {
 
 func (h *HPASurgeApplier) RecordedSurge() (int32, bool) {
 	return recordedSurgeFromAnnotations(h.hpa.Annotations)
+}
+
+func (h *HPASurgeApplier) RecordedBaseline() (int32, bool) {
+	return recordedBaselineFromAnnotations(h.hpa.Annotations)
 }

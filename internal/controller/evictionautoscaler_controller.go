@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -101,6 +103,15 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
+
+	// Teardown-first: a terminating EAS that still owns an active surge must revert it
+	// before any other early-return below (namespace-disabled, degrade, etc.), so a
+	// mid-drain CR delete — or a namespace opt-out/uninstall that deletes the CR and never
+	// recreates it — can never strand the target permanently surged. Held by
+	// EASSurgeFinalizer, which this reconciler owns (single-writer: we write the target).
+	if !EvictionAutoScaler.DeletionTimestamp.IsZero() {
+		return ctrl.Result{}, r.reconcileSurgeTeardown(ctx, EvictionAutoScaler)
+	}
 
 	// Flag-off clear: if the master switch is off but a pinned-floor policy is still
 	// recorded, clear it unconditionally. Placed before namespace/target/surge lookups
@@ -209,6 +220,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Don't reset MinReplicas if a surge is in progress (e.g., HPA/KEDA-driven scaling
 		// changes the deployment generation as part of the surge, not a user change).
 		if surgeApplier.IsSurgeActive() {
+			r.recoverBaselineForActiveSurge(ctx, EvictionAutoScaler, surgeApplier)
 			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
 		} else {
 			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
@@ -298,6 +310,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 
 		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
+		// Note: the surge-revert finalizer is intentionally NOT released here. It only gates
+		// deletion-time teardown (reconcileSurgeTeardown), so leaving it on an idle, already-
+		// reverted EAS is harmless — on delete, teardown finds no owned surge and simply
+		// removes it. Keeping finalizer changes out of this hot path keeps status and metadata
+		// writes independent (no clobber, fully retry-convergent).
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
@@ -315,6 +332,26 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 // applies the surge. Extracted from Reconcile to keep its cyclomatic complexity in check.
 func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, EvictionAutoScaler *myappsv1.EvictionAutoScaler, target Surger, pdb *policyv1.PodDisruptionBudget, surgeApplier SurgeApplier, maxSurgeTarget int32) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
+
+	// Ensure the surge-revert finalizer is durably present BEFORE we surge, so a delete of
+	// this CR at any point after the surge can always revert it. r.Update persists the
+	// finalizer synchronously here, before ApplySurge writes the surge later in this same
+	// pass — so the ordering guarantee holds without a separate reconcile. On update failure
+	// we return the error (nothing surged yet) and retry.
+	if controllerutil.AddFinalizer(EvictionAutoScaler, EASSurgeFinalizer) {
+		if err := r.Update(ctx, EvictionAutoScaler); err != nil {
+			// A forbidden write (e.g. Deployment Safeguards on an AKS-owned namespace) is
+			// terminal, not transient: record it and stop rather than hot-looping. Nothing
+			// has surged yet, so there is nothing to revert. Mirrors the ApplySurge path.
+			if apierrors.IsForbidden(err) {
+				logger.Error(err, "forbidden to add surge-revert finalizer; recording Degraded and not retrying")
+				meta.RemoveStatusCondition(&EvictionAutoScaler.Status.Conditions, "Ready")
+				degraded(EvictionAutoScaler, "SurgeForbidden", err.Error())
+				return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
+			}
+			return ctrl.Result{}, err
+		}
+	}
 
 	displaced, countErr := countPodsOnCordoned(ctx, r.Client, pdb)
 	if countErr != nil {
@@ -379,8 +416,79 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 }
 
+// recoverBaselineForActiveSurge recovers the pre-surge baseline for an EvictionAutoScaler
+// that observed an active surge but has Status.MinReplicas==0. A freshly (re)created EAS
+// starts at 0; if a surge is already active on the target (an orphaned surge that outlived a
+// prior EAS), preserving 0 would make a later RevertSurge scale the workload to zero. The
+// applier stamped the true baseline as a durable annotation on the object it owns.
+func (r *EvictionAutoScalerReconciler) recoverBaselineForActiveSurge(ctx context.Context, eas *myappsv1.EvictionAutoScaler, surgeApplier SurgeApplier) {
+	if eas.Status.MinReplicas != 0 {
+		return
+	}
+	if baseline, ok := surgeApplier.RecordedBaseline(); ok {
+		log.FromContext(ctx).Info("Recovered pre-surge baseline from durable annotation for surging target",
+			"kind", eas.Spec.TargetKind, "targetname", eas.Spec.TargetName, "baseline", baseline)
+		eas.Status.MinReplicas = baseline
+	}
+}
+
+// reconcileSurgeTeardown reverts a surge still owned by a terminating EvictionAutoScaler,
+// then releases the surge finalizer for garbage collection. It runs before every other
+// reconcile early-return so a mid-drain CR delete — or a namespace opt-out/uninstall that
+// deletes the CR without recreating it — can never strand the target permanently surged.
+// Single-writer: only this reconciler reverts the surge (the PDB actuator restores the
+// partner PDB under its own PDBFloorFinalizer). Revert is conditional (ownsActiveSurge) so a
+// partner that has since taken over the target's replica count is never fought.
+func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Context, eas *myappsv1.EvictionAutoScaler) error {
+	logger := log.FromContext(ctx)
+	// Proceed with best-effort revert even when the surge finalizer is absent: an active surge
+	// with no finalizer (a legacy object, an externally-removed finalizer, or a historical
+	// crash window between surge and finalizer) is exactly what teardown must still revert. The
+	// finalizer release below is idempotent, so it no-ops when there is nothing to remove.
+
+	// Resolve the target + applier to check ownership and revert. A missing target, an
+	// unsupported target kind, or an unsupported autoscaler config means there is nothing we
+	// surged to revert — fall through and release the finalizer.
+	if eas.Spec.TargetName != "" && !strings.EqualFold(eas.Spec.TargetKind, statefulSetKind) {
+		if target, err := GetSurger(eas.Spec.TargetKind); err == nil {
+			getErr := r.Get(ctx, types.NamespacedName{Name: eas.Spec.TargetName, Namespace: eas.Namespace}, target.Obj())
+			switch {
+			case getErr == nil:
+				// Resolve the applier that actually surged by which object still carries our
+				// marker (ScaledObject -> HPA -> Deployment), independent of current topology:
+				// apply-time detection keys off live topology, which may have changed since the
+				// surge, so it can mis-select and strand the surged object on teardown.
+				surgeApplier, resErr := resolveSurgeOwner(ctx, r.Client, eas.Namespace, eas.Spec.TargetName, eas.Spec.TargetKind, target)
+				switch {
+				case resErr != nil:
+					return resErr // transient — keep finalizer, retry
+				case surgeApplier == nil:
+					// Nothing carries our surge marker — nothing to revert.
+				case ownsActiveSurge(target, surgeApplier):
+					if err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
+						return err // keep finalizer, retry
+					}
+					logger.Info("Reverted surge on EvictionAutoScaler deletion, releasing surge finalizer",
+						"kind", eas.Spec.TargetKind, "targetname", eas.Spec.TargetName, "namespace", eas.Namespace)
+				}
+			case apierrors.IsNotFound(getErr):
+				// Target already gone — nothing to revert.
+			default:
+				return getErr // transient — keep finalizer, retry
+			}
+		}
+	}
+
+	if controllerutil.RemoveFinalizer(eas, EASSurgeFinalizer) {
+		return r.Update(ctx, eas)
+	}
+	return nil
+}
+
 // externalReplicaChange reports whether the target's replica count changed outside our
-// surge: a generation mismatch, or live desired replicas != the recorded surge count.
+// surge: a generation mismatch, or live desired replicas != the recorded surge count. Unlike
+// ownsActiveSurge (a pure Surger/SurgeApplier predicate that lives in surge_strategy.go), this
+// is coupled to the CR — it reads eas.Status.TargetGeneration — so it stays with the reconciler.
 func externalReplicaChange(eas *myappsv1.EvictionAutoScaler, target Surger, surgeApplier SurgeApplier) bool {
 	if eas.Status.TargetGeneration != 0 && eas.Status.TargetGeneration != target.Obj().GetGeneration() {
 		return true
@@ -446,7 +554,18 @@ func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		WithEventFilter(predicate.Funcs{
 			// ignore status updates as we make those.
 			UpdateFunc: func(ue event.UpdateEvent) bool {
-				return ue.ObjectOld.GetGeneration() != ue.ObjectNew.GetGeneration()
+				// React to spec (generation) changes as before.
+				if ue.ObjectOld.GetGeneration() != ue.ObjectNew.GetGeneration() {
+					return true
+				}
+				// Also react to a delete transition (DeletionTimestamp set) and finalizer
+				// changes — neither bumps generation, but the surge-teardown finalizer
+				// handler must run on them, otherwise a mid-drain CR delete would be filtered
+				// out and never revert the surge.
+				if ue.ObjectOld.GetDeletionTimestamp().IsZero() != ue.ObjectNew.GetDeletionTimestamp().IsZero() {
+					return true
+				}
+				return !slices.Equal(ue.ObjectOld.GetFinalizers(), ue.ObjectNew.GetFinalizers())
 			},
 		}).
 		Complete(r)

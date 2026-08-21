@@ -173,7 +173,9 @@ func resolveSurgeOwner(ctx context.Context, c client.Client, namespace, targetNa
 	if hasTargetAnnotation(target) {
 		return &DeploymentSurgeApplier{client: c, target: target}, nil
 	}
-	return nil, nil
+	// No object carries our marker: nobody owns an active surge, so there is nothing to
+	// revert. This is a valid, non-error outcome the caller handles explicitly.
+	return nil, nil //nolint:nilnil
 }
 
 // hasSurgeMarker reports whether the given annotations carry our active-surge marker.

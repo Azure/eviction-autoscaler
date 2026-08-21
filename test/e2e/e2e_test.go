@@ -1027,7 +1027,7 @@ var _ = Describe("controller", Ordered, func() {
 				return verifyPdbRestoredPercent(ctx, clientset, testNs, depName, pdbPercent)
 			}, time.Minute, time.Second).Should(Succeed())
 
-			By("verifying the original EvictionAutoScaler was garbage-collected (both finalizers released, not wedged Terminating)")
+			By("verifying the original EvictionAutoScaler was garbage-collected (finalizers released, not wedged Terminating)")
 			EventuallyWithOffset(1, func() error {
 				var cur types.EvictionAutoScaler
 				getErr := clientset.Get(ctx, client.ObjectKey{Namespace: testNs, Name: depName}, &cur)

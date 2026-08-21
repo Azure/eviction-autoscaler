@@ -135,3 +135,49 @@ func TestReconcileSurgeTeardownDeploymentMarkerWins(t *testing.T) {
 	g.Expect(r.Get(ctx, key, &gotEA)).To(Succeed())
 	g.Expect(gotEA.Finalizers).ToNot(ContainElement(EASSurgeFinalizer))
 }
+
+// TestReconcileSurgeTeardownHPAMarkedDespiteLateKEDA: an HPA-surged deployment (marker on the
+// HPA) that later gains a KEDA ScaledObject. Apply-time detection would trip the
+// unsupported-config path (KEDA + standalone HPA) and drop the finalizer while the HPA stays
+// pinned; marker-based resolveSurgeOwner must still pick and revert the marked HPA.
+func TestReconcileSurgeTeardownHPAMarkedDespiteLateKEDA(t *testing.T) {
+	g := NewWithT(t)
+	ctx := context.Background()
+	key := client.ObjectKey{Name: stdTeardownName, Namespace: stdTeardownNS}
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: stdTeardownName, Namespace: stdTeardownNS},
+		Spec:       appsv1.DeploymentSpec{Replicas: ptr.To(int32(3))},
+	}
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: stdTeardownName, Namespace: stdTeardownNS,
+			Annotations: map[string]string{
+				EvictionSurgeReplicasAnnotationKey: "3",
+				OriginalMinReplicasAnnotationKey:   "1",
+			},
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas:    ptr.To(int32(3)),
+			MaxReplicas:    5,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{Kind: "Deployment", Name: stdTeardownName, APIVersion: "apps/v1"},
+		},
+	}
+	// A KEDA ScaledObject targeting the same deployment, added after the surge (no marker).
+	so := createScaledObject("td-so", stdTeardownNS, stdTeardownName, 0, 10)
+	ea := teardownEA()
+	r := surgeTeardownReconciler(g, dep, hpa, so, ea)
+
+	g.Expect(r.reconcileSurgeTeardown(ctx, ea)).To(Succeed())
+
+	// The marker-owning HPA is reverted despite the late ScaledObject.
+	var gotHPA autoscalingv2.HorizontalPodAutoscaler
+	g.Expect(r.Get(ctx, key, &gotHPA)).To(Succeed())
+	g.Expect(gotHPA.Spec.MinReplicas).ToNot(BeNil())
+	g.Expect(*gotHPA.Spec.MinReplicas).To(Equal(int32(1)))
+	g.Expect(gotHPA.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+	// Surge finalizer released.
+	var gotEA2 v1.EvictionAutoScaler
+	g.Expect(r.Get(ctx, key, &gotEA2)).To(Succeed())
+	g.Expect(gotEA2.Finalizers).ToNot(ContainElement(EASSurgeFinalizer))
+}

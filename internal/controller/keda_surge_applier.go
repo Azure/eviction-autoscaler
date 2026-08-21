@@ -130,8 +130,11 @@ func (k *KEDASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas 
 	// unknown: no valid recorded baseline AND a non-positive passed-in fallback — where
 	// setting minReplicaCount from a lost floor could leave the workload pinned above its
 	// true floor. In that case, leave the surge in place (over-provisioned but safe).
-	legitZero := hasRecorded && revertTo == 0
-	if revertTo <= 0 && !legitZero {
+	// Refuse only when the baseline is truly unknown: no valid recorded baseline AND a
+	// non-positive fallback. recordedBaselineFromAnnotations returns true only for a value
+	// >= 0, so a recorded 0 (a legitimate KEDA scale-to-zero) is honored — this reduces to
+	// "no recorded baseline and a non-positive fallback".
+	if !hasRecorded && revertTo <= 0 {
 		logger.Error(nil, "refusing to revert ScaledObject minReplicaCount to a non-positive baseline from a lost/unknown floor; leaving surge in place",
 			"scaledObject", k.scaledObject.GetName(), "namespace", k.scaledObject.GetNamespace(), "revertTo", revertTo)
 		return nil

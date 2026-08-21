@@ -174,11 +174,13 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 		logger.Info("Created EvictionAutoScaler")
 	}
 
-	// UID guard: a PDB deleted and recreated with the same name gets a new UID. Never
-	// actuate that replacement with the stale EAS — retire the stale EAS (releasing its
-	// finalizer) and let a fresh one be created for the replacement.
+	// UID guard: a PDB deleted and recreated with the same name gets a new UID. Never actuate
+	// that replacement with the stale EAS. We just skip here rather than proactively deleting:
+	// the stale EAS is a BlockOwnerDeletion dependent of the now-deleted old PDB, so owner-GC
+	// deletes it; reconcileEASDeletion (re-enqueued via the same-name PDB watch) then frees the
+	// floor finalizer, and the EAS-delete event re-triggers the create path for the replacement.
 	if !easOwnsPDB(&EvictionAutoScaler, &pdb) {
-		return reconcile.Result{}, r.retireStaleEAS(ctx, &EvictionAutoScaler, &pdb)
+		return reconcile.Result{}, nil
 	}
 
 	// Converge the PDB floor toward the EAS policy (pin / edit-honor / restore).
@@ -331,18 +333,6 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileFloorFinalizer(ctx context.
 		return nil
 	}
 	return r.removeFloorFinalizer(ctx, eas)
-}
-
-// retireStaleEAS deletes an EAS whose recorded partner PDB UID no longer matches the live
-// PDB (recreated with the same name), releasing the finalizer without ever mutating the
-// replacement. A fresh EAS is created for the replacement on a later reconcile.
-func (r *PDBToEvictionAutoScalerReconciler) retireStaleEAS(ctx context.Context, eas *types.EvictionAutoScaler, pdb *policyv1.PodDisruptionBudget) error {
-	log.FromContext(ctx).Info("EAS partner UID mismatch (PDB recreated); retiring stale EAS without mutating replacement",
-		"pdb", pdb.Name, "namespace", pdb.Namespace)
-	if err := r.removeFloorFinalizer(ctx, eas); err != nil {
-		return err
-	}
-	return client.IgnoreNotFound(r.Delete(ctx, eas))
 }
 
 // reconcileEASDeletion tears down a terminating EAS that holds the floor finalizer:

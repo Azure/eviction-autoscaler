@@ -114,8 +114,11 @@ func (h *HPASurgeApplier) RevertSurge(ctx context.Context, originalMinReplicas i
 	// explicitly (original-min-replicas="0"). Mirror the KEDA applier: refuse only when the
 	// baseline is truly unknown (no valid recorded baseline AND a non-positive passed-in
 	// fallback); a recorded 0 reverts to 0. Otherwise leave the surge in place (safe).
-	legitZero := hasRecorded && revertTo == 0
-	if revertTo <= 0 && !legitZero {
+	// Refuse only when the baseline is truly unknown: no valid recorded baseline AND a
+	// non-positive fallback. recordedBaselineFromAnnotations returns true only for a value
+	// >= 0, so a recorded 0 (a legitimate scale-to-zero) is honored — this reduces to
+	// "no recorded baseline and a non-positive fallback".
+	if !hasRecorded && revertTo <= 0 {
 		logger.Error(nil, "refusing to revert HPA minReplicas to a non-positive baseline from a lost/unknown floor; leaving surge in place",
 			"hpa", h.hpa.Name, "namespace", h.hpa.Namespace, "revertTo", revertTo)
 		return nil

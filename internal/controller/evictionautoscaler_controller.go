@@ -454,23 +454,16 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 			getErr := r.Get(ctx, types.NamespacedName{Name: eas.Spec.TargetName, Namespace: eas.Namespace}, target.Obj())
 			switch {
 			case getErr == nil:
-				// A deployment carrying our surge marker is the unambiguous fingerprint of a
-				// plain-deployment surge (HPA/KEDA appliers mark their own object, not the
-				// deployment). Revert it directly, so a topology change after the surge — e.g.
-				// an HPA added before the delete, which detectSurgeApplier would now
-				// mis-select — can't drop the finalizer while the deployment stays surged.
-				var surgeApplier SurgeApplier
-				var detErr error
-				if hasTargetAnnotation(target) {
-					surgeApplier = &DeploymentSurgeApplier{client: r.Client, target: target}
-				} else {
-					surgeApplier, detErr = detectSurgeApplier(ctx, r.Client, eas.Namespace, eas.Spec.TargetName, eas.Spec.TargetKind, target)
-				}
+				// Resolve the applier that actually surged by which object still carries our
+				// marker (ScaledObject -> HPA -> Deployment), independent of current topology:
+				// apply-time detection keys off live topology, which may have changed since the
+				// surge, so it can mis-select and strand the surged object on teardown.
+				surgeApplier, resErr := resolveSurgeOwner(ctx, r.Client, eas.Namespace, eas.Spec.TargetName, eas.Spec.TargetKind, target)
 				switch {
-				case errors.Is(detErr, errUnsupportedAutoscalerConfig):
-					// Unsupported config never reached ApplySurge — nothing to revert.
-				case detErr != nil:
-					return detErr // transient — keep finalizer, retry
+				case resErr != nil:
+					return resErr // transient — keep finalizer, retry
+				case surgeApplier == nil:
+					// Nothing carries our surge marker — nothing to revert.
 				case ownsActiveSurge(target, surgeApplier):
 					if err := surgeApplier.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
 						return err // keep finalizer, retry

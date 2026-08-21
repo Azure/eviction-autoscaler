@@ -144,6 +144,47 @@ func detectSurgeApplier(ctx context.Context, c client.Client, namespace, targetN
 	return &DeploymentSurgeApplier{client: c, target: target}, nil
 }
 
+// resolveSurgeOwner picks the applier that actually performed the surge, at TEARDOWN time, by
+// which object still carries our surge marker — independent of current topology. Unlike
+// detectSurgeApplier (which keys off live topology and is right at apply time, when nothing is
+// marked yet), the topology may have changed since the surge — an HPA/KEDA object added or
+// removed — so live detection can mis-select on teardown and strand the object we actually
+// surged. Matching the marker instead always reverts the right object. Precedence mirrors
+// ApplySurge's own object choice: KEDA and HPA mark their autoscaler object; a plain-Deployment
+// surge marks the Deployment. Returns (nil, nil) when nothing carries our marker — nobody owns
+// an active surge, so there is nothing to revert.
+func resolveSurgeOwner(ctx context.Context, c client.Client, namespace, targetName, targetKind string, target Surger) (SurgeApplier, error) {
+	if strings.EqualFold(targetKind, ResourceTypeDeployment) {
+		so, err := findScaledObjectForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, err
+		}
+		if so != nil && hasSurgeMarker(so.GetAnnotations()) {
+			return &KEDASurgeApplier{client: c, scaledObject: so, target: target}, nil
+		}
+		hpa, err := findHPAForTarget(ctx, c, namespace, targetName, targetKind)
+		if err != nil && !errors.Is(err, errNotFound) {
+			return nil, err
+		}
+		if hpa != nil && hasSurgeMarker(hpa.GetAnnotations()) {
+			return &HPASurgeApplier{client: c, hpa: hpa, target: target}, nil
+		}
+	}
+	if hasTargetAnnotation(target) {
+		return &DeploymentSurgeApplier{client: c, target: target}, nil
+	}
+	return nil, nil
+}
+
+// hasSurgeMarker reports whether the given annotations carry our active-surge marker.
+func hasSurgeMarker(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+	_, ok := annotations[EvictionSurgeReplicasAnnotationKey]
+	return ok
+}
+
 // hasTargetAnnotationWithValue checks if the target has the evictionSurgeReplicas annotation
 // with the expected value. Used by DeploymentSurgeApplier for idempotency checks.
 func hasTargetAnnotationWithValue(target Surger, value string) bool {

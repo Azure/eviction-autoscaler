@@ -12,6 +12,6 @@
 #
 # Removing this suppression requires bumping keda to >= 2.20.0, which cascades to
 # k8s.io 0.36, sigs.k8s.io/controller-runtime (~0.25, for client-go's HasSyncedChecker
-# interface change), and the Go 1.26 toolchain — a multi-dependency upgrade tracked
-# as a separate PR. Revisit and delete this entry when that upgrade lands.
+# interface change), and the Go 1.26 toolchain — a multi-dependency upgrade tracked separately.
+# Revisit and delete this entry when that upgrade lands.
 CVE-2026-53572

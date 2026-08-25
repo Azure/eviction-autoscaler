@@ -19,6 +19,11 @@ spec:
     metadata:
       annotations:
         kubectl.kubernetes.io/default-container: manager
+        # Standard Prometheus pod-scrape annotations (inert without a scraper). Docs:
+        # https://learn.microsoft.com/azure/azure-monitor/containers/prometheus-metrics-scrape-configuration#enable-pod-annotation-based-scraping
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
       labels:
         app.kubernetes.io/name: eviction-autoscaler
         app.kubernetes.io/component: controller

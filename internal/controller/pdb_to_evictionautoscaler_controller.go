@@ -346,6 +346,13 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Con
 	// crash window between pin and finalizer) is exactly the residue teardown must still clean
 	// up. removeFloorFinalizer is idempotent, so the release below simply no-ops when there is
 	// nothing to remove.
+	//
+	// TODO: remove this finalizer-optional path once the finalizer-before-mutation ordering
+	// has been live long enough that no un-finalized pins remain (this branch then guards a
+	// state that can no longer occur). Make it data-driven: instrument the finalizer-absent
+	// case and drop it once flat-zero across the fleet for a sustained window — keeping at most
+	// a minimal guard for externally-stripped finalizers, which are not time-bounded. Mirrors
+	// the surge-revert branch in reconcileSurgeTeardown.
 
 	// Restore is moot: no live, same-identity partner PDB to restore.
 	if !pdbFound || !pdb.DeletionTimestamp.IsZero() || !easOwnsPDB(eas, pdb) {

@@ -86,6 +86,34 @@ var _ = Describe("countPodsOnCordoned", func() {
 		Expect(count).To(Equal(int32(2)))
 	})
 
+	It("counts pods on a node draining via the karpenter disruption taint (no cordon)", func() {
+		pdb := makePDB(map[string]string{"app": "myapp"})
+		node := makeNode("node1", false)
+		node.Spec.Taints = []corev1.Taint{
+			{Key: "karpenter.sh/disrupted", Effect: corev1.TaintEffectNoSchedule},
+		}
+		pod := makePod("pod1", "node1", map[string]string{"app": "myapp"})
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(node, pod).Build()
+
+		count, err := countPodsOnCordoned(ctx, fc, pdb)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(Equal(int32(1)))
+	})
+
+	It("does not count pods on a node with only a dedicated-node taint", func() {
+		pdb := makePDB(map[string]string{"app": "myapp"})
+		node := makeNode("node1", false)
+		node.Spec.Taints = []corev1.Taint{
+			{Key: "env", Value: "system", Effect: corev1.TaintEffectNoSchedule},
+		}
+		pod := makePod("pod1", "node1", map[string]string{"app": "myapp"})
+		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(node, pod).Build()
+
+		count, err := countPodsOnCordoned(ctx, fc, pdb)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(count).To(Equal(int32(0)))
+	})
+
 	It("aggregates pods across multiple cordoned nodes", func() {
 		pdb := makePDB(map[string]string{"app": "myapp"})
 		node1 := makeNode("node1", true)

@@ -234,7 +234,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			EvictionAutoScaler.Status.MinReplicas = minReplicas
 		}
 		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
-		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+		// Requeue explicitly: status updates don't bump metadata.generation, so the
+		// generation-only event filter won't re-trigger us. Returning without a
+		// requeue here strands an active surge at the scaled-out state until the
+		// next spec change (i.e. the next eviction), which may be days away.
+		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
 	// Log current state before checks

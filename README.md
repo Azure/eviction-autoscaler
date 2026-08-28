@@ -10,6 +10,7 @@
 - [Introduction](#introduction)
 - [Features](#features)
 - [Installation](#installation)
+- [Managed Prometheus Metrics](#managed-prometheus-metrics)
 - [Networking](#networking)
 - [Usage](#usage)
   - [Surge Annotations](#surge-annotations)
@@ -154,6 +155,7 @@ az k8s-extension create \
 - `controllerConfig.pdb.create=true` - Automatically creates PDBs for deployments (default: true)
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
+- `controllerConfig.metrics.podScrapeAnnotations=true` - Advertises the metrics endpoint to annotation-based Prometheus scrapers (default: false)
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
 - `affinity` - Full Kubernetes affinity spec for the controller pod, including `nodeAffinity` (default: `{}`)
 - `tolerations` - Allows the controller pod to schedule onto tainted nodes (default: `[]`)
@@ -534,6 +536,26 @@ kubectl annotate pdb my-app -n default ownedBy=EvictionAutoScaler
 # The controller will re-establish the owner reference on the next reconciliation
 # The PDB will now be deleted when the deployment is deleted
 ```
+
+## Managed Prometheus Metrics
+
+Set `controllerConfig.metrics.podScrapeAnnotations=true` to add the standard
+Prometheus annotations to the controller pod:
+
+```yaml
+prometheus.io/scrape: "true"
+prometheus.io/port: "8080"
+prometheus.io/path: "/metrics"
+```
+
+The annotation-based `kubernetes-pods` scrape job used by managed Prometheus
+discovers this endpoint automatically. Eviction-autoscaler does not need to
+create a `ServiceMonitor` or `PodMonitor`.
+
+Enable the annotations for an Azure Kubernetes extension installation with
+`--configuration-settings controllerConfig.metrics.podScrapeAnnotations=true`,
+or for a direct Helm installation with
+`--set controllerConfig.metrics.podScrapeAnnotations=true`.
 
 ## Networking
 

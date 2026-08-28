@@ -48,6 +48,8 @@ controllerConfig:
   # Metrics configuration
   metrics:
     enabled: true
+    # Advertise the controller metrics endpoint to annotation-based Prometheus scrapers.
+    podScrapeAnnotations: false
   
   # Namespace watching configuration
   namespaces:

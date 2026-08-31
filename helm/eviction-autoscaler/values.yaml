@@ -4,8 +4,8 @@
 
 # Container image configuration
 image:
-  repository: paulgmiller/k8s-pdb-autoscaler
-  tag: latest
+  repository: mcr.microsoft.com/aks/eviction-autoscaler
+  tag: 0.1.16
   pullPolicy: IfNotPresent
 
 # Resource limits and requests

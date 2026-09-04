@@ -75,6 +75,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 	}
 
 	if !pdbFound {
+		// PDB deleted: this controller holds no finalizer on the PDB, so a still-mutated/pinned
+		// PDB can vanish at any time (e.g. a controller-owned PDB cascade-deleted with its
+		// Deployment, or a manual delete mid-drain). Clear its floor gauges so they don't leak a
+		// stuck ==1 series alerting forever against an object that no longer exists.
+		metrics.ClearPDBFloorPinned(req.Namespace, req.Name)
+		metrics.ClearPDBMutated(req.Namespace, req.Name)
 		return reconcile.Result{}, nil
 	}
 
@@ -234,6 +240,20 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 //     go stale against it; we therefore no-op while holding rather than recomputing every pass.
 func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
 	active := eas != nil && eas.Status.PDBFloorPinned
+
+	// Observability: reflect the PDB's actual mutation state as fetched (before this pass pins or
+	// restores it) plus the pin intent from the CR. Reading the live state at entry is what lets a
+	// stuck / unrestored mutation surface as pdb_mutated==1 without a matching pdb_floor_pinned==1.
+	mutated := 0.0
+	if isMutated(pdb) {
+		mutated = 1
+	}
+	metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(mutated)
+	if active {
+		metrics.PDBFloorPinned.WithLabelValues(pdb.Namespace, pdb.Name, eas.Spec.TargetName).Set(1)
+	} else {
+		metrics.ClearPDBFloorPinned(pdb.Namespace, pdb.Name)
+	}
 	if active {
 		// Holding our own pin? Recognize it by the floor WE recorded (identity), not by a
 		// recomputed value. If the live spec still carries that floor, the user's policy is
@@ -267,7 +287,14 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 			return err
 		}
 		pinPDBFloor(pdb, floor)
-		return r.updatePDBConflictAware(ctx, pdb)
+		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
+			return err
+		}
+		// The pin has been persisted, so the PDB now carries our mutation. Reflect it immediately
+		// (mirroring the restore path's Set(0)) rather than leaving it at the pre-pin entry read of
+		// 0 until the next reconcile.
+		metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(1)
+		return nil
 	}
 
 	// Pin cleared (drain handled, feature disabled, or EAS/namespace gone): restore the user's
@@ -279,14 +306,25 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 			return err
 		}
 		if changed {
-			return r.updatePDBConflictAware(ctx, pdb)
+			if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
+				return err
+			}
 		}
+		// Restore persisted (or nothing to restore): the PDB is now clean. Reflect that here
+		// rather than relying on a follow-up actuatePDBFloor call — terminal paths
+		// (namespace-disabled, orphan) may never call it again, which would otherwise leave a
+		// stale pdb_mutated==1 false alert. A failed restore returns above, correctly leaving
+		// the entry-read pdb_mutated==1 for the genuine stuck case.
+		metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(0)
 	} else if isMutated(pdb) {
 		// The user overwrote our pin with their own spec before we released — that spec is
 		// already their intent, so honor it: just drop our annotations and leave it in place.
 		delete(pdb.Annotations, AnnotationOriginalPDBSpec)
 		delete(pdb.Annotations, AnnotationPinnedFloor)
-		return r.updatePDBConflictAware(ctx, pdb)
+		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
+			return err
+		}
+		metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(0)
 	}
 	return nil
 }

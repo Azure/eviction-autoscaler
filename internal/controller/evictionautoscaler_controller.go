@@ -98,11 +98,18 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		//should we use a finalizer to scale back down on deletion?
 		if apierrors.IsNotFound(err) {
+			// Clear any Degraded series for a now-deleted object so an alert can't linger forever.
+			metrics.ClearDegraded(req.Namespace, req.Name)
 			return ctrl.Result{}, nil // EvictionAutoScaler not found, could be deleted, nothing to do
 		}
 		return ctrl.Result{}, err // Error fetching EvictionAutoScaler
 	}
 	EvictionAutoScaler = EvictionAutoScaler.DeepCopy() //don't mutate the cache
+
+	// Note: the Degraded gauge is NOT cleared here. Clearing it up front would wipe the series on
+	// a transient early-return (e.g. a later API error) while the object is still persisted-
+	// Degraded. Instead degraded() sets it and ready() clears it exactly on the recovery
+	// transition, and the NotFound path above clears it on delete.
 
 	// Teardown-first: a terminating EAS that still owns an active surge must revert it
 	// before any other early-return below (namespace-disabled, degrade, etc.), so a
@@ -178,6 +185,10 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		if apierrors.IsNotFound(err) {
 			logger.Error(err, "pdb watcher target does not exist", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName)
+			// The target is gone, so the surge marker went with it: clear the surge gauges here,
+			// since this path returns before reconcileSurgeActiveMetric (which needs a live
+			// target) can run.
+			clearSurgeGauges(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName)
 			degraded(EvictionAutoScaler, "MissingTarget", "Misssing  Target "+EvictionAutoScaler.Spec.TargetName)
 			return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 		}
@@ -189,6 +200,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// 25% (the Kubernetes default) and is NOT counted as zero. Set per reconcile
 	// so the series sum reflects the current count of maxSurge:0 workloads in the cluster.
 	recordZeroMaxSurge(target, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName)
+
+	// Reconcile surge_active from the durable surge marker, BEFORE detectSurgeApplier can return
+	// early (e.g. unsupported-config degrade). Keying off marker ownership makes the gauge the
+	// single source of truth for "is this workload surged right now" regardless of the reconcile
+	// path taken this pass. See reconcileSurgeActiveMetric for the full rationale.
+	r.reconcileSurgeActiveMetric(ctx, EvictionAutoScaler, target)
 
 	// TODO: Move PDB configuration tracking to PDB controller with aggregate labels
 	// Consider tracking: maxUnavailable==0 and minAvailable==replicas as PDBGauge labels
@@ -233,7 +250,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			}
 			EvictionAutoScaler.Status.MinReplicas = minReplicas
 		}
-		ready(&EvictionAutoScaler.Status.Conditions, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
+		ready(EvictionAutoScaler, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 	}
 
@@ -244,7 +261,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if EvictionAutoScaler.Spec.LastEviction == EvictionAutoScaler.Status.LastEviction {
 		clearPinIfHeld(EvictionAutoScaler)
 		logger.Info("No unhandled eviction ", "pdbname", pdb.Name)
-		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "no unhandled eviction")
+		ready(EvictionAutoScaler, "Reconciled", "no unhandled eviction")
 		return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
@@ -301,6 +318,9 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// Track actual scaling action
 		metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleDownAction).Inc()
 
+		// Surge reverted: drop the surge gauges for this target.
+		clearSurgeGauges(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName)
+
 		// Log the scaling action
 		logger.Info(fmt.Sprintf("Reverted surge on %s %s/%s (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeApplier.Name()))
 		// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
@@ -309,7 +329,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 		EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
 		logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 
-		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "evictions hit cooldown so scaled down")
+		ready(EvictionAutoScaler, "Reconciled", "evictions hit cooldown so scaled down")
 		// Note: the surge-revert finalizer is intentionally NOT released here. It only gates
 		// deletion-time teardown (reconcileSurgeTeardown), so leaving it on an idle, already-
 		// reverted EAS is harmless — on delete, teardown finds no owned surge and simply
@@ -321,7 +341,7 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	//could get here if a scale up/down was not needed because we never hit allowed diruptios == 0.
 	clearPinIfHeld(EvictionAutoScaler)
 	EvictionAutoScaler.Status.LastEviction = EvictionAutoScaler.Spec.LastEviction //we could still keep a log here if thats useful
-	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "last eviction did not need scaling")
+	ready(EvictionAutoScaler, "Reconciled", "last eviction did not need scaling")
 	logger.Info(fmt.Sprintf("Handled eviction %s", EvictionAutoScaler.Spec.LastEviction))
 	return ctrl.Result{}, r.Status().Update(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
 }
@@ -375,7 +395,7 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 		logger.Info("Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting",
 			"pdb", pdb.Name,
 			"target", EvictionAutoScaler.Spec.TargetName)
-		ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting")
+		ready(EvictionAutoScaler, "Reconciled", "Have already scaled up to handle evictions, waiting for PDB to allow disruptions before reverting")
 		return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 	}
 
@@ -406,13 +426,26 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 	// Track actual scaling action
 	metrics.ActualScalingCounter.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, metrics.ScaleUpAction).Inc()
 
+	// Surge applied: mark active and record the cost gauges. The earlier reconcileSurgeActiveMetric
+	// ran before the marker existed (so it cleared them), and this apply pass requeues via
+	// RequeueAfter: cooldown — a status-only change the event filter drops — so on a 2nd+ drain
+	// (finalizer already present) there may be no follow-up reconcile to fill them in. Setting them
+	// here eliminates that gap. surgeApplier carries the freshly-stamped surge/baseline annotations
+	// post-ApplySurge; ReadyReplicas is still the pre-surge count, so realized starts ~0 and climbs
+	// on later reconciles as surged pods become Ready.
+	metrics.SurgeActive.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(1)
+	if desired, realized, ok := surgeReplicaCounts(surgeApplier, target); ok {
+		metrics.SurgeReplicas.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(float64(desired))
+		metrics.SurgeReplicasReady.WithLabelValues(EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName).Set(float64(realized))
+	}
+
 	// Log the scaling action
 	logger.Info(fmt.Sprintf("Scaled up %s %s/%s to %d replicas (via %s)", EvictionAutoScaler.Spec.TargetKind, target.Obj().GetNamespace(), target.Obj().GetName(), surgeTarget, surgeApplier.Name()))
 	logger.Info(fmt.Sprintf("TargetGeneration moving from %d->%d", EvictionAutoScaler.Status.TargetGeneration, target.Obj().GetGeneration()))
 	// Save ResourceVersion to EvictionAutoScaler status this will cause another reconcile.
 	EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 	//Do not update EvictionAutoScaler.Status.LastEviction because we need to keep reconciling till scale down
-	ready(&EvictionAutoScaler.Status.Conditions, "Reconciled", "eviction with scale up")
+	ready(EvictionAutoScaler, "Reconciled", "eviction with scale up")
 	return ctrl.Result{RequeueAfter: cooldown}, r.Status().Update(ctx, EvictionAutoScaler)
 }
 
@@ -470,6 +503,7 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 					}
 					logger.Info("Reverted surge on EvictionAutoScaler deletion, releasing surge finalizer",
 						"kind", eas.Spec.TargetKind, "targetname", eas.Spec.TargetName, "namespace", eas.Namespace)
+					clearSurgeGauges(eas.Namespace, eas.Spec.TargetName)
 				}
 			case apierrors.IsNotFound(getErr):
 				// Target already gone — nothing to revert.
@@ -477,6 +511,15 @@ func (r *EvictionAutoScalerReconciler) reconcileSurgeTeardown(ctx context.Contex
 				return getErr // transient — keep finalizer, retry
 			}
 		}
+	}
+
+	// Terminal teardown: the EAS is being deleted, so drop its surge gauges entirely rather than
+	// leaving a stuck value behind. The branches above only clear when we still own an active
+	// surge, so a target that was already gone (e.g. the workload and EAS deleted together
+	// mid-surge) would otherwise leak these series against a GC'd object. Idempotent, and guarded
+	// on a non-empty target so an EAS that never surged does not touch an empty-label series.
+	if eas.Spec.TargetName != "" {
+		clearSurgeGauges(eas.Namespace, eas.Spec.TargetName)
 	}
 
 	if controllerutil.RemoveFinalizer(eas, EASSurgeFinalizer) {
@@ -524,15 +567,19 @@ func desiredHealthyAt(spec policyv1.PodDisruptionBudgetSpec, replicas int32) (in
 	}
 }
 
-func ready(conditions *[]metav1.Condition, reason string, message string) {
-	meta.SetStatusCondition(conditions, metav1.Condition{
+func ready(eas *myappsv1.EvictionAutoScaler, reason string, message string) {
+	meta.SetStatusCondition(&eas.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
 		Reason:             reason,
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
-	meta.RemoveStatusCondition(conditions, "Degraded")
+	meta.RemoveStatusCondition(&eas.Status.Conditions, "Degraded")
+	// Recovery transition: the object is no longer Degraded, so clear its Degraded series here —
+	// exactly when the condition is removed — rather than blindly at reconcile-start. Idempotent
+	// (a no-op when no series exists), so it is safe on the non-recovery ready() calls too.
+	metrics.ClearDegraded(eas.Namespace, eas.Name)
 }
 
 // degraded marks the EAS Degraded and drops any held pinned-floor policy: a degraded path means
@@ -546,6 +593,83 @@ func degraded(eas *myappsv1.EvictionAutoScaler, reason string, message string) {
 		Message:            message,
 		LastTransitionTime: metav1.Now(),
 	})
+	metrics.Degraded.WithLabelValues(eas.Namespace, eas.Name, reason).Set(1)
+}
+
+// reconcileSurgeActiveMetric makes eviction_autoscaler_surge_active track the durable surge
+// marker exactly, so the gauge is the single source of truth for "is this workload surged right
+// now" regardless of which reconcile path runs. It keys off which object actually OWNS the marker
+// (resolveSurgeOwner, topology-independent) rather than the topology-selected detectSurgeApplier:
+// if an HPA/ScaledObject is added or removed mid-surge, detectSurgeApplier would select a
+// different object whose IsSurgeActive() reads no marker and falsely report the surge inactive.
+// It self-heals to 1 across a controller restart AND clears the gauge on any path that ended the
+// surge without an explicit revert (marker externally removed). On a resolve error we leave the
+// gauge untouched rather than risk a wrong delete.
+func (r *EvictionAutoScalerReconciler) reconcileSurgeActiveMetric(ctx context.Context, eas *myappsv1.EvictionAutoScaler, target Surger) {
+	surgeOwner, err := resolveSurgeOwner(ctx, r.Client, eas.Namespace, eas.Spec.TargetName, eas.Spec.TargetKind, target)
+	if err != nil {
+		return
+	}
+	if surgeOwner != nil {
+		metrics.SurgeActive.WithLabelValues(eas.Namespace, eas.Spec.TargetName).Set(1)
+		// Also record how many extra replicas this surge added (desired vs actually-realized),
+		// keyed off the same marker so it is EAS-only. ok is false only when the durable
+		// baseline/surge annotations are missing, in which case we leave the gauges untouched.
+		if desired, realized, ok := surgeReplicaCounts(surgeOwner, target); ok {
+			metrics.SurgeReplicas.WithLabelValues(eas.Namespace, eas.Spec.TargetName).Set(float64(desired))
+			metrics.SurgeReplicasReady.WithLabelValues(eas.Namespace, eas.Spec.TargetName).Set(float64(realized))
+		} else {
+			// Durable surge/baseline annotations couldn't be parsed: drop any prior replica
+			// series so we don't retain a stale count from an earlier valid observation, while
+			// keeping surge_active == 1 (the surge marker is still present).
+			metrics.SurgeReplicas.DeleteLabelValues(eas.Namespace, eas.Spec.TargetName)
+			metrics.SurgeReplicasReady.DeleteLabelValues(eas.Namespace, eas.Spec.TargetName)
+		}
+		return
+	}
+	clearSurgeGauges(eas.Namespace, eas.Spec.TargetName)
+}
+
+// surgeReplicaCounts derives, for an active EAS-owned surge, the extra replicas the surge added.
+// desired = recorded surged count − recorded baseline (what EAS wrote into spec.replicas for a
+// direct Deployment surge, or the floor delta it raised for an HPA/KEDA surge). realized =
+// currently-Ready replicas above the baseline, clamped to [0, desired] so a mid-drain dip below
+// baseline reads 0 and it never exceeds what EAS requested. ok is false when the durable surge/
+// baseline annotations are absent (nothing trustworthy to report). Both derive from the
+// marker-owning object, so this is the EAS-driven surge.
+//
+// Accuracy note: the baseline reference differs by strategy. For a direct Deployment surge the
+// baseline is the true pre-surge spec.replicas, so realized is exactly the pods EAS added. For an
+// HPA/KEDA surge the baseline is the autoscaler's min floor (not the pre-surge running count), so
+// realized is "Ready above that floor" — an UPPER BOUND that can include load-driven replicas the
+// autoscaler was already running above its floor when the surge began. Treat HPA/KEDA realized as
+// an upper bound on EAS-attributable capacity, not an exact figure.
+func surgeReplicaCounts(surgeOwner SurgeApplier, target Surger) (desired, realized int32, ok bool) {
+	surge, okS := surgeOwner.RecordedSurge()
+	baseline, okB := surgeOwner.RecordedBaseline()
+	if !okS || !okB {
+		return 0, 0, false
+	}
+	desired = surge - baseline
+	if desired < 0 {
+		desired = 0
+	}
+	realized = target.ReadyReplicas() - baseline
+	if realized < 0 {
+		realized = 0
+	}
+	if realized > desired {
+		realized = desired
+	}
+	return desired, realized, true
+}
+
+// clearSurgeGauges drops every per-target surge gauge for a workload whose surge has ended or gone
+// away, so none leaks a stale value. Keep in sync with reconcileSurgeActiveMetric's set side.
+func clearSurgeGauges(namespace, targetName string) {
+	metrics.SurgeActive.DeleteLabelValues(namespace, targetName)
+	metrics.SurgeReplicas.DeleteLabelValues(namespace, targetName)
+	metrics.SurgeReplicasReady.DeleteLabelValues(namespace, targetName)
 }
 
 func (r *EvictionAutoScalerReconciler) SetupWithManager(mgr ctrl.Manager) error {

@@ -635,6 +635,49 @@ It is configured entirely on the controller — there is **no per-workload annot
 
 The surge stays **demand-driven**: the actual scale-up is `minReplicas + displaced`, capped at `minReplicas +` the override value, so a drain larger than the cap simply proceeds in **waves**. When the override drives a surge, the controller emits a structured log line. Workloads whose rollout `maxSurge` resolves to 0 are also tracked by the `eviction_autoscaler_zero_maxsurge_workloads` metric (labels `namespace`, `name`), so operators can see how many such workloads exist in the cluster.
 
+### Observability metrics
+
+Beyond the counters above, the controller exports a set of gauges/histograms for surge and PDB-floor lifecycle so you can see, by name, what is happening right now and for how long:
+
+| Metric | Type | Labels | Answers |
+|---|---|---|---|
+| `eviction_autoscaler_surge_active` | gauge (1/0) | namespace, target_name | Which workload is surged right now? (`== 1 for:` alerts a surge held too long) |
+| `eviction_autoscaler_surge_replicas` | gauge | namespace, target_name | How many *extra* replicas is the surge requesting right now (surged count − baseline)? The EAS-only surge cost driver |
+| `eviction_autoscaler_surge_replicas_ready` | gauge | namespace, target_name | How many of those extra replicas are actually Ready (bounded by requested)? Lags `surge_replicas` while pods are Pending on new nodes |
+| `eviction_autoscaler_pdb_floor_pinned` | gauge (1/0) | namespace, pdb_name, target_name | Which PDB floor is pinned right now? (`== 1 for:` alerts pinned too long) |
+| `eviction_autoscaler_pdb_mutated` | gauge (1/0) | namespace, pdb_name | Does the PDB currently carry the floor mutation (live state)? A `pdb_mutated==1` without a matching `pdb_floor_pinned==1` flags a PDB left mutated with no active pin (e.g. a stuck/unrestored mutation) |
+| `eviction_autoscaler_degraded` | gauge (1/0) | namespace, name, reason | Is an EvictionAutoScaler degraded, and why? (e.g. `SurgeForbidden`) |
+
+The `surge_active` / `pdb_floor_pinned` / `pdb_mutated` / `degraded` gauges are re-asserted from durable state on every reconcile, so they self-heal after a controller restart and a Prometheus `for:` measures true wall-clock duration. `surge_active` (and, alongside it, `surge_replicas` / `surge_replicas_ready`) tracks the durable surge marker exactly and topology-independently (by which object actually owns the marker, so it stays correct even if an HPA/ScaledObject is added or removed mid-surge) — set while the marker is present and cleared as soon as it is gone (a completed revert, an externally-removed marker, or a deleted target), so it can neither stick nor flap. The gauges are also cleared when their object goes away — `surge_active` / `surge_replicas` / `surge_replicas_ready` on EvictionAutoScaler teardown or when the target is deleted, `degraded` when the EvictionAutoScaler is deleted, and `pdb_floor_pinned` / `pdb_mutated` when the PDB is deleted — so a garbage-collected object never leaks a stuck series that would alert forever.
+
+**Surge duration.** There is no dedicated surge-duration metric: how long a surge has been held is `surge_active == 1 for: <window>` (stuck-surge alerting), and the completed/elapsed duration is derivable from the `surge_active` time series (`sum_over_time(surge_active[$range]) * <scrape_interval>` for total surged time). Keeping duration in PromQL avoids an in-memory start-time that a controller restart would lose.
+
+**Surge cost.** `surge_replicas` (requested) and `surge_replicas_ready` (actually Ready above baseline) are EAS-only — both derive from the surge marker, so a workload's own HPA/KEDA baseline scaling is excluded from `desired`. Integrating the time series gives a native surge cost, and comparing the two shows how much surge is still Pending on nodes coming up:
+
+```promql
+# Realized surge replica-hours for a workload over the dashboard window
+sum_over_time(eviction_autoscaler_surge_replicas_ready{namespace="x",target_name="y"}[$__range])
+  * <scrape_interval_seconds> / 3600     # × your $/replica-hour → pod-level surge cost
+```
+
+> `realized` is exact for a direct Deployment surge (baseline = pre-surge replica count). For an **HPA/KEDA** surge the baseline is the autoscaler's min floor, so `realized` is an **upper bound** on EAS-attributable capacity (it can include load-driven replicas already running above the floor).
+
+Attributing a surge to a *new node* is not emitted directly (on managed AKS the Cluster Autoscaler does not tag nodes by cause, so no in-cluster controller can attribute them with certainty). Build a "surge nodes" series by walking the workload's pods → ReplicaSet → Deployment with kube-state-metrics, existence-gated on `surge_active` (which is labelled by `target_name`, the Deployment — not `pod`):
+
+```promql
+# Nodes hosting workload y's pods while it is surged (node-hours → × $/node-hour)
+count by (node) (
+  kube_pod_info{namespace="x"}
+  * on(namespace, pod) group_left(replicaset)
+    label_replace(kube_pod_owner{namespace="x", owner_kind="ReplicaSet"}, "replicaset", "$1", "owner_name", "(.*)")
+  * on(namespace, replicaset) group_left
+    kube_replicaset_owner{namespace="x", owner_kind="Deployment", owner_name="y"}
+)
+and on() (eviction_autoscaler_surge_active{namespace="x", target_name="y"} > 0)
+# This counts ALL of workload y's pods during the surge window (not only the extra surge pods);
+# intersect with kube_node_created to isolate NEWLY created nodes.
+```
+
 **When does the override apply?**
 
 | Deployment strategy | maxSurge value | Kubernetes effective surge | Override applies? |

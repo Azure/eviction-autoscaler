@@ -91,17 +91,23 @@ var _ = Describe("PDB-floor gauge cleanup on PDB deletion", func() {
 		fc := fake.NewClientBuilder().WithScheme(scheme).Build()
 		r := &PDBToEvictionAutoScalerReconciler{Client: fc, Scheme: scheme}
 
+		// Isolate the vecs so CollectAndCount reflects only this test's series — ToFloat64 +
+		// WithLabelValues would recreate a deleted series at 0 and mask a missing-cleanup bug.
+		metrics.PDBMutated.Reset()
+		metrics.PDBFloorPinned.Reset()
 		// Seed stuck gauges as if a mutated + pinned PDB had just been deleted.
 		metrics.PDBMutated.WithLabelValues(nsp, nm).Set(1)
 		metrics.PDBFloorPinned.WithLabelValues(nsp, nm, nm).Set(1)
+		Expect(testutil.CollectAndCount(metrics.PDBMutated)).To(Equal(1), "precondition: one pdb_mutated series present")
+		Expect(testutil.CollectAndCount(metrics.PDBFloorPinned)).To(Equal(1), "precondition: one pdb_floor_pinned series present")
 
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: client.ObjectKey{Name: nm, Namespace: nsp}})
 		Expect(err).NotTo(HaveOccurred())
 
-		Expect(testutil.ToFloat64(metrics.PDBMutated.WithLabelValues(nsp, nm))).
-			To(Equal(0.0), "pdb_mutated must clear when the PDB is deleted")
-		Expect(testutil.ToFloat64(metrics.PDBFloorPinned.WithLabelValues(nsp, nm, nm))).
-			To(Equal(0.0), "pdb_floor_pinned must clear when the PDB is deleted")
+		Expect(testutil.CollectAndCount(metrics.PDBMutated)).
+			To(Equal(0), "pdb_mutated series must be deleted (absent), not merely 0, when the PDB is gone")
+		Expect(testutil.CollectAndCount(metrics.PDBFloorPinned)).
+			To(Equal(0), "pdb_floor_pinned series must be deleted (absent), not merely 0, when the PDB is gone")
 	})
 })
 

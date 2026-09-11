@@ -70,6 +70,16 @@ func isMutated(pdb *policyv1.PodDisruptionBudget) bool {
 	return ok
 }
 
+// livelyMutated reports whether the PDB's LIVE spec currently carries our pinned floor — the
+// recorded floor annotation parses AND the live minAvailable still equals it. Unlike isMutated
+// (which only checks the restore-snapshot annotation's presence), this flips to false the moment a
+// partner/GitOps overwrites the spec back even if our annotations remain, so pdb_mutated reflects
+// the real applied state and the "pinned-but-not-mutated" drift can be alerted on.
+func livelyMutated(pdb *policyv1.PodDisruptionBudget) bool {
+	floor, ok := pinnedFloorFromPDB(pdb)
+	return ok && pdbCarriesFloor(pdb, floor)
+}
+
 // pdbCarriesFloor reports whether the PDB's live spec is still our pinned floor
 // (minAvailable == floor, no maxUnavailable) — false once a partner overwrites it.
 func pdbCarriesFloor(pdb *policyv1.PodDisruptionBudget, floor int32) bool {

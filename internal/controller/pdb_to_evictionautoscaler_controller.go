@@ -241,11 +241,12 @@ func (r *PDBToEvictionAutoScalerReconciler) Reconcile(ctx context.Context, req r
 func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context, pdb *policyv1.PodDisruptionBudget, eas *types.EvictionAutoScaler) error {
 	active := eas != nil && eas.Status.PDBFloorPinned
 
-	// Observability: reflect the PDB's actual mutation state as fetched (before this pass pins or
-	// restores it) plus the pin intent from the CR. Reading the live state at entry is what lets a
-	// stuck / unrestored mutation surface as pdb_mutated==1 without a matching pdb_floor_pinned==1.
+	// Observability: reflect the PDB's actual LIVE mutation state as fetched (before this pass pins
+	// or restores it) plus the pin intent from the CR. livelyMutated checks the live spec still
+	// carries our floor — not just annotation presence — so a partner/GitOps spec revert (annotations
+	// left behind) correctly reads pdb_mutated==0 and surfaces as pinned (intended) but not mutated.
 	mutated := 0.0
-	if isMutated(pdb) {
+	if livelyMutated(pdb) {
 		mutated = 1
 	}
 	metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(mutated)

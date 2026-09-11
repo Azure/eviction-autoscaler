@@ -239,10 +239,12 @@ var (
 		[]string{"namespace", "pdb_name", "target_name"},
 	)
 
-	// PDBMutated is 1 while a PDB actually carries the controller's floor mutation (observed
-	// from the live PDB annotation), else 0. Independent of the CR's intent, so a PDBMutated==1
-	// with no corresponding PDBFloorPinned==1 (or no live CR) surfaces a drifted / orphaned
-	// mutation for an operator to notice.
+	// PDBMutated is 1 while a PDB's LIVE spec actually carries the controller's floor (minAvailable
+	// still equals the recorded floor), else 0 — derived from the live spec, not merely annotation
+	// presence, so a partner/GitOps spec revert flips it to 0 even if our snapshot annotation remains.
+	// Independent of the CR's intent, so a PDBMutated==1 with no PDBFloorPinned==1 (or no live CR)
+	// surfaces a drifted/orphaned mutation, and PDBFloorPinned==1 without PDBMutated==1 surfaces our
+	// pin having been overwritten.
 	// Labels: namespace, pdb_name.
 	PDBMutated = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{

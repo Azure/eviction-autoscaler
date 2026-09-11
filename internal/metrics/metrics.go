@@ -181,6 +181,93 @@ var (
 		},
 		[]string{"namespace", "pdb_name"},
 	)
+
+	// SurgeActive is 1 while a workload is currently surged by the controller, else 0. It is
+	// re-asserted from the durable surge marker on every reconcile of an active surge (not only
+	// on transitions), so it self-heals after a controller restart and a Prometheus `for:` on it
+	// measures the true time a surge has been held (e.g. alert when a surge is stuck for too long).
+	// Labels: namespace, target_name.
+	SurgeActive = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_surge_active",
+			Help: "1 while a workload is currently surged by the eviction autoscaler, else 0.",
+		},
+		[]string{"namespace", "target_name"},
+	)
+
+	// SurgeReplicas is the number of EXTRA replicas the eviction autoscaler currently requests via
+	// an active surge — the surged replica count minus the recorded pre-surge baseline. This is the
+	// desired (spec) surge, i.e. what the controller asked Kubernetes for, and only the EAS-owned
+	// surge is counted (it is derived from the durable surge marker, so an independent HPA/KEDA
+	// baseline is excluded). It is the basis for surge cost: replica-seconds =
+	// sum_over_time(surge_replicas) × your per-replica cost.
+	// Labels: namespace, target_name.
+	SurgeReplicas = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_surge_replicas",
+			Help: "Extra replicas the eviction autoscaler currently requests via an active surge (surged count minus baseline).",
+		},
+		[]string{"namespace", "target_name"},
+	)
+
+	// SurgeReplicasReady is the number of EXTRA replicas actually Ready above the baseline while a
+	// surge is active, bounded by SurgeReplicas. Because surged pods may sit Pending until the
+	// Cluster Autoscaler brings up nodes, realized lags the requested SurgeReplicas — the gap is the
+	// not-yet-scheduled surge (a proxy for pending capacity / nodes still coming up). For a direct
+	// Deployment surge the baseline is the true pre-surge replica count, so realized is exactly the
+	// pods EAS added; for an HPA/KEDA surge the baseline is the autoscaler min floor, so realized is
+	// an upper bound (it can include load-driven replicas that were already running above the floor).
+	// Labels: namespace, target_name.
+	SurgeReplicasReady = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_surge_replicas_ready",
+			Help: "Extra replicas actually Ready above baseline during an active surge (bounded by surge_replicas).",
+		},
+		[]string{"namespace", "target_name"},
+	)
+
+	// PDBFloorPinned is 1 while a PDB's floor is currently pinned by the controller (the CR's
+	// Status.PDBFloorPinned intent), else 0. Re-asserted from durable status every reconcile so
+	// it self-heals across restarts; a Prometheus `for:` measures how long a PDB has been pinned,
+	// enabling a "pinned far longer than any legitimate drain" alert.
+	// Labels: namespace, pdb_name, target_name.
+	PDBFloorPinned = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_pdb_floor_pinned",
+			Help: "1 while a PDB's floor is currently pinned by the eviction autoscaler, else 0.",
+		},
+		[]string{"namespace", "pdb_name", "target_name"},
+	)
+
+	// PDBMutated is 1 while a PDB's LIVE spec actually carries the controller's floor (minAvailable
+	// still equals the recorded floor), else 0 — derived from the live spec, not merely annotation
+	// presence, so a partner/GitOps spec revert flips it to 0 even if our snapshot annotation remains.
+	// Independent of the CR's intent, so a PDBMutated==1 with no PDBFloorPinned==1 (or no live CR)
+	// surfaces a drifted/orphaned mutation, and PDBFloorPinned==1 without PDBMutated==1 surfaces our
+	// pin having been overwritten.
+	// Labels: namespace, pdb_name.
+	PDBMutated = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_pdb_mutated",
+			Help: "1 while a PDB currently carries the eviction autoscaler's floor mutation, else 0.",
+		},
+		[]string{"namespace", "pdb_name"},
+	)
+
+	// Degraded is 1 while an EvictionAutoScaler is in a Degraded state, labelled by the reason
+	// (e.g. SurgeForbidden, MissingTarget, UnsupportedAutoscalerConfiguration). It is keyed by the
+	// EvictionAutoScaler's own name so it can be cleared on delete; it is cleared at the start of
+	// each reconcile (and on NotFound) and re-set only if the object is still degraded, so it
+	// reflects the current state and clears on recovery or removal. Alert on `== 1 for:` to catch
+	// a controller that cannot protect a workload.
+	// Labels: namespace, name, reason.
+	Degraded = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_degraded",
+			Help: "1 while an EvictionAutoScaler is Degraded, labelled by reason; 0/absent otherwise.",
+		},
+		[]string{"namespace", "name", "reason"},
+	)
 )
 
 // Constants for PDB creation tracking
@@ -188,6 +275,28 @@ const (
 	PDBCreatedByUsStr    = "true"
 	PDBNotCreatedByUsStr = "false"
 )
+
+// ClearDegraded removes any Degraded series for an EvictionAutoScaler (across all reasons). Call
+// it at the start of a reconcile — and on delete — so the Degraded gauge reflects only the
+// object's current state and clears automatically once it recovers or is removed.
+func ClearDegraded(namespace, name string) {
+	Degraded.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
+}
+
+// ClearPDBFloorPinned removes any PDBFloorPinned series for a namespace/pdb_name (across
+// targets). Used when a PDB is not (or no longer) pinned, so the gauge drops to absent even
+// when the target label is unknown (e.g. the EAS is gone).
+func ClearPDBFloorPinned(namespace, pdbName string) {
+	PDBFloorPinned.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "pdb_name": pdbName})
+}
+
+// ClearPDBMutated removes the PDBMutated series for a namespace/pdb_name. Call it when the PDB
+// object is deleted: the controller holds no finalizer on the PDB, so a still-mutated PDB can
+// vanish at any time, and its gauge would otherwise leak a stuck series against an object that
+// no longer exists and can never be reconciled back to 0.
+func ClearPDBMutated(namespace, pdbName string) {
+	PDBMutated.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "pdb_name": pdbName})
+}
 
 // Constants for deployment tracking
 const (
@@ -254,5 +363,11 @@ func init() {
 		PDBCounter,
 		PanicCounter,
 		PDBFloorTeardownUnrestorableCounter,
+		SurgeActive,
+		SurgeReplicas,
+		SurgeReplicasReady,
+		PDBFloorPinned,
+		PDBMutated,
+		Degraded,
 	)
 }

@@ -6,10 +6,12 @@ import (
 	"time"
 
 	v1 "github.com/azure/eviction-autoscaler/api/v1"
+	"github.com/azure/eviction-autoscaler/internal/metrics"
 	"github.com/azure/eviction-autoscaler/internal/namespacefilter"
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	corev1 "k8s.io/api/core/v1"
@@ -280,10 +282,19 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 				}
 			}
 			Expect(found).To(BeTrue(), "expected Degraded condition with reason UnsupportedAutoscalerConfiguration")
+			Expect(testutil.ToFloat64(metrics.Degraded.WithLabelValues(evictionAutoScaler.Namespace, evictionAutoScaler.Name, "UnsupportedAutoscalerConfiguration"))).To(Equal(1.0), "degraded metric should be 1 for the reason")
 
 			// Verify no scale-up happened
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
+
+			// Recovery: a valid maxSurge on the next reconcile must clear the degraded metric.
+			validSurge := intstr.FromInt(1)
+			deployment.Spec.Strategy.RollingUpdate.MaxSurge = &validSurge
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.ToFloat64(metrics.Degraded.WithLabelValues(evictionAutoScaler.Namespace, evictionAutoScaler.Name, "UnsupportedAutoscalerConfiguration"))).To(Equal(0.0), "degraded metric should clear on recovery")
 		})
 
 		It("should surge by exactly displaced pod count when pods are on a cordoned node", func() {
@@ -469,6 +480,14 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(2)))
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			easNS, easTarget := ea.Namespace, ea.Spec.TargetName
+			Expect(testutil.ToFloat64(metrics.SurgeActive.WithLabelValues(easNS, easTarget))).To(Equal(1.0), "surge_active should be 1 while surged")
+			// The cost gauges must be set on the apply pass itself (a 2nd+ drain gets no follow-up
+			// reconcile). Surged 1→2, so one extra replica is requested; realized starts at 0 (pods
+			// not yet Ready) and is bounded by requested.
+			Expect(testutil.ToFloat64(metrics.SurgeReplicas.WithLabelValues(easNS, easTarget))).To(Equal(1.0), "surge_replicas should be the extra requested replica on apply")
+			Expect(testutil.ToFloat64(metrics.SurgeReplicasReady.WithLabelValues(easNS, easTarget))).To(BeNumerically(">=", 0), "surge_replicas_ready should be recorded on apply")
 
 			By("completing the drain: PDB allows disruptions, surge reverts to original replicas")
 			pdb := &policyv1.PodDisruptionBudget{}
@@ -485,6 +504,8 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
 			Expect(*dep.Spec.Replicas).To(Equal(int32(1)))
+			Expect(testutil.ToFloat64(metrics.SurgeActive.WithLabelValues(easNS, easTarget))).To(Equal(0.0), "surge_active should be 0 after revert")
+			Expect(testutil.ToFloat64(metrics.SurgeReplicas.WithLabelValues(easNS, easTarget))).To(Equal(0.0), "surge_replicas should be 0/absent after revert")
 		})
 
 		It("should surge by exactly displaced pod count when displaced is less than maxSurge", func() {

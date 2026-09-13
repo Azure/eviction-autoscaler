@@ -132,6 +132,29 @@ func snapshotPDBSpec(pdb *policyv1.PodDisruptionBudget) error {
 	return nil
 }
 
+// snapshotFloor returns the floor implied by the user's ORIGINAL policy saved in our restore
+// snapshot — which is exactly the floor we pinned. It lets the actuator recognize its own pin from
+// the trustworthy snapshot rather than the user-editable pinned-floor marker, so marker tampering
+// (removal, or corruption to another value) can't be mistaken for a new user policy and overwrite
+// the saved original. Returns (0,false) when there is no decodable snapshot.
+func snapshotFloor(pdb *policyv1.PodDisruptionBudget, minReplicas int32) (int32, bool) {
+	if !isMutated(pdb) {
+		return 0, false
+	}
+	var snap pdbFloorSnapshot
+	if err := json.Unmarshal([]byte(pdb.Annotations[AnnotationOriginalPDBSpec]), &snap); err != nil {
+		return 0, false
+	}
+	floor, err := desiredHealthyAt(policyv1.PodDisruptionBudgetSpec{
+		MinAvailable:   snap.MinAvailable,
+		MaxUnavailable: snap.MaxUnavailable,
+	}, minReplicas)
+	if err != nil {
+		return 0, false
+	}
+	return floor, true
+}
+
 // pinPDBFloor rewrites the PDB to minAvailable: floor (clearing maxUnavailable) and
 // records the floor on the PDB so it survives a lost CR status write.
 func pinPDBFloor(pdb *policyv1.PodDisruptionBudget, floor int32) {

@@ -284,8 +284,15 @@ func (r *PDBToEvictionAutoScalerReconciler) actuatePDBFloor(ctx context.Context,
 				return err
 			}
 		}
-		if err := snapshotPDBSpec(pdb); err != nil {
-			return err
+		// Re-snapshot only for a genuinely new user policy. If the live spec still carries the floor
+		// our SAVED snapshot implies, this is our own pin with a tampered/missing pinned-floor marker
+		// — keep the original snapshot; pinPDBFloor below repairs the marker. Recognizing our pin from
+		// the trustworthy snapshot (not the user-editable marker) prevents overwriting the real
+		// original with our floor and permanently pinning the PDB.
+		if sf, ok := snapshotFloor(pdb, eas.Status.MinReplicas); !ok || !pdbCarriesFloor(pdb, sf) {
+			if err := snapshotPDBSpec(pdb); err != nil {
+				return err
+			}
 		}
 		pinPDBFloor(pdb, floor)
 		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
@@ -409,6 +416,11 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Con
 		if err := r.updatePDBConflictAware(ctx, pdb); err != nil {
 			return err
 		}
+		// We dropped our pin annotations and are abandoning the (unrestorable) floor: reconcile the
+		// PDB gauges explicitly here rather than depend on the now-filtered PDB update event or a
+		// later EAS-deletion event, so pdb_mutated / pdb_floor_pinned can't leak a stale ==1 series.
+		metrics.PDBMutated.WithLabelValues(pdb.Namespace, pdb.Name).Set(0)
+		metrics.ClearPDBFloorPinned(pdb.Namespace, pdb.Name)
 		return r.removeFloorFinalizer(ctx, eas)
 	}
 

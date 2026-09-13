@@ -255,11 +255,13 @@ var (
 	)
 
 	// Degraded is 1 while an EvictionAutoScaler is in a Degraded state, labelled by the reason
-	// (e.g. SurgeForbidden, MissingTarget, UnsupportedAutoscalerConfiguration). It is keyed by the
-	// EvictionAutoScaler's own name so it can be cleared on delete; it is cleared at the start of
-	// each reconcile (and on NotFound) and re-set only if the object is still degraded, so it
-	// reflects the current state and clears on recovery or removal. Alert on `== 1 for:` to catch
-	// a controller that cannot protect a workload.
+	// (e.g. SurgeForbidden, MissingTarget, UnsupportedAutoscalerConfiguration). It is derived from
+	// the EvictionAutoScaler's persisted Degraded condition — re-asserted from durable status at
+	// reconcile entry and again after every successful status write (see syncDegradedMetric) — so it
+	// self-heals after a controller restart, drops a stale reason series on a reason change, and
+	// clears on recovery or removal. It is NOT blindly cleared at reconcile-start (which could wipe a
+	// still-persisted-Degraded object on a transient early return). Alert on `== 1 for:` to catch a
+	// controller that cannot protect a workload.
 	// Labels: namespace, name, reason.
 	Degraded = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -276,9 +278,11 @@ const (
 	PDBNotCreatedByUsStr = "false"
 )
 
-// ClearDegraded removes any Degraded series for an EvictionAutoScaler (across all reasons). Call
-// it at the start of a reconcile — and on delete — so the Degraded gauge reflects only the
-// object's current state and clears automatically once it recovers or is removed.
+// ClearDegraded removes any Degraded series for an EvictionAutoScaler (across all reasons). It is
+// used by syncDegradedMetric to reset the gauge before re-deriving it from the persisted condition
+// (so a reason change drops the previous reason's series), and on the NotFound delete path. It is
+// NOT called blindly at reconcile-start — doing so would wipe a still-persisted-Degraded object on a
+// transient early return.
 func ClearDegraded(namespace, name string) {
 	Degraded.DeletePartialMatch(prometheus.Labels{"namespace": namespace, "name": name})
 }

@@ -203,6 +203,18 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 				"oldValue", oldVal, "newValue", newVal)
 			return true
 		}
+		// pdb_mutated is derived from the pinned-floor marker (livelyMutated), so a change to it
+		// alone — external removal/corruption, or our own teardown dropping it — must re-trigger a
+		// reconcile so the gauge is re-derived (and, for tampering, the marker repaired); otherwise a
+		// stale pdb_mutated==1 could linger and hide the pinned-but-not-mutated drift signal.
+		oldFloor := tryGet(oldPDB.Annotations, AnnotationPinnedFloor)
+		newFloor := tryGet(newPDB.Annotations, AnnotationPinnedFloor)
+		if oldFloor != newFloor {
+			logger.Info("PDB update event detected, pinned-floor annotation changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", oldFloor, "newValue", newFloor)
+			return true
+		}
 		if !intstrPtrEqual(oldPDB.Spec.MinAvailable, newPDB.Spec.MinAvailable) || !intstrPtrEqual(oldPDB.Spec.MaxUnavailable, newPDB.Spec.MaxUnavailable) {
 			logger.Info("PDB update event detected, disruption spec changed",
 				"namespace", newPDB.Namespace, "name", newPDB.Name)

@@ -11,6 +11,10 @@ import (
 type Surger interface {
 	//GetGeneration() int64
 	GetReplicas() int32
+	// ReadyReplicas returns the number of currently Ready pods (status.readyReplicas), used to
+	// measure how much of a requested surge has actually materialized (pods scheduled once the
+	// Cluster Autoscaler brings up nodes), as opposed to the desired spec.replicas.
+	ReadyReplicas() int32
 	SetReplicas(int32)
 	GetMaxSurge() intstr.IntOrString
 	Obj() client.Object
@@ -40,6 +44,10 @@ func (d *DeploymentWrapper) GetReplicas() int32 {
 		return 1 // Default value in Kubernetes if not set
 	}
 	return *d.obj.Spec.Replicas
+}
+
+func (d *DeploymentWrapper) ReadyReplicas() int32 {
+	return d.obj.Status.ReadyReplicas
 }
 
 func (d *DeploymentWrapper) SetReplicas(replicas int32) {
@@ -95,6 +103,10 @@ func (s *StatefulSetWrapper) GetReplicas() int32 {
 		return 1 // Default value in Kubernetes if not set
 	}
 	return *s.obj.Spec.Replicas
+}
+
+func (s *StatefulSetWrapper) ReadyReplicas() int32 {
+	return s.obj.Status.ReadyReplicas
 }
 
 func (s *StatefulSetWrapper) SetReplicas(replicas int32) {

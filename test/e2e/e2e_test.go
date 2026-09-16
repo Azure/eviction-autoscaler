@@ -2388,8 +2388,11 @@ var _ = Describe("controller", Ordered, func() {
 			for _, ns := range []string{inScopeNs, outScopeNs} {
 				_, _ = utils.Run(exec.Command("kubectl", "create", "namespace", ns))
 				// maxSurge:0 workload — cannot surge on its own, only the override can drive it.
+				// maxUnavailable must be >0 here: Kubernetes rejects a RollingUpdate with both
+				// maxSurge and maxUnavailable at 0. The EAS-generated PDB (not this rollout knob)
+				// is what blocks the drain and triggers the surge.
 				Expect(createDeployment(deploymentConfig{
-					Name: "nginx-zso", Namespace: ns, Replicas: 2, MaxUnavailable: 0, MaxSurge: &zero,
+					Name: "nginx-zso", Namespace: ns, Replicas: 2, MaxUnavailable: 1, MaxSurge: &zero,
 				})).To(Succeed())
 				Expect(waitForDeployment("nginx-zso", ns)).To(Succeed())
 			}

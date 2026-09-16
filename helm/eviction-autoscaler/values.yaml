@@ -96,6 +96,15 @@ controllerConfig:
   # non-zero maxSurge are never affected.
   zeroSurgeOverride: ""
 
+  # Optional namespace scope for the zero-maxSurge override above (comma-joined into
+  # the ZERO_SURGE_OVERRIDE_NAMESPACES env var). Empty (default) ⇒ the override
+  # applies fleet-wide (every EAS-enabled namespace), preserving today's behavior.
+  # When set, the override applies ONLY in these namespaces; workloads elsewhere keep
+  # the degrade-on-zero behavior. Operator-controlled. Entries must be valid namespace
+  # names (DNS-1123 labels) or the controller fails to start. This scope has no effect
+  # unless zeroSurgeOverride is also set.
+  zeroSurgeOverrideNamespaces: []
+
 
 
 # ServiceAccount annotations (for cloud integrations like IRSA, Workload Identity)

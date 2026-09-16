@@ -217,6 +217,27 @@ func main() {
 	}
 	setupLog.Info("Zero-maxSurge override configuration", "zeroSurgeOverride", zeroSurgeOverride)
 
+	// Parse ZERO_SURGE_OVERRIDE_NAMESPACES (comma-separated). Optional scope for the
+	// zero-maxSurge override: empty ⇒ the override (if set) applies fleet-wide
+	// (today's behavior); non-empty ⇒ it applies only in these namespaces, with
+	// workloads elsewhere keeping the degrade-on-zero behavior. Operator-owned,
+	// install-time — the fleet operator, not workload owners, decides the scope.
+	zeroSurgeOverrideNamespacesList, zsnErr := namespacefilter.ParseNamespaceList(os.Getenv("ZERO_SURGE_OVERRIDE_NAMESPACES"))
+	if zsnErr != nil {
+		setupLog.Error(zsnErr, "Failed to parse ZERO_SURGE_OVERRIDE_NAMESPACES env variable")
+		os.Exit(1)
+	}
+	zeroSurgeOverrideNamespaces := make(map[string]struct{}, len(zeroSurgeOverrideNamespacesList))
+	for _, ns := range zeroSurgeOverrideNamespacesList {
+		zeroSurgeOverrideNamespaces[ns] = struct{}{}
+	}
+	if zeroSurgeOverride == nil && len(zeroSurgeOverrideNamespaces) > 0 {
+		setupLog.Info("ZERO_SURGE_OVERRIDE_NAMESPACES is set but ZERO_SURGE_OVERRIDE is off; the scope has no effect")
+	}
+	setupLog.Info("Zero-maxSurge override scope",
+		"zeroSurgeOverrideNamespaces", zeroSurgeOverrideNamespacesList,
+		"fleetWide", len(zeroSurgeOverrideNamespaces) == 0)
+
 	// Parse ENABLE_PDB_FLOOR_MUTATION environment variable (defaults to false if not set)
 	enablePDBFloorMutation, err := k8senv.GetBool("ENABLE_PDB_FLOOR_MUTATION", false)
 	if err != nil {
@@ -251,11 +272,12 @@ func main() {
 		// set them up in one flat loop — keeping the kill-switch gate free of deep nesting.
 		reconcilers := []reconcilerSetup{
 			&controllers.EvictionAutoScalerReconciler{
-				Client:                  mgr.GetClient(),
-				Scheme:                  mgr.GetScheme(),
-				Filter:                  nsfilter,
-				ZeroSurgeOverride:       zeroSurgeOverride,
-				PDBFloorMutationEnabled: enablePDBFloorMutation,
+				Client:                      mgr.GetClient(),
+				Scheme:                      mgr.GetScheme(),
+				Filter:                      nsfilter,
+				ZeroSurgeOverride:           zeroSurgeOverride,
+				ZeroSurgeOverrideNamespaces: zeroSurgeOverrideNamespaces,
+				PDBFloorMutationEnabled:     enablePDBFloorMutation,
 			},
 		}
 		if pdbCreate {

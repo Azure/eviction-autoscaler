@@ -46,6 +46,8 @@ type deploymentConfig struct {
 	Namespace      string
 	Replicas       int32
 	MaxUnavailable int
+	MaxSurge       *int // optional; when set, pins rollingUpdate.maxSurge (use 0 to exercise the zero-surge path)
+	Recreate       bool // when true, use the Recreate strategy: maxSurge resolves to 0 AND (unlike a RollingUpdate maxSurge:0) the workload still gets an EAS-created PDB
 	Annotations    map[string]string
 	CPURequest     string // optional, e.g. "10m"
 }
@@ -57,6 +59,11 @@ func createDeployment(cfg deploymentConfig) error {
 		maxUnavailable = "0"
 	} else {
 		maxUnavailable = fmt.Sprintf("%d", cfg.MaxUnavailable)
+	}
+
+	var maxSurge string
+	if cfg.MaxSurge != nil {
+		maxSurge = fmt.Sprintf("%d", *cfg.MaxSurge)
 	}
 
 	tmpl := `apiVersion: apps/v1
@@ -73,9 +80,16 @@ metadata:
 spec:
   replicas: {{.Replicas}}
   strategy:
+{{- if .Recreate}}
+    type: Recreate
+{{- else}}
     type: RollingUpdate
     rollingUpdate:
       maxUnavailable: {{.MaxUnavailable}}
+{{- if .MaxSurge}}
+      maxSurge: {{.MaxSurge}}
+{{- end}}
+{{- end}}
   selector:
     matchLabels:
       app: {{.Name}}
@@ -104,6 +118,8 @@ spec:
 		Namespace      string
 		Replicas       int32
 		MaxUnavailable string
+		MaxSurge       string
+		Recreate       bool
 		Annotations    map[string]string
 		CPURequest     string
 	}{
@@ -111,6 +127,8 @@ spec:
 		Namespace:      cfg.Namespace,
 		Replicas:       cfg.Replicas,
 		MaxUnavailable: maxUnavailable,
+		MaxSurge:       maxSurge,
+		Recreate:       cfg.Recreate,
 		Annotations:    cfg.Annotations,
 		CPURequest:     cfg.CPURequest,
 	}

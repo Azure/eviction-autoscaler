@@ -2277,4 +2277,229 @@ var _ = Describe("controller", Ordered, func() {
 			}, 2*time.Minute, 5*time.Second).Should(ContainSubstring("may not contain an AKS-owned namespace"))
 		})
 	})
+
+	Context("ZeroSurgeOverride namespace scope", func() {
+		const projectimage = "evictionautoscaler:e2etest"
+
+		// installWithScope (re)installs the controller with the zero-maxSurge override set to an
+		// absolute 2 and the given namespace allowlist (empty ⇒ fleet-wide). enabledByDefault=true
+		// so freshly-created test namespaces are EAS-managed without needing an enable annotation.
+		installWithScope := func(scopeNamespaces ...string) error {
+			imgParts := strings.Split(projectimage, ":")
+			if len(imgParts) != 2 {
+				return fmt.Errorf("expected image of the form <repository>:<tag>, got %q", projectimage)
+			}
+			args := []string{
+				"upgrade", "--install", "eviction-autoscaler", "helm/eviction-autoscaler",
+				"--namespace", namespace, "--create-namespace",
+				"--set", fmt.Sprintf("image.repository=%s", imgParts[0]),
+				"--set", fmt.Sprintf("image.tag=%s", imgParts[1]),
+				"--set", "image.pullPolicy=IfNotPresent",
+				"--set", "controllerConfig.pdb.create=true",
+				"--set", "controllerConfig.namespaces.enabledByDefault=true",
+				"--set", "controllerConfig.zeroSurgeOverride=2",
+			}
+			for i, ns := range scopeNamespaces {
+				args = append(args, "--set", fmt.Sprintf("controllerConfig.zeroSurgeOverrideNamespaces[%d]=%s", i, ns))
+			}
+			_, err := utils.Run(exec.Command("helm", args...))
+			return err
+		}
+
+		It("should refuse to start when the override scope contains an invalid namespace name", func() {
+			ctx := context.Background()
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+
+			By("uninstalling the existing eviction-autoscaler to reconfigure")
+			_, _ = utils.Run(exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace))
+			time.Sleep(10 * time.Second)
+
+			By("installing with an invalid namespace (uppercase) in zeroSurgeOverrideNamespaces")
+			// "Bad_NS" is not a valid DNS-1123 label; ParseNamespaceList must reject it at startup.
+			Expect(installWithScope("Bad_NS")).To(Succeed())
+
+			By("verifying the controller never becomes available (it exits on the rejected config)")
+			_, err = utils.Run(exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler", "--namespace", namespace, "--timeout=60s"))
+			Expect(err).To(HaveOccurred(),
+				"deployment must not become available with an invalid namespace in the override scope")
+
+			By("verifying a controller pod is crashlooping because the config was rejected")
+			Eventually(func() (bool, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return false, err
+				}
+				for _, pod := range pods.Items {
+					for _, cs := range pod.Status.ContainerStatuses {
+						if cs.RestartCount > 0 {
+							return true, nil
+						}
+						if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+							return true, nil
+						}
+					}
+				}
+				return false, nil
+			}, 2*time.Minute, 5*time.Second).Should(BeTrue(), "expected a crashlooping controller pod")
+
+			By("confirming the rejection reason is logged")
+			Eventually(func() (string, error) {
+				pods := &corev1.PodList{}
+				if err := clientset.List(ctx, pods, client.InNamespace(namespace),
+					client.MatchingLabels{"app.kubernetes.io/name": "eviction-autoscaler"}); err != nil {
+					return "", err
+				}
+				if len(pods.Items) == 0 {
+					return "", fmt.Errorf("no controller pod found")
+				}
+				out, _ := utils.Run(exec.Command("kubectl", "logs", pods.Items[0].Name,
+					"--namespace", namespace, "--all-containers", "--tail=-1"))
+				return string(out), nil
+			}, 2*time.Minute, 5*time.Second).Should(ContainSubstring("invalid namespace"))
+		})
+
+		It("surges an in-scope maxSurge:0 workload during a drain but degrades an out-of-scope one", func() {
+			ctx := context.Background()
+			inScopeNs := "zso-e2e-in-scope"
+			outScopeNs := "zso-e2e-out-scope"
+
+			By("reinstalling the controller scoped to only the in-scope namespace")
+			_, _ = utils.Run(exec.Command("helm", "uninstall", "eviction-autoscaler", "--namespace", namespace))
+			time.Sleep(10 * time.Second)
+			Expect(installWithScope(inScopeNs)).To(Succeed())
+
+			_, err := utils.Run(exec.Command("kubectl", "wait", "--for=condition=available",
+				"deployment/eviction-autoscaler", "--namespace", namespace, "--timeout=300s"))
+			Expect(err).NotTo(HaveOccurred())
+
+			config, err := clientcmd.BuildConfigFromFlags("", filepath.Join(homedir.HomeDir(), ".kube", "config"))
+			Expect(err).NotTo(HaveOccurred())
+			clientset, err := client.New(config, client.Options{Scheme: scheme})
+			Expect(err).NotTo(HaveOccurred())
+			evictionClient, err := kubernetes.NewForConfig(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			for _, ns := range []string{inScopeNs, outScopeNs} {
+				_, _ = utils.Run(exec.Command("kubectl", "create", "namespace", ns))
+				// A Recreate-strategy workload resolves maxSurge to 0 (only the override can
+				// drive it) AND still gets an EAS-created PDB — unlike a RollingUpdate maxSurge:0,
+				// which is either rejected by Kubernetes (maxUnavailable must be >0) or has its
+				// PDB skipped (shouldSkipPDBCreation skips maxUnavailable!=0).
+				Expect(createDeployment(deploymentConfig{
+					Name: "nginx-zso", Namespace: ns, Replicas: 2, Recreate: true,
+				})).To(Succeed())
+				Expect(waitForDeployment("nginx-zso", ns)).To(Succeed())
+			}
+
+			By("waiting for the controller to create the PDB and EvictionAutoScaler in both namespaces")
+			for _, ns := range []string{inScopeNs, outScopeNs} {
+				EventuallyWithOffset(1, func() error { return verifyPdbCreated(ctx, clientset, ns, "nginx-zso") },
+					2*time.Minute, time.Second).Should(Succeed())
+				EventuallyWithOffset(1, func() error { return verifyEvictionAutoScalerCreated(ctx, clientset, ns, "nginx-zso") },
+					2*time.Minute, time.Second).Should(Succeed())
+			}
+
+			By("cordoning every node that hosts either workload's pods")
+			// Kind runs multiple workers, so the two workloads may land on different nodes. Cordon
+			// all nodes hosting either workload so the out-of-scope pods are genuinely drained too —
+			// otherwise the negative assertion below would pass vacuously.
+			cordonedNodes := map[string]struct{}{}
+			for _, ns := range []string{inScopeNs, outScopeNs} {
+				list := &corev1.PodList{}
+				Expect(clientset.List(ctx, list, client.InNamespace(ns))).To(Succeed())
+				Expect(list.Items).NotTo(BeEmpty())
+				for _, p := range list.Items {
+					cordonedNodes[p.Spec.NodeName] = struct{}{}
+				}
+			}
+			for nodeName := range cordonedNodes {
+				node := &corev1.Node{}
+				Expect(clientset.Get(ctx, client.ObjectKey{Name: nodeName}, node)).To(Succeed())
+				node.Spec.Unschedulable = true
+				Expect(clientset.Update(ctx, node)).To(Succeed())
+			}
+
+			By("evicting both workloads' pods on the cordoned nodes to trigger blocked drains")
+			evictOnCordoned := func(ns string) error {
+				list := &corev1.PodList{}
+				if err := clientset.List(ctx, list, client.InNamespace(ns)); err != nil {
+					return err
+				}
+				for _, p := range list.Items {
+					if _, cordoned := cordonedNodes[p.Spec.NodeName]; !cordoned {
+						continue
+					}
+					err := evictionClient.PolicyV1().Evictions(ns).Evict(ctx, &policy.Eviction{
+						ObjectMeta: v1.ObjectMeta{Name: p.Name, Namespace: ns},
+					})
+					// A PDB legitimately blocks the eviction (429) — that is exactly the blocked
+					// drain we want; only other errors are real failures.
+					if err != nil && !errors.IsTooManyRequests(err) {
+						return fmt.Errorf("evict %s/%s: %w", ns, p.Name, err)
+					}
+				}
+				return nil
+			}
+			Eventually(func() error {
+				if e := evictOnCordoned(inScopeNs); e != nil {
+					return e
+				}
+				return evictOnCordoned(outScopeNs)
+			}, time.Minute, time.Second).Should(Succeed())
+
+			By("verifying the in-scope workload is surged (override applied)")
+			EventuallyWithOffset(1, func() error {
+				dep := &appsv1.Deployment{}
+				if err := clientset.Get(ctx, client.ObjectKey{Name: "nginx-zso", Namespace: inScopeNs}, dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; !ok {
+					return fmt.Errorf("expected in-scope workload to be surged")
+				}
+				return nil
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("verifying the out-of-scope EvictionAutoScaler goes Degraded and the workload is not surged")
+			EventuallyWithOffset(1, func() error {
+				ea := &types.EvictionAutoScaler{}
+				if err := clientset.Get(ctx, client.ObjectKey{Name: "nginx-zso", Namespace: outScopeNs}, ea); err != nil {
+					return err
+				}
+				cond := meta.FindStatusCondition(ea.Status.Conditions, "Degraded")
+				if cond == nil || cond.Reason != "UnsupportedAutoscalerConfiguration" {
+					return fmt.Errorf("expected Degraded=UnsupportedAutoscalerConfiguration, got %v", cond)
+				}
+				return nil
+			}, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			By("confirming the out-of-scope workload is never surged")
+			ConsistentlyWithOffset(1, func() error {
+				dep := &appsv1.Deployment{}
+				if err := clientset.Get(ctx, client.ObjectKey{Name: "nginx-zso", Namespace: outScopeNs}, dep); err != nil {
+					return err
+				}
+				if _, ok := dep.Annotations[controller.EvictionSurgeReplicasAnnotationKey]; ok {
+					return fmt.Errorf("out-of-scope workload must not be surged")
+				}
+				if dep.Spec.Replicas != nil && *dep.Spec.Replicas != 2 {
+					return fmt.Errorf("out-of-scope replicas changed to %d", *dep.Spec.Replicas)
+				}
+				return nil
+			}, 20*time.Second, 5*time.Second).Should(Succeed())
+
+			By("uncordoning the nodes")
+			for nodeName := range cordonedNodes {
+				node := &corev1.Node{}
+				Expect(clientset.Get(ctx, client.ObjectKey{Name: nodeName}, node)).To(Succeed())
+				node.Spec.Unschedulable = false
+				Expect(clientset.Update(ctx, node)).To(Succeed())
+			}
+		})
+	})
 })
+

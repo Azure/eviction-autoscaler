@@ -54,6 +54,16 @@ type EvictionAutoScalerReconciler struct {
 	// default) preserves today's degrade-on-zero behavior, so Cosmic — not
 	// individual workload owners — decides whether it applies.
 	ZeroSurgeOverride *intstr.IntOrString
+	// ZeroSurgeOverrideNamespaces optionally scopes ZeroSurgeOverride to an explicit
+	// set of namespaces (the ZERO_SURGE_OVERRIDE_NAMESPACES controller env var).
+	// Empty (the default) ⇒ fleet-wide: the override applies in every EAS-enabled
+	// namespace, preserving today's behavior. Non-empty ⇒ the override applies ONLY
+	// in the listed namespaces; workloads elsewhere keep the degrade-on-zero
+	// behavior. Like ZeroSurgeOverride itself this is operator-owned and install-time,
+	// so the fleet operator — not workload owners — decides where it applies.
+	// Populated once at construction and read-only thereafter (safe for concurrent
+	// reconciles).
+	ZeroSurgeOverrideNamespaces map[string]struct{}
 	// PDBFloorMutationEnabled is the master switch for the PDB-floor pinning feature.
 	// It ships OFF (dormant) and is wired from the ENABLE_PDB_FLOOR_MUTATION controller
 	// env var at startup (main.go). Held as a per-reconciler field (not a package var)
@@ -218,9 +228,12 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	surgeApplier, err := detectSurgeApplier(ctx, r.Client, EvictionAutoScaler.Namespace, EvictionAutoScaler.Spec.TargetName, EvictionAutoScaler.Spec.TargetKind, target)
 	if err != nil {
 		if errors.Is(err, errUnsupportedAutoscalerConfig) {
+			// The topology became unsupported (KEDA + standalone HPA). If we still own an
+			// active surge from before the change, degradeWithOwnedSurgeRevert tears it down
+			// (by marker, topology-independent) so it isn't stranded — detectSurgeApplier can't
+			// give us a usable applier here. No-op when we don't own a surge.
 			logger.Error(err, "unsupported autoscaler configuration, not requeueing")
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", err.Error())
-			return ctrl.Result{}, r.persistStatus(ctx, EvictionAutoScaler)
+			return ctrl.Result{}, r.degradeWithOwnedSurgeRevert(ctx, EvictionAutoScaler, target, "UnsupportedAutoscalerConfiguration", err.Error())
 		}
 		logger.Error(err, "failed to detect surge strategy")
 		return ctrl.Result{}, err
@@ -278,13 +291,19 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// calculateSurge returns the surge ceiling: minReplicas + maxSurge, or — when maxSurge
 	// resolves to 0 and ZeroSurgeOverride is set — minReplicas + the override. surgeTarget
 	// below is demand-driven (minReplicas + displaced), clamped to this ceiling.
-	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, r.ZeroSurgeOverride)
+	zeroSurgeOverride := r.zeroSurgeOverrideForNamespace(EvictionAutoScaler.Namespace)
+	maxSurgeTarget, surgeErr := calculateSurge(ctx, target, EvictionAutoScaler.Status.MinReplicas, zeroSurgeOverride)
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
-			// maxSurge resolves to 0 and no ZeroSurgeOverride set — nothing to surge, degrade.
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
-			return ctrl.Result{}, r.persistStatus(ctx, EvictionAutoScaler)
+			// maxSurge resolves to 0 and no ZeroSurgeOverride applies here (never set, or the
+			// namespace is outside ZeroSurgeOverrideNamespaces). If we still own an active surge
+			// (e.g. the override was turned off, or the namespace left the override scope
+			// mid-cycle) degradeWithOwnedSurgeRevert tears it down before degrading so we don't
+			// strand a scaled-up workload. Ownership is checked by surge marker (not current
+			// topology), so it is a no-op in the common fresh-degrade case and safe against an
+			// external takeover of the replica count.
+			return ctrl.Result{}, r.degradeWithOwnedSurgeRevert(ctx, EvictionAutoScaler, target, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 		default:
 			// Parse error or unexpected — degrade.
 			degraded(EvictionAutoScaler, "InvalidSurgeConfiguration", surgeErr.Error())
@@ -775,6 +794,91 @@ func ParseZeroSurgeOverride(raw string) (*intstr.IntOrString, error) {
 	return &v, nil
 }
 
+// zeroSurgeOverrideForNamespace returns the zero-maxSurge override that applies to
+// ns, honoring the optional namespace scope:
+//   - nil when the feature is off (ZeroSurgeOverride == nil);
+//   - the configured override when no scope is set (fleet-wide, back-compat) or
+//     when ns is in ZeroSurgeOverrideNamespaces;
+//   - nil when a scope is set and ns is outside it (degrade-on-zero preserved).
+//
+// The map is populated once at construction and only read here, so no locking is
+// needed for concurrent reconciles.
+func (r *EvictionAutoScalerReconciler) zeroSurgeOverrideForNamespace(ns string) *intstr.IntOrString {
+	if r.ZeroSurgeOverride == nil {
+		return nil
+	}
+	if len(r.ZeroSurgeOverrideNamespaces) == 0 {
+		return r.ZeroSurgeOverride // fleet-wide (back-compat)
+	}
+	if _, ok := r.ZeroSurgeOverrideNamespaces[ns]; ok {
+		return r.ZeroSurgeOverride
+	}
+	return nil
+}
+
+// revertOwnedSurgeIfHeld reverts a surge this EvictionAutoScaler still owns, used by the
+// degrade-and-return paths (the override no longer applies, or the autoscaler config became
+// unsupported) so a workload we surged is not stranded scaled-up once we stop managing it.
+//
+// It mirrors reconcileSurgeTeardown's ownership discipline rather than reusing the
+// topology-derived applier from detectSurgeApplier: the owner is resolved by which object still
+// carries our surge marker (resolveSurgeOwner), so a topology change since the surge cannot
+// mis-select the object to revert, and ownsActiveSurge additionally refuses to revert a
+// plain-Deployment surge whose live replicas no longer match what we recorded (a partner took
+// over — reverting would fight them).
+//
+// RevertSurge can deliberately no-op (returning nil) when the baseline is lost/non-positive,
+// leaving the workload safely over-provisioned rather than scaling it to a bad floor. A nil
+// error therefore does NOT prove the surge was removed, so we check the owner's marker (kept
+// reliable because each applier updates its in-memory owner on a real revert) and only report a
+// revert (true) — the signal on which the caller drops the surge gauges — once the marker is
+// actually gone. A refused revert returns (false, nil): the surge is intentionally still active,
+// so its gauges stay. Returns (false, nil) when nothing is owned (the common fresh-degrade
+// case), preserving today's behavior byte-for-byte.
+func (r *EvictionAutoScalerReconciler) revertOwnedSurgeIfHeld(ctx context.Context, eas *myappsv1.EvictionAutoScaler, target Surger) (bool, error) {
+	owner, err := resolveSurgeOwner(ctx, r.Client, eas.Namespace, eas.Spec.TargetName, eas.Spec.TargetKind, target)
+	if err != nil {
+		return false, err
+	}
+	if owner == nil || !ownsActiveSurge(target, owner) {
+		return false, nil
+	}
+	if err := owner.RevertSurge(ctx, eas.Status.MinReplicas); err != nil {
+		return false, err
+	}
+	// RevertSurge can deliberately no-op (returning nil) when the baseline is lost/non-positive,
+	// leaving the workload safely over-provisioned rather than scaling it to a bad floor. On a
+	// real revert each applier removes the marker AND updates its in-memory owner (Deployment
+	// mutates target in place; HPA/KEDA reassign after Update), so a still-active marker here
+	// means the revert was refused. In that case the surge is intentionally still live — report
+	// no revert (the caller must not log/clear on it) and leave the surge gauges in place. We
+	// don't error-retry: a lost baseline doesn't self-correct, so retrying would wedge.
+	if owner.IsSurgeActive() {
+		return false, nil
+	}
+	clearSurgeGauges(eas.Namespace, eas.Spec.TargetName)
+	return true, nil
+}
+
+// degradeWithOwnedSurgeRevert reverts any surge this EvictionAutoScaler still owns (so it isn't
+// stranded scaled-up once we stop managing it), marks the EAS Degraded with the given
+// reason/message, and persists. Shared by the surge-impossible degrade paths (an unsupported
+// autoscaler config, or the zero-maxSurge override no longer applying). Extracted so Reconcile's
+// two degrade branches stay single-statement (keeps its cyclomatic complexity in check).
+func (r *EvictionAutoScalerReconciler) degradeWithOwnedSurgeRevert(ctx context.Context, eas *myappsv1.EvictionAutoScaler, target Surger, reason, message string) error {
+	reverted, err := r.revertOwnedSurgeIfHeld(ctx, eas, target)
+	if err != nil {
+		return err
+	}
+	if reverted {
+		// degraded() below clears any pin; only the informational log is needed here.
+		log.FromContext(ctx).Info("Reverted owned surge before degrading",
+			"namespace", eas.Namespace, "target", eas.Spec.TargetName, "reason", reason)
+	}
+	degraded(eas, reason, message)
+	return r.persistStatus(ctx, eas)
+}
+
 // recordZeroMaxSurge sets the zero-maxSurge workload gauge for the target: 1 when its
 // rollout maxSurge resolves to 0 (an explicit maxSurge: 0 or a Recreate strategy),
 // else 0 — so the series sum is the cluster-wide count. Workloads with an unset
@@ -791,7 +895,7 @@ func recordZeroMaxSurge(target Surger, namespace, name string) {
 // drives a surge — i.e. the target's rollout maxSurge resolves to 0 and an override is set.
 func (r *EvictionAutoScalerReconciler) logZeroSurgeOverride(ctx context.Context, target Surger, surgeTarget int32) {
 	maxSurge := target.GetMaxSurge()
-	if r.ZeroSurgeOverride != nil && isZeroSurge(maxSurge) {
+	if r.zeroSurgeOverrideForNamespace(target.Obj().GetNamespace()) != nil && isZeroSurge(maxSurge) {
 		log.FromContext(ctx).Info(fmt.Sprintf("zero-maxSurge override surging %s/%s during drain (rollout maxSurge %q)",
 			target.Obj().GetNamespace(), target.Obj().GetName(), maxSurge.String()), "surgeTarget", surgeTarget)
 	}

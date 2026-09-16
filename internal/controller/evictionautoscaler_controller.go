@@ -229,21 +229,11 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err != nil {
 		if errors.Is(err, errUnsupportedAutoscalerConfig) {
 			// The topology became unsupported (KEDA + standalone HPA). If we still own an
-			// active surge from before the change, tear it down (by marker, topology-
-			// independent) so it isn't stranded — detectSurgeApplier can't give us a usable
-			// applier here. No-op when we don't own a surge.
-			reverted, revErr := r.revertOwnedSurgeIfHeld(ctx, EvictionAutoScaler, target)
-			if revErr != nil {
-				return ctrl.Result{}, revErr
-			}
-			if reverted {
-				// degraded() below clears any pin; only the informational log is needed here.
-				logger.Info("Unsupported autoscaler configuration; reverted owned surge before degrading",
-					"namespace", EvictionAutoScaler.Namespace, "target", EvictionAutoScaler.Spec.TargetName)
-			}
+			// active surge from before the change, degradeWithOwnedSurgeRevert tears it down
+			// (by marker, topology-independent) so it isn't stranded — detectSurgeApplier can't
+			// give us a usable applier here. No-op when we don't own a surge.
 			logger.Error(err, "unsupported autoscaler configuration, not requeueing")
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", err.Error())
-			return ctrl.Result{}, r.persistStatus(ctx, EvictionAutoScaler)
+			return ctrl.Result{}, r.degradeWithOwnedSurgeRevert(ctx, EvictionAutoScaler, target, "UnsupportedAutoscalerConfiguration", err.Error())
 		}
 		logger.Error(err, "failed to detect surge strategy")
 		return ctrl.Result{}, err
@@ -306,25 +296,14 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if surgeErr != nil {
 		switch {
 		case errors.Is(surgeErr, errMaxSurgeZero):
-			// maxSurge resolves to 0 and no ZeroSurgeOverride applies here (never set,
-			// or the namespace is outside ZeroSurgeOverrideNamespaces). If we still own an
-			// active surge for this workload — e.g. the override was turned off or the
-			// namespace left the override scope mid-cycle — tear it down before degrading so
-			// we don't strand a scaled-up workload or a pinned PDB floor. Ownership is checked
-			// by surge marker (not current topology), so this is a no-op in the common
-			// fresh-degrade case and safe against an external takeover of the replica count.
-			reverted, revErr := r.revertOwnedSurgeIfHeld(ctx, EvictionAutoScaler, target)
-			if revErr != nil {
-				return ctrl.Result{}, revErr
-			}
-			if reverted {
-				// degraded() below clears any pin; only the informational log is needed here.
-				logger.Info("Zero-maxSurge override no longer applies; reverted owned surge before degrading",
-					"namespace", EvictionAutoScaler.Namespace, "target", EvictionAutoScaler.Spec.TargetName)
-			}
-			// maxSurge resolves to 0 and no ZeroSurgeOverride set — nothing to surge, degrade.
-			degraded(EvictionAutoScaler, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
-			return ctrl.Result{}, r.persistStatus(ctx, EvictionAutoScaler)
+			// maxSurge resolves to 0 and no ZeroSurgeOverride applies here (never set, or the
+			// namespace is outside ZeroSurgeOverrideNamespaces). If we still own an active surge
+			// (e.g. the override was turned off, or the namespace left the override scope
+			// mid-cycle) degradeWithOwnedSurgeRevert tears it down before degrading so we don't
+			// strand a scaled-up workload. Ownership is checked by surge marker (not current
+			// topology), so it is a no-op in the common fresh-degrade case and safe against an
+			// external takeover of the replica count.
+			return ctrl.Result{}, r.degradeWithOwnedSurgeRevert(ctx, EvictionAutoScaler, target, "UnsupportedAutoscalerConfiguration", surgeErr.Error())
 		default:
 			// Parse error or unexpected — degrade.
 			degraded(EvictionAutoScaler, "InvalidSurgeConfiguration", surgeErr.Error())
@@ -879,6 +858,25 @@ func (r *EvictionAutoScalerReconciler) revertOwnedSurgeIfHeld(ctx context.Contex
 	}
 	clearSurgeGauges(eas.Namespace, eas.Spec.TargetName)
 	return true, nil
+}
+
+// degradeWithOwnedSurgeRevert reverts any surge this EvictionAutoScaler still owns (so it isn't
+// stranded scaled-up once we stop managing it), marks the EAS Degraded with the given
+// reason/message, and persists. Shared by the surge-impossible degrade paths (an unsupported
+// autoscaler config, or the zero-maxSurge override no longer applying). Extracted so Reconcile's
+// two degrade branches stay single-statement (keeps its cyclomatic complexity in check).
+func (r *EvictionAutoScalerReconciler) degradeWithOwnedSurgeRevert(ctx context.Context, eas *myappsv1.EvictionAutoScaler, target Surger, reason, message string) error {
+	reverted, err := r.revertOwnedSurgeIfHeld(ctx, eas, target)
+	if err != nil {
+		return err
+	}
+	if reverted {
+		// degraded() below clears any pin; only the informational log is needed here.
+		log.FromContext(ctx).Info("Reverted owned surge before degrading",
+			"namespace", eas.Namespace, "target", eas.Spec.TargetName, "reason", reason)
+	}
+	degraded(eas, reason, message)
+	return r.persistStatus(ctx, eas)
 }
 
 // recordZeroMaxSurge sets the zero-maxSurge workload gauge for the target: 1 when its

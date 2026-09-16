@@ -222,7 +222,8 @@ func main() {
 	// (today's behavior); non-empty ⇒ it applies only in these namespaces, with
 	// workloads elsewhere keeping the degrade-on-zero behavior. Operator-owned,
 	// install-time — the fleet operator, not workload owners, decides the scope.
-	zeroSurgeOverrideNamespacesList, zsnErr := namespacefilter.ParseNamespaceList(os.Getenv("ZERO_SURGE_OVERRIDE_NAMESPACES"))
+	zeroSurgeOverrideNamespacesList, zsnErr := namespacefilter.ParseNamespaceList(
+		os.Getenv("ZERO_SURGE_OVERRIDE_NAMESPACES"))
 	if zsnErr != nil {
 		setupLog.Error(zsnErr, "Failed to parse ZERO_SURGE_OVERRIDE_NAMESPACES env variable")
 		os.Exit(1)

@@ -18,9 +18,10 @@ import (
 // ACTIONED_NAMESPACES list, operator-owned scoping lists may legitimately target
 // AKS-owned namespaces (which the eviction-autoscaler always manages).
 func ParseNamespaceList(raw string) ([]string, error) {
-	var out []string
-	seen := make(map[string]struct{})
-	for _, entry := range strings.Split(raw, ",") {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, entry := range parts {
 		ns := strings.TrimSpace(entry)
 		if ns == "" {
 			continue

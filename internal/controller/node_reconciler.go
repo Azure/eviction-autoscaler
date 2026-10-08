@@ -29,6 +29,9 @@ type NodeReconciler struct {
 	Recorder record.EventRecorder
 }
 
+// NodeNameIndex is the Pod spec.nodeName field selector. The Kubernetes API server indexes
+// this field natively, so it can be used in a List without registering a client-side field
+// index (which would force controller-runtime to start a full, cluster-wide Pod informer).
 const NodeNameIndex = "spec.nodeName"
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
@@ -66,6 +69,10 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	logger.Info("Node is cordoned", "node", node.Name)
 
 	var podlist corev1.PodList
+	// List the cordoned node's Pods using the spec.nodeName field selector. Pods are not
+	// cached by the manager (see DisableFor in cmd/main.go), so this List is served by the
+	// API server directly — the controller never maintains a cluster-wide Pod informer.
+	// Node-cordon events are rare and the result is bounded by pods-per-node.
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -153,17 +160,13 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
-		// Extract the spec.nodeName field
-		pod := rawObj.(*corev1.Pod)
-		if pod.Spec.NodeName == "" {
-			return nil // Don't index Pods without a NodeName
-		}
-		return []string{pod.Spec.NodeName}
-	}); err != nil {
-		return err
-	}
-
+	// NOTE: we deliberately do NOT register a client-side field index on Pod here.
+	// Registering an index forces controller-runtime to start a cluster-wide Pod informer
+	// that caches every Pod in the cluster, which made memory scale with total cluster Pod
+	// count and OOM the controller on large clusters. Pods are excluded from the manager
+	// cache entirely (see DisableFor in cmd/main.go), so Reconcile's List is served by the
+	// API server using its native spec.nodeName field selector. Only Node (small,
+	// cluster-scoped) is watched/cached here.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		WithEventFilter(predicate.Funcs{

@@ -29,11 +29,14 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	kedav1alpha1 "github.com/kedacore/keda/v2/apis/keda/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	k8senv "k8s.io/utils/env"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -49,6 +52,24 @@ import (
 // reconcilers behind it lets the kill-switch gate register them in one flat loop.
 type reconcilerSetup interface {
 	SetupWithManager(mgr ctrl.Manager) error
+}
+
+// stripNodeStatus is a cache transform applied to Node objects before they are stored in the
+// informer cache. The NodeReconciler only reads node.Spec.Unschedulable and node.Name, so we
+// discard the (potentially large) status — status.images alone can be tens of KB per node — and
+// managedFields. This keeps the Node cache, the only remaining cluster-size-scaling cache after
+// the Pod informer was removed, bounded to metadata + spec. It must be a per-object (Node-only)
+// transform, never a default one: other reconcilers legitimately read the status of PDBs,
+// Deployments, HPAs, and the EvictionAutoScaler CR.
+func stripNodeStatus(obj interface{}) (interface{}, error) {
+	node, ok := obj.(*corev1.Node)
+	if !ok {
+		// Not a Node (e.g. a cache.DeletedFinalStateUnknown tombstone); leave it untouched.
+		return obj, nil
+	}
+	node.Status = corev1.NodeStatus{}
+	node.ManagedFields = nil
+	return node, nil
 }
 
 var (
@@ -115,6 +136,34 @@ func main() {
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				// Do NOT cache Pods. No controller watches Pods, and the only Pod reads are
+				// narrow, selector-scoped Lists (the cordoned-node lookup in NodeReconciler and
+				// the PDB-selector lookups in countPodsOnCordoned / discoverDeployment). Serving
+				// those from the manager cache would require a cluster-wide Pod informer that
+				// caches every Pod in the cluster — the dominant, cluster-size-driven heap
+				// consumer that OOM-killed the controller on large clusters. DisableFor routes
+				// every Pod read straight to the API server instead, so no Pod informer is ever
+				// started regardless of which reconciler reads Pods first.
+				DisableFor: []client.Object{&corev1.Pod{}},
+			},
+		},
+		Cache: cache.Options{
+			// Strip managedFields from every cached object. managedFields is pure
+			// server-side-apply bookkeeping that no reconciler here reads, and it is
+			// frequently the single largest sub-structure on a cached object. Dropping it
+			// from the informer cache meaningfully lowers the controller's heap.
+			DefaultTransform: cache.TransformStripManagedFields(),
+			ByObject: map[client.Object]cache.ByObject{
+				// Node is the only remaining cluster-size-scaling cache (one entry per node,
+				// and node count grows with the cluster). Node objects are deceptively large
+				// because status.images lists every image on the node. The NodeReconciler only
+				// ever reads node.Spec.Unschedulable and node.Name, so we null out the entire
+				// status on the cached copy — bounding the Node cache to metadata + spec.
+				&corev1.Node{}: {Transform: stripNodeStatus},
+			},
+		},
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
 			SecureServing: secureMetrics,

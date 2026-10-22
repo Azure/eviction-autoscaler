@@ -498,6 +498,64 @@ var _ = Describe("PDBToEvictionAutoScalerReconciler ownership transfer", func() 
 		Expect(updatedPDB.Annotations).ToNot(HaveKey(PDBDeploymentOwnerAnnotationKey))
 	})
 
+	It("should not write the deployment owner marker back when a later update runs", func() {
+		controller := true
+		blockOwnerDeletion := true
+		pdb := &policyv1.PodDisruptionBudget{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      deploymentName,
+				Namespace: namespace,
+				Annotations: map[string]string{
+					PDBOwnedByAnnotationKey:         ControllerName,
+					PDBDeploymentOwnerAnnotationKey: "true",
+					AnnotationOriginalPDBSpec:       `{"minAvailable":1}`,
+				},
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion:         "apps/v1",
+						Kind:               ResourceTypeDeployment,
+						Name:               deploymentName,
+						UID:                deployment.UID,
+						Controller:         &controller,
+						BlockOwnerDeletion: &blockOwnerDeletion,
+					},
+				},
+			},
+			Spec: policyv1.PodDisruptionBudgetSpec{
+				MinAvailable: &intstr.IntOrString{IntVal: 3},
+				Selector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"app": "ownership-test"},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, pdb)).To(Succeed())
+
+		delete(pdb.Annotations, PDBOwnedByAnnotationKey)
+		Expect(k8sClient.Update(ctx, pdb)).To(Succeed())
+
+		req := reconcile.Request{
+			NamespacedName: client.ObjectKey{Name: deploymentName, Namespace: namespace},
+		}
+		_, err := reconciler.Reconcile(ctx, req)
+		Expect(err).ToNot(HaveOccurred())
+
+		updatedPDB := &policyv1.PodDisruptionBudget{}
+		err = k8sClient.Get(ctx, client.ObjectKey{Name: deploymentName, Namespace: namespace}, updatedPDB)
+		Expect(err).ToNot(HaveOccurred())
+		// The floor cleanup update in this reconcile must not put the marker back.
+		Expect(updatedPDB.Annotations).ToNot(HaveKey(AnnotationOriginalPDBSpec))
+		Expect(updatedPDB.Annotations).ToNot(HaveKey(PDBDeploymentOwnerAnnotationKey))
+
+		hasDeploymentOwner := false
+		for _, ownerRef := range updatedPDB.OwnerReferences {
+			if ownerRef.Kind == ResourceTypeDeployment && ownerRef.UID == deployment.UID {
+				hasDeploymentOwner = true
+				break
+			}
+		}
+		Expect(hasDeploymentOwner).To(BeFalse())
+	})
+
 	It("should record the marker on a controller-owned PDB without dropping its owner reference", func() {
 		controller := true
 		blockOwnerDeletion := true

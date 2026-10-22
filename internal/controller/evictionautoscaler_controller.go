@@ -237,14 +237,16 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Check if the resource version has changed or if it's empty (initial state)
 	if EvictionAutoScaler.Status.TargetGeneration == 0 || EvictionAutoScaler.Status.TargetGeneration != target.Obj().GetGeneration() {
+		previousGeneration := EvictionAutoScaler.Status.TargetGeneration
 		EvictionAutoScaler.Status.TargetGeneration = target.Obj().GetGeneration()
 		// Don't reset MinReplicas if a surge is in progress (e.g., HPA/KEDA-driven scaling
 		// changes the deployment generation as part of the surge, not a user change).
-		if surgeApplier.IsSurgeActive() {
+		surgeActive := surgeApplier.IsSurgeActive()
+		if surgeActive {
 			r.recoverBaselineForActiveSurge(ctx, EvictionAutoScaler, surgeApplier)
-			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
+			logger.Info("Target generation changed during active surge, preserving min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", previousGeneration, "minReplicas", EvictionAutoScaler.Status.MinReplicas)
 		} else {
-			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", EvictionAutoScaler.Status.TargetGeneration)
+			logger.Info("Target resource version changed resetting min replicas", "kind", EvictionAutoScaler.Spec.TargetKind, "targetname", EvictionAutoScaler.Spec.TargetName, "currentGeneration", target.Obj().GetGeneration(), "previousGeneration", previousGeneration)
 			// The resource version has changed, which means someone else has modified the Target.
 			// To avoid conflicts, we update our status to reflect the new state and avoid making further changes.
 			// Use ResolveMinReplicas to track the effective floor (HPA minReplicas, KEDA minReplicaCount, or deployment replicas).
@@ -255,7 +257,16 @@ func (r *EvictionAutoScalerReconciler) Reconcile(ctx context.Context, req ctrl.R
 			EvictionAutoScaler.Status.MinReplicas = minReplicas
 		}
 		ready(EvictionAutoScaler, "TargetSpecChange", fmt.Sprintf("resetting min replicas to %d", EvictionAutoScaler.Status.MinReplicas))
-		return ctrl.Result{}, r.persistStatus(ctx, EvictionAutoScaler) //should we go rety in case there is also an eviction or just wait till the next eviction
+		if err := r.persistStatus(ctx, EvictionAutoScaler); err != nil {
+			return ctrl.Result{}, err
+		}
+		// The EvictionAutoScaler watch ignores status-only updates. A generation change
+		// during a surge has to schedule the cooldown itself, or scale-down never runs
+		// once nothing else rewrites spec.lastEviction.
+		if surgeActive {
+			return ctrl.Result{RequeueAfter: cooldown}, nil
+		}
+		return ctrl.Result{}, nil
 	}
 
 	// Log current state before checks

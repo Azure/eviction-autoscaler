@@ -437,12 +437,14 @@ func (r *PDBToEvictionAutoScalerReconciler) reconcileEASDeletion(ctx context.Con
 	return r.removeFloorFinalizer(ctx, eas)
 }
 
-// handleOwnershipTransfer manages the owner reference based on the ownedBy annotation
+// handleOwnershipTransfer manages the owner reference based on the ownedBy annotation.
+// A Deployment ownerReference is removed only when this controller recorded it.
 func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.Context, pdb *policyv1.PodDisruptionBudget) error {
 	logger := log.FromContext(ctx)
 
 	// Check if PDB has the ownedBy annotation
 	hasAnnotation := pdb.Annotations != nil && pdb.Annotations[PDBOwnedByAnnotationKey] == ControllerName
+	hasMarker := pdb.Annotations != nil && pdb.Annotations[PDBDeploymentOwnerAnnotationKey] == "true"
 
 	// Check if PDB has an owner reference to a deployment
 	hasOwnerRef := false
@@ -455,8 +457,56 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 		}
 	}
 
-	// Handle annotation and owner reference synchronization
-	if !hasAnnotation && hasOwnerRef {
+	if hasAnnotation {
+		if hasOwnerRef && hasMarker {
+			return nil
+		}
+		if pdb.Annotations == nil {
+			pdb.Annotations = map[string]string{}
+		}
+		pdb.Annotations[PDBDeploymentOwnerAnnotationKey] = "true"
+		if !hasOwnerRef {
+			// Annotation is present but owner reference is missing - add it back
+			logger.Info("Adding owner reference to PDB - controller taking control back",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+
+			deploymentName, deploymentUID, err := r.discoverDeployment(ctx, pdb)
+			if err != nil {
+				logger.Error(err, "Failed to get deployment",
+					"namespace", pdb.Namespace, "name", deploymentName)
+				return err
+			}
+
+			controller := true
+			blockOwnerDeletion := true
+
+			pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
+				APIVersion:         APIVersionAppsV1,
+				Kind:               ResourceTypeDeployment,
+				Name:               deploymentName,
+				UID:                deploymentUID,
+				Controller:         &controller,
+				BlockOwnerDeletion: &blockOwnerDeletion,
+			})
+		}
+		if err := r.Update(ctx, pdb); err != nil {
+			logger.Error(err, "Failed to add owner reference to PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+			return err
+		}
+		if !hasOwnerRef {
+			logger.Info("Successfully added owner reference to PDB",
+				"namespace", pdb.Namespace, "name", pdb.Name)
+		}
+		return nil
+	}
+
+	// Missing ownedBy on a PDB we never marked is not a transfer. Leave its ownerReference alone.
+	if !hasMarker {
+		return nil
+	}
+
+	if hasOwnerRef {
 		// User removed annotation - remove owner reference to transfer ownership
 		logger.Info("Removing owner reference from PDB - user has taken ownership",
 			"namespace", pdb.Namespace, "name", pdb.Name)
@@ -469,47 +519,18 @@ func (r *PDBToEvictionAutoScalerReconciler) handleOwnershipTransfer(ctx context.
 			}
 		}
 		pdb.OwnerReferences = newOwnerRefs
+	}
+	delete(pdb.Annotations, PDBDeploymentOwnerAnnotationKey)
 
-		if err := r.Update(ctx, pdb); err != nil {
-			logger.Error(err, "Failed to remove owner reference from PDB",
-				"namespace", pdb.Namespace, "name", pdb.Name)
-			return err
-		}
+	if err := r.Update(ctx, pdb); err != nil {
+		logger.Error(err, "Failed to remove owner reference from PDB",
+			"namespace", pdb.Namespace, "name", pdb.Name)
+		return err
+	}
+	if hasOwnerRef {
 		logger.Info("Successfully removed owner reference from PDB",
 			"namespace", pdb.Namespace, "name", pdb.Name)
-	} else if hasAnnotation && !hasOwnerRef {
-		// Annotation is present but owner reference is missing - add it back
-		logger.Info("Adding owner reference to PDB - controller taking control back",
-			"namespace", pdb.Namespace, "name", pdb.Name)
-
-		deploymentName, deploymentUID, err := r.discoverDeployment(ctx, pdb)
-		if err != nil {
-			logger.Error(err, "Failed to get deployment",
-				"namespace", pdb.Namespace, "name", deploymentName)
-			return err
-		}
-
-		controller := true
-		blockOwnerDeletion := true
-
-		pdb.OwnerReferences = append(pdb.OwnerReferences, metav1.OwnerReference{
-			APIVersion:         APIVersionAppsV1,
-			Kind:               ResourceTypeDeployment,
-			Name:               deploymentName,
-			UID:                deploymentUID,
-			Controller:         &controller,
-			BlockOwnerDeletion: &blockOwnerDeletion,
-		})
-
-		if err := r.Update(ctx, pdb); err != nil {
-			logger.Error(err, "Failed to add owner reference to PDB",
-				"namespace", pdb.Namespace, "name", pdb.Name)
-			return err
-		}
-		logger.Info("Successfully added owner reference to PDB",
-			"namespace", pdb.Namespace, "name", pdb.Name)
 	}
-
 	return nil
 }
 

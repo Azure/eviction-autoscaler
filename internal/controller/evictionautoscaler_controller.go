@@ -383,10 +383,26 @@ func (r *EvictionAutoScalerReconciler) handleBlockedDrain(ctx context.Context, E
 		return ctrl.Result{}, countErr
 	}
 
-	surgeTarget := EvictionAutoScaler.Status.MinReplicas + displaced
-	if surgeTarget > maxSurgeTarget {
-		logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", maxSurgeTarget)
-		surgeTarget = maxSurgeTarget
+	// Before this controller has surged, a user PDB can block at the live replica
+	// count while Status.MinReplicas is only the HPA/KEDA floor. Add displaced
+	// pods on top of the live count, and raise the maxSurge ceiling from that
+	// same count, or the higher demand is clamped back below the live count.
+	// After a surge exists, stay on floor+displaced so a partial uncordon does
+	// not scale further while DisruptionsAllowed is still 0.
+	baseline := EvictionAutoScaler.Status.MinReplicas
+	ceiling := maxSurgeTarget
+	if !surgeApplier.IsSurgeActive() {
+		if live := target.GetReplicas(); live > baseline {
+			baseline = live
+			if raised, surgeErr := calculateSurge(ctx, target, live, r.ZeroSurgeOverride); surgeErr == nil && raised > ceiling {
+				ceiling = raised
+			}
+		}
+	}
+	surgeTarget := baseline + displaced
+	if surgeTarget > ceiling {
+		logger.Info("Displaced pods exceed maxSurge capacity, capping surge", "pdb", pdb.Name, "displaced", displaced, "maxSurgeTarget", ceiling)
+		surgeTarget = ceiling
 	}
 
 	// Pin the PDB floor whenever WE are driving the surge (baseline OR our recorded surge).

@@ -25,6 +25,10 @@ import (
 
 const PDBCreateAnnotationKey = "eviction-autoscaler.azure.com/pdb-create"
 const PDBOwnedByAnnotationKey = "ownedBy"
+
+// PDBDeploymentOwnerAnnotationKey is set when this controller writes the Deployment ownerReference.
+// Removing ownedBy leaves this key, so reconcile drops that ownerReference only.
+const PDBDeploymentOwnerAnnotationKey = "eviction-autoscaler.azure.com/deployment-owner"
 const ControllerName = "EvictionAutoScaler"
 
 // Owner-reference GVK parts used when wiring PDB <-> EvictionAutoScaler ownership.

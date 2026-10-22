@@ -419,7 +419,7 @@ kubectl get pdb my-app -o yaml
 
 #### User-Owned Resources (manually created)
 
-Resources created manually without the `ownedBy: EvictionAutoScaler` annotation are preserved:
+Resources created manually without the `ownedBy: EvictionAutoScaler` annotation are preserved. A Deployment ownerReference you set on that PDB is left in place.
 
 1. **When a namespace is disabled:**
    - The `PDBToEvictionAutoScalerReconciler` deletes only the `EvictionAutoScaler` CR

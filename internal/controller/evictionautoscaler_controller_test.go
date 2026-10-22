@@ -1070,6 +1070,64 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*deployment.Spec.Replicas).To(Equal(int32(5))) // Change as needed to verify scaling
 		})
 
+		It("should requeue scale-down when deployment generation changes during an active surge", func() {
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			deployment := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
+			staleGeneration := deployment.Generation
+
+			EvictionAutoScaler := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, EvictionAutoScaler)).To(Succeed())
+			EvictionAutoScaler.Spec.LastEviction = v1.Eviction{
+				PodName:      "somepod",
+				EvictionTime: metav1.NewTime(time.Now().Add(-2 * cooldown)),
+			}
+			Expect(k8sClient.Update(ctx, EvictionAutoScaler)).To(Succeed())
+			EvictionAutoScaler.Status.MinReplicas = 1
+			EvictionAutoScaler.Status.TargetGeneration = staleGeneration
+			Expect(k8sClient.Status().Update(ctx, EvictionAutoScaler)).To(Succeed())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pdb)).To(Succeed())
+			pdb.Status.DisruptionsAllowed = 1
+			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			// A spec write during the surge bumps generation. The surge marker stays.
+			deployment.Spec.Replicas = int32Ptr(2)
+			deployment.Annotations = map[string]string{
+				EvictionSurgeReplicasAnnotationKey: "2",
+				OriginalMinReplicasAnnotationKey:   "1",
+			}
+			Expect(k8sClient.Update(ctx, deployment)).To(Succeed())
+			Expect(deployment.Generation).ToNot(Equal(staleGeneration))
+
+			result, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown))
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(2)))
+
+			// The watch ignores the status update from the generation pass, so this
+			// requeue is what reaches scale-down once cooldown has already elapsed.
+			result, err = controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(time.Duration(0)))
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, deployment)).To(Succeed())
+			Expect(*deployment.Spec.Replicas).To(Equal(int32(1)))
+			Expect(deployment.Annotations).ToNot(HaveKey(EvictionSurgeReplicasAnnotationKey))
+		})
+
 		//TODO do noting on old eviction
 		//TODO test a statefulset.
 

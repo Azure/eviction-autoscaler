@@ -121,7 +121,7 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 		},
 		Spec: policyv1.PodDisruptionBudgetSpec{
 			MinAvailable: &intstr.IntOrString{IntVal: minAvailable},
-			Selector:     &metav1.LabelSelector{MatchLabels: deployment.Spec.Selector.MatchLabels},
+			Selector:     deployment.Spec.Selector.DeepCopy(),
 		},
 	}
 

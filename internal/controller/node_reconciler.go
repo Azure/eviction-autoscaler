@@ -27,6 +27,8 @@ type NodeReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
 	Recorder record.EventRecorder
+	// Must match the manager client configuration: registering an index creates a Pod informer.
+	PodCacheEnabled bool
 }
 
 const NodeNameIndex = "spec.nodeName"
@@ -153,15 +155,16 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	if err := mgr.GetFieldIndexer().IndexField(context.TODO(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
-		// Extract the spec.nodeName field
-		pod := rawObj.(*corev1.Pod)
-		if pod.Spec.NodeName == "" {
-			return nil // Don't index Pods without a NodeName
+	if r.PodCacheEnabled {
+		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
+			pod := rawObj.(*corev1.Pod)
+			if pod.Spec.NodeName == "" {
+				return nil
+			}
+			return []string{pod.Spec.NodeName}
+		}); err != nil {
+			return err
 		}
-		return []string{pod.Spec.NodeName}
-	}); err != nil {
-		return err
 	}
 
 	return ctrl.NewControllerManagedBy(mgr).

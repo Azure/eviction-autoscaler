@@ -66,6 +66,8 @@ spec:
             value: {{ .Values.controllerConfig.zeroSurgeOverride | quote }}
           - name: CONTROLLER_ENABLED
             value: {{ .Values.controllerConfig.enabled | quote }}
+          - name: POD_CACHE_ENABLED
+            value: {{ dig "podCache" "enabled" false .Values.controllerConfig | quote }}
         command:
         - /manager
         args:

@@ -8,14 +8,15 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-# Resource limits and requests
+# Resource limits and requests. Updating these values rolls out a replacement Pod;
+# they are not hot-reloaded by the controller.
 resources:
   limits:
     cpu: 500m
-    memory: 128Mi
+    memory: 512Mi
   requests:
     cpu: 10m
-    memory: 64Mi
+    memory: 128Mi
 
 # Controller pod scheduling
 # nodeSelector pins the controller to nodes matching these labels (node affinity
@@ -44,6 +45,14 @@ controllerConfig:
   #          namespace or PDB (it still serves health and metrics). Use this to fully
   #          disable eviction-autoscaler in place, without uninstalling the extension.
   enabled: true
+
+  # false (default): read Pods directly from the API server using the existing
+  # namespace, label, and node-name filters; do not retain a cluster-wide Pod cache.
+  # true: retain the informer-backed Pod cache and its node-name index. This
+  # reduces repeated API reads but memory grows with the total cluster Pod count.
+  # Other resource caches are unchanged. Changing this setting requires a rollout.
+  podCache:
+    enabled: false
 
   # Metrics configuration
   metrics:

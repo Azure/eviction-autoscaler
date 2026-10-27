@@ -1,4 +1,4 @@
-{{- include "eviction-autoscaler.validateMemoryResources" . -}}
+{{- $podCache := .Values.controllerConfig.podCache | default dict -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,7 +68,7 @@ spec:
           - name: CONTROLLER_ENABLED
             value: {{ .Values.controllerConfig.enabled | quote }}
           - name: POD_CACHE_ENABLED
-            value: {{ dig "podCache" "enabled" false .Values.controllerConfig | quote }}
+            value: {{ $podCache.enabled | default false | quote }}
         command:
         - /manager
         args:

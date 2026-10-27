@@ -99,7 +99,8 @@ helm-validate: helm ## Run helm lint and template on the chart
 	$(HELM_BIN) lint ./helm/eviction-autoscaler
 	@echo "Validating helm template rendering..."
 	@$(HELM_BIN) template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system 1>/dev/null && echo "✓ Helm template rendered successfully"
-	HELM_BIN="$(HELM_BIN)" go test ./test/helm -count=1
+	$(HELM_BIN) template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system --show-only templates/deployment.yaml | go run ./cmd/validate-chart-resources
+	HELM_BIN="$(HELM_BIN)" go test ./cmd/validate-chart-resources ./test/helm -count=1
 
 
 ##@ Build

@@ -21,13 +21,17 @@ var _ = Describe("Node Pod cache configuration", func() {
 		DeferCleanup(cancel)
 
 		skipNameValidation := true
-		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
+		options := ctrl.Options{
 			Scheme:                 k8sClient.Scheme(),
 			Cache:                  cache.Options{ReaderFailOnMissingInformer: true},
 			Controller:             config.Controller{SkipNameValidation: &skipNameValidation},
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: "0",
-		})
+		}
+		if !enabled {
+			options.Client.Cache = &client.CacheOptions{DisableFor: []client.Object{&corev1.Pod{}}}
+		}
+		mgr, err := ctrl.NewManager(cfg, options)
 		Expect(err).NotTo(HaveOccurred())
 		reconciler := &NodeReconciler{
 			Client: mgr.GetClient(), Scheme: mgr.GetScheme(), PodCacheEnabled: enabled,
@@ -35,6 +39,13 @@ var _ = Describe("Node Pod cache configuration", func() {
 		Expect(reconciler.SetupWithManager(mgr)).To(Succeed())
 
 		if !enabled {
+			var pods corev1.PodList
+			Expect(mgr.GetClient().List(ctx, &pods, client.MatchingFields{
+				NodeNameIndex: "uncached-test-node",
+			})).To(Succeed())
+			Expect(mgr.GetClient().List(ctx, &pods, client.InNamespace("default"),
+				client.MatchingLabels{"app": "uncached-test"})).To(Succeed())
+			// A successful client read must not have created a Pod informer.
 			err := mgr.GetCache().List(ctx, &corev1.PodList{})
 			Expect(err).To(BeAssignableToTypeOf(&cache.ErrResourceNotCached{}))
 			return

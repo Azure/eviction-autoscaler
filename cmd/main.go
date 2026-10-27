@@ -70,6 +70,9 @@ func podClientOptions(enabled bool) client.Options {
 	if enabled {
 		return client.Options{}
 	}
+	// This bypasses the cache for every Pod Get/List, not just node-scoped lists.
+	// Other resource reads remain cached. Node setup must also skip the Pod index,
+	// because registering that index would create a Pod informer independently.
 	return client.Options{
 		Cache: &client.CacheOptions{
 			DisableFor: []client.Object{&corev1.Pod{}},

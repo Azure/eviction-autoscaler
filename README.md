@@ -273,21 +273,35 @@ helm upgrade eviction-autoscaler ./helm/eviction-autoscaler \
   --set resources.limits.memory=512Mi
 ```
 
-The chart validates memory quantities during rendering, before a rollout. Values
-must be non-negative Kubernetes quantities; decimal, binary, fractional, and
-exponent forms are supported (for example `128Mi`, `1.5Gi`, `512M`, or `1e9`).
-When both are set, `resources.requests.memory` must not exceed
-`resources.limits.memory`, including when the units differ.
+Memory settings must be non-negative Kubernetes quantities. When both are set,
+`resources.requests.memory` must not exceed `resources.limits.memory`, including
+when the units differ. The Go preflight validator uses Kubernetes' own quantity
+parser, supporting decimal, binary, fractional, and exponent forms without
+reimplementing quantity arithmetic in Helm.
+
+Run `make helm-validate` to render and validate the chart before deployment. To
+validate custom values, use the same overrides as the intended installation:
+
+```bash
+helm template eviction-autoscaler ./helm/eviction-autoscaler \
+  --namespace kube-system --show-only templates/deployment.yaml \
+  --set resources.requests.memory=128Mi \
+  --set resources.limits.memory=512Mi \
+  | go run ./cmd/validate-chart-resources
+```
+
+**Validation stage:** the Go preflight rejects invalid settings; `helm template`
+and `helm lint` alone do not compare memory requests and limits. Direct installs
+or upgrades that omit the preflight still rely on Kubernetes admission to reject
+invalid resources. Cosmic's deployment pipeline must invoke the preflight if it
+needs validation before submitting an update.
 
 **Upgrade note:** the default memory request increased from `64Mi` to `128Mi`.
 If an existing installation overrides only the limit to a value below `128Mi`,
 also set a compatible request explicitly. For example, an intentional `64Mi`
-limit requires `resources.requests.memory=64Mi` (or lower); setting only the limit
-now fails with an actionable chart error instead of rendering an invalid Deployment.
-The chart does not silently reduce the request or increase the limit.
-Validate custom overrides with `helm template` or a dry-run upgrade. Helm lint alone
-can skip template `fail` guards; `make helm-validate` also renders the chart and runs
-the memory validation regression tests.
+limit requires `resources.requests.memory=64Mi` (or lower). The preflight reports
+an actionable error when only the limit is lowered. It does not silently reduce
+the request or increase the limit.
 
 Changing the Pod-cache setting or memory values changes the Pod template and
 triggers a Deployment rollout, replacing the controller Pod. Increasing a memory
@@ -312,6 +326,16 @@ registered for cached node-scoped lists. Namespace eligibility does not limit th
 enabled Pod cache's size: it retains cluster-wide Pods, including when
 `enabledByDefault=true`. The `512Mi` default provides additional headroom, not a
 guarantee that every cluster fits.
+
+Disabling Pod caching has two parts: the manager's `DisableFor: Pod` setting routes
+Pod reads to the API server, and skipping `IndexField(Pod)` avoids creating an
+informer just to maintain the node-name index. Removing only the index would not
+disable cached reads; a later Pod list could still create the informer.
+
+The node controller uses controller-runtime's default of one worker, so cordoned
+nodes are processed sequentially rather than listing every cordoned node's Pods
+in parallel. The EAS and PDB controllers have their own workers and can issue Pod
+reads concurrently; this is not a global API request-rate limit.
 
 ### Excluding Deployments from Automatic PDB Creation
 

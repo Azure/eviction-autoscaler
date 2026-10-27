@@ -67,6 +67,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	logger.Info("Node is cordoned", "node", node.Name)
 
+	// With POD_CACHE_ENABLED=false (default), the manager sends this filtered list
+	// directly to the API server; it neither reads nor populates a Pod cache.
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
 		return ctrl.Result{}, err
@@ -120,6 +122,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
+		// Preserve the existing anticipatory DisruptionTarget signal. Cache bypass
+		// changes reads, not this status write; the rest of Pod status must be retained.
 		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
 			Type:    corev1.DisruptionTarget,
 			Status:  corev1.ConditionTrue,
@@ -155,6 +159,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// IndexField itself creates a Pod informer. Register it only for opt-in cached
+	// reads; direct reads use the API server's spec.nodeName field selector instead.
 	if r.PodCacheEnabled {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
 			pod := rawObj.(*corev1.Pod)
@@ -167,6 +173,8 @@ func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		}
 	}
 
+	// With no concurrency override, controller-runtime uses one node worker.
+	// Other controllers may independently issue Pod reads at the same time.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Node{}).
 		WithEventFilter(predicate.Funcs{

@@ -22,8 +22,13 @@ var _ = Describe("Node Pod cache configuration", func() {
 
 		skipNameValidation := true
 		mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-			Scheme:                 k8sClient.Scheme(),
-			Cache:                  cache.Options{ReaderFailOnMissingInformer: true},
+			Scheme: k8sClient.Scheme(),
+			Cache: cache.Options{
+				ReaderFailOnMissingInformer: true,
+				ByObject: map[client.Object]cache.ByObject{
+					&corev1.Pod{}: {Transform: TransformPodCache},
+				},
+			},
 			Controller:             config.Controller{SkipNameValidation: &skipNameValidation},
 			Metrics:                metricsserver.Options{BindAddress: "0"},
 			HealthProbeBindAddress: "0",
@@ -90,6 +95,7 @@ var _ = Describe("Node Pod cache configuration", func() {
 		for _, pod := range pods.Items {
 			names = append(names, pod.Name)
 			Expect(pod.Spec.NodeName).To(Equal(targetNode))
+			Expect(pod.Spec.Containers).To(BeEmpty())
 		}
 		Expect(names).To(ConsistOf("target", "other-namespace"))
 	},

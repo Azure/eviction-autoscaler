@@ -242,6 +242,12 @@ Controller environment settings, including `POD_CACHE_ENABLED`, are read at proc
 startup. Memory requests and limits are rendered into the Deployment's Pod template.
 Neither is hot-reloaded by the running controller.
 
+When `POD_CACHE_ENABLED=true`, the Pod cache retains only name, namespace, UID,
+resource version, labels, owner references, and `spec.nodeName`. Containers,
+volumes, annotations, managed fields, and status are omitted. This reduces retained
+memory; list/watch still receives full Pods. The node reconciler records
+`LastEviction` on the EvictionAutoScaler without reading or updating Pod status.
+
 For Cosmic-managed installations, publish a chart/image version containing the new
 setting, then update the desired chart values through the ring configuration patch
 and deployment reconciliation path. The relevant **chart values** are:

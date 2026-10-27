@@ -6,7 +6,6 @@ import (
 
 	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
-	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -119,19 +118,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
-		pod := pod.DeepCopy()
-		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
-			Type:    corev1.DisruptionTarget,
-			Status:  corev1.ConditionTrue,
-			Reason:  "EvictionAttempt",
-			Message: "eviction attempt anticipated by node cordon",
-		})
-		if updatedpod {
-			if err := r.Client.Status().Update(ctx, pod); err != nil {
-				logger.Error(err, "Error: Unable to update Pod status")
-				return ctrl.Result{}, err
-			}
-		}
+		// If we add DisruptionTarget reporting again, patch only that status condition
+		// so other Pod status is preserved without an extra GET.
 
 		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
 			PodName:      pod.Name,

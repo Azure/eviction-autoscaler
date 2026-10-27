@@ -50,8 +50,9 @@ controllerConfig:
 
   # false (default): read Pods directly from the API server using the existing
   # namespace, label, and node-name filters; do not retain a cluster-wide Pod cache.
-  # true: retain the informer-backed Pod cache and its node-name index. This
-  # reduces repeated API reads but memory grows with the total cluster Pod count.
+  # true: cache Pod identity, labels, owner references, and node name, with a
+  # node-name index. Pod status is not cached or updated.
+  # Memory grows with the total cluster Pod count; list/watch still receives full Pods.
   # Other resource caches are unchanged. Changing this setting requires a rollout.
   podCache:
     enabled: false

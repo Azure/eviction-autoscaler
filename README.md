@@ -273,6 +273,22 @@ helm upgrade eviction-autoscaler ./helm/eviction-autoscaler \
   --set resources.limits.memory=512Mi
 ```
 
+The chart validates memory quantities during rendering, before a rollout. Values
+must be non-negative Kubernetes quantities; decimal, binary, fractional, and
+exponent forms are supported (for example `128Mi`, `1.5Gi`, `512M`, or `1e9`).
+When both are set, `resources.requests.memory` must not exceed
+`resources.limits.memory`, including when the units differ.
+
+**Upgrade note:** the default memory request increased from `64Mi` to `128Mi`.
+If an existing installation overrides only the limit to a value below `128Mi`,
+also set a compatible request explicitly. For example, an intentional `64Mi`
+limit requires `resources.requests.memory=64Mi` (or lower); setting only the limit
+now fails with an actionable chart error instead of rendering an invalid Deployment.
+The chart does not silently reduce the request or increase the limit.
+Validate custom overrides with `helm template` or a dry-run upgrade. Helm lint alone
+can skip template `fail` guards; `make helm-validate` also renders the chart and runs
+the memory validation regression tests.
+
 Changing the Pod-cache setting or memory values changes the Pod template and
 triggers a Deployment rollout, replacing the controller Pod. Increasing a memory
 limit does not itself require an application restart on every Kubernetes version:

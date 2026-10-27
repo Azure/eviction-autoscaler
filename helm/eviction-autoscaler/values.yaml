@@ -10,6 +10,8 @@ image:
 
 # Resource limits and requests. Updating these values rolls out a replacement Pod;
 # they are not hot-reloaded by the controller.
+# Memory quantities must be non-negative; when both are set, the request must not
+# exceed the limit. Set both values when lowering the limit below the default request.
 resources:
   limits:
     cpu: 500m

@@ -25,8 +25,9 @@ import (
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type NodeReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
+	Recorder  record.EventRecorder
 	// Must match the manager client configuration: registering an index creates a Pod informer.
 	PodCacheEnabled bool
 }
@@ -120,6 +121,20 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
+		if r.PodCacheEnabled {
+			// The cache omits status. Read the full Pod so an update preserves
+			// existing conditions and the rest of its status.
+			cachedUID := pod.UID
+			if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				}
+				return ctrl.Result{}, err
+			}
+			if pod.UID != cachedUID || pod.Spec.NodeName != node.Name {
+				continue
+			}
+		}
 		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
 			Type:    corev1.DisruptionTarget,
 			Status:  corev1.ConditionTrue,
@@ -155,6 +170,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	r.APIReader = mgr.GetAPIReader()
 	if r.PodCacheEnabled {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
 			pod := rawObj.(*corev1.Pod)

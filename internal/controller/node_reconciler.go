@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
@@ -25,9 +26,8 @@ import (
 // EvictionAutoScalerReconciler reconciles a EvictionAutoScaler object
 type NodeReconciler struct {
 	client.Client
-	APIReader client.Reader
-	Scheme    *runtime.Scheme
-	Recorder  record.EventRecorder
+	Scheme   *runtime.Scheme
+	Recorder record.EventRecorder
 	// Must match the manager client configuration: registering an index creates a Pod informer.
 	PodCacheEnabled bool
 }
@@ -36,6 +36,7 @@ const NodeNameIndex = "spec.nodeName"
 
 // +kubebuilder:rbac:groups=core,resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
+// +kubebuilder:rbac:groups=core,resources=pods/status,verbs=patch
 
 // Reconcile is the main loop of the controller. It will look for unschedulded nodes and for every pod on the node
 func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -121,28 +122,28 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		pod := pod.DeepCopy()
-		if r.PodCacheEnabled {
-			// The cache omits status. Read the full Pod so an update preserves
-			// existing conditions and the rest of its status.
-			cachedUID := pod.UID
-			if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
-				if errors.IsNotFound(err) {
-					continue
-				}
-				return ctrl.Result{}, err
-			}
-			if pod.UID != cachedUID || pod.Spec.NodeName != node.Name {
-				continue
-			}
-		}
-		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
+		condition := &corev1.PodCondition{
 			Type:    corev1.DisruptionTarget,
 			Status:  corev1.ConditionTrue,
 			Reason:  "EvictionAttempt",
 			Message: "eviction attempt anticipated by node cordon",
-		})
+		}
+		updatedpod := podutil.UpdatePodCondition(&pod.Status, condition)
 		if updatedpod {
-			if err := r.Client.Status().Update(ctx, pod); err != nil {
+			// Pod conditions merge by type. Send only our condition so the API
+			// server preserves all other status without an extra GET. Include UID
+			// to prevent modifying a replacement Pod with the same name.
+			data, err := json.Marshal(map[string]interface{}{
+				"metadata": map[string]interface{}{"uid": pod.UID},
+				"status":   map[string]interface{}{"conditions": []corev1.PodCondition{*condition}},
+			})
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.Client.Status().Patch(ctx, pod, client.RawPatch(types.StrategicMergePatchType, data)); err != nil {
+				if errors.IsNotFound(err) {
+					continue
+				}
 				logger.Error(err, "Error: Unable to update Pod status")
 				return ctrl.Result{}, err
 			}
@@ -170,7 +171,6 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	r.APIReader = mgr.GetAPIReader()
 	if r.PodCacheEnabled {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {
 			pod := rawObj.(*corev1.Pod)

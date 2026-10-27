@@ -163,8 +163,12 @@ var _ = Describe("Node Controller", func() {
 			err = k8sClient.Get(ctx, podNamespacedName, pod)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(pod.Status.Conditions).To(HaveLen(2))
-			//First is still ready ignore it
-			Expect(pod.Status.Conditions[1].Type).To(Equal(corev1.DisruptionTarget))
+			Expect(pod.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", corev1.PodReady), HaveField("Status", corev1.ConditionTrue),
+			)))
+			Expect(pod.Status.Conditions).To(ContainElement(And(
+				HaveField("Type", corev1.DisruptionTarget), HaveField("Status", corev1.ConditionTrue),
+			)))
 
 			By("updating pdb watcher ")
 			EvictionAutoScaler := &v1.EvictionAutoScaler{}

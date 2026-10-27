@@ -6,13 +6,13 @@ import (
 )
 
 // TransformPodCache retains only the fields used to match, locate, and count Pods.
-// Cached Pods must be fetched through an uncached reader before updating status.
+// Retain our condition to preserve transition times and skip unchanged patches.
 func TransformPodCache(obj interface{}) (interface{}, error) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok {
 		return obj, nil
 	}
-	return &corev1.Pod{
+	compact := &corev1.Pod{
 		TypeMeta: pod.TypeMeta,
 		ObjectMeta: metav1.ObjectMeta{
 			Name: pod.Name, Namespace: pod.Namespace,
@@ -20,5 +20,12 @@ func TransformPodCache(obj interface{}) (interface{}, error) {
 			Labels: pod.Labels, OwnerReferences: pod.OwnerReferences,
 		},
 		Spec: corev1.PodSpec{NodeName: pod.Spec.NodeName},
-	}, nil
+	}
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == corev1.DisruptionTarget {
+			compact.Status.Conditions = []corev1.PodCondition{condition}
+			break
+		}
+	}
+	return compact, nil
 }

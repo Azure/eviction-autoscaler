@@ -243,12 +243,10 @@ startup. Memory requests and limits are rendered into the Deployment's Pod templ
 Neither is hot-reloaded by the running controller.
 
 When `POD_CACHE_ENABLED=true`, the Pod cache retains only name, namespace, UID,
-resource version, labels, owner references, `spec.nodeName`, and the
-`DisruptionTarget` condition. Containers, volumes, annotations, managed fields,
-and the rest of status are omitted. This reduces retained memory; list/watch still
-receives full Pods. The node reconciler patches only the `DisruptionTarget`
-condition without reading the full Pod. Retaining that condition preserves its
-transition time and avoids writing unchanged conditions.
+resource version, labels, owner references, and `spec.nodeName`. Containers,
+volumes, annotations, managed fields, and status are omitted. This reduces retained
+memory; list/watch still receives full Pods. The node reconciler records
+`LastEviction` on the EvictionAutoScaler without reading or updating Pod status.
 
 For Cosmic-managed installations, publish a chart/image version containing the new
 setting, then update the desired chart values through the ring configuration patch

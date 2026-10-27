@@ -15,13 +15,6 @@ rules:
   - list
   - watch
 - apiGroups:
-  - ""
-  resources:
-  - pods/status
-  verbs:
-  - patch
-  - update
-- apiGroups:
   - apps
   resources:
   - deployments

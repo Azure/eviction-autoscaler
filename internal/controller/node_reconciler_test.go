@@ -135,7 +135,7 @@ var _ = Describe("Node Controller", func() {
 
 		})
 
-		It("should handle cordon by updating pod and EvictionAutoScaler", func() {
+		It("should handle cordon by updating EvictionAutoScaler without changing pod status", func() {
 			nodeReconciler := &NodeReconciler{
 				Client: k8sClient,
 				Scheme: scheme.Scheme,
@@ -162,13 +162,8 @@ var _ = Describe("Node Controller", func() {
 			pod := &corev1.Pod{}
 			err = k8sClient.Get(ctx, podNamespacedName, pod)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pod.Status.Conditions).To(HaveLen(2))
-			Expect(pod.Status.Conditions).To(ContainElement(And(
-				HaveField("Type", corev1.PodReady), HaveField("Status", corev1.ConditionTrue),
-			)))
-			Expect(pod.Status.Conditions).To(ContainElement(And(
-				HaveField("Type", corev1.DisruptionTarget), HaveField("Status", corev1.ConditionTrue),
-			)))
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
 
 			By("updating pdb watcher ")
 			EvictionAutoScaler := &v1.EvictionAutoScaler{}

@@ -44,50 +44,41 @@ through `cache.Options.ByObject` in [manager setup](../cmd/main.go).
 
 | Retain | Reason |
 | --- | --- |
-| Name, namespace, UID and resource version | Identity and optimistic concurrency |
+| Name, namespace, UID and resource version | Object identity and snapshot version |
 | Labels | PDB selector matching |
 | Owner references | ReplicaSet/Deployment discovery |
 | `spec.nodeName` | Node index and displaced-Pod counting |
-| Complete `Pod.Status` | Preserve existing status and condition-reporting behavior |
 
 Container specifications, environment variables, volumes, annotations, managed
-fields and other unused metadata are not retained. The projection creates a new
+fields, Pod status and other unused metadata are not retained. The projection creates a new
 Pod representation without mutating the incoming object. Non-Pod caches and all
 existing Pod selectors are unchanged.
 
-**This reduces retained bytes per Pod, not the number of cached Pods.** Full
-status can still be substantial. Watches still receive full Pod objects, and
+**This reduces retained bytes per Pod, not the number of cached Pods.**
+Watches still receive full Pod objects, and
 decoding, initial population, queues and other transient allocations still cost
 memory. There is no claim that every cluster now fits within 128Mi or 512Mi.
 
-## Why Pod status writes use patches
+## Why the controller no longer writes Pod status
 
-The node controller still reports the anticipatory `DisruptionTarget` condition.
-EAS's `LastEviction` remains the surge signal; this change does not remove the
-existing observable Pod condition.
+The node controller records an eviction signal on the matching EAS's
+`Spec.LastEviction`; that is what the surge controller consumes. Writing the
+anticipatory `DisruptionTarget` Pod condition was not required for this path.
+
+This change intentionally stops publishing that condition. The node controller
+performs no Pod GET, UPDATE or status PATCH after its filtered Pod list. It does
+not delete or evict Pods. This removes a Pod API write/failure point and permits
+dropping the entire Pod status from the compact cache. External consumers of the
+old anticipatory condition will no longer receive it from EAS.
 
 A projected Pod is a **read model**, not a complete object suitable for Update.
-Even `Status().Update` can clear omitted annotations. Keeping status alone does
-not make a full status update safe when metadata has been discarded.
+Do not add Pod writes from these incomplete objects without revisiting the design.
 
-[markPodDisruptionTarget](../internal/controller/node_reconciler.go) instead:
-
-1. Deep-copies the cached snapshot before changing the condition.
-2. Computes a merge status patch against that snapshot.
-3. Includes the original resource version as an optimistic-lock precondition.
-4. Returns conflicts for normal controller retry rather than overwriting newer
-   state.
-
-This helper performs a **direct API write** (`PATCH` to the Pod status subresource)
-when the condition changes. It performs no GET: its input is the Pod snapshot
-already obtained from the compact cache or direct-read fallback. An unchanged
-condition needs no API write; caching never makes a write local-only.
-
-The patch preserves server-side annotations/spec, other conditions, container
-statuses and Pod addresses. RBAC adds Pod-status `patch` permission while retaining
-`update` for older controller instances during rolling upgrades and rollbacks.
-The [cache integration test](../internal/controller/node_cache_test.go) exercises
-this against an API server and verifies preservation and stale-version conflicts.
+Existing Pod-status permissions are retained only for older controller images
+during rolling upgrades and rollbacks; the new controller does not use them.
+The [projection/reconciliation tests](../internal/controller/pod_cache_test.go)
+reject per-Pod reads/writes and verify that LastEviction is still recorded while
+the server-side Pod remains unchanged.
 
 ## Node reconciliation lookup reuse
 
@@ -97,10 +88,18 @@ namespace, it lists that namespace's EAS resources and keeps an owned snapshot i
 a local map. Later Pods in that namespace reuse it, including an empty result.
 There is no namespace-preloading traversal or second persistent cache.
 
-Matching returns an owned EAS object from that snapshot. Successful updates retain
-the returned resource version so subsequent Pods matching the same EAS do not use
-the initial stale version. First-match semantics and error propagation remain;
-PDB Gets are still cache-backed and are not separately deduplicated.
+The namespace map avoids repeated cache scans and deep-copy allocations; it is
+not what deduplicates API writes. Matching still selects the first applicable EAS
+for each Pod. A separate set keyed by EAS namespace/name limits LastEviction updates
+to one per matching EAS per node reconciliation. The first matching Pod supplies
+the representative name; the timestamp and cooldown continue to be refreshed on
+later reconciliations while matching Pods remain on the cordoned node.
+
+The set is updated only after a successful direct API EAS update. Errors are
+returned for retry. Per-Pod eviction metrics still count every matched Pod.
+Distinct EAS resources, including same-name resources in different namespaces,
+are processed independently. PDB Gets remain cache-backed and are not separately
+deduplicated.
 
 A list failure in a later namespace returns an error after earlier Pods may have
 been processed. Reconciliation is not transactional; the controller retries errors.
@@ -146,7 +145,7 @@ CI checks complementary layers; no single tool establishes memory capacity:
 | Helm | `make helm-validate` | Chart lint/rendering and configuration regression tests |
 | Memory semantics | Go preflight within `make helm-validate` | Kubernetes-native quantity parsing, non-negative memory, request <= limit |
 | Kubernetes schemas | `make helm-schema-validate` | Strict Kubeconform validation of rendered built-in resources |
-| API server and behavior | Existing controller/envtest and e2e suites | CRD installation, API behavior and reconciliation/status preservation |
+| API server and behavior | Existing controller/envtest and e2e suites | CRD installation, read-only Pod handling and deduplicated eviction signals |
 
 Kubeconform is pinned to **v0.8.0**. Schema validation covers both compact-cache and
 direct-read configurations against **1.30.2** (the e2e Kind configuration) and the

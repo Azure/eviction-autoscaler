@@ -156,7 +156,7 @@ az k8s-extension create \
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
 - `controllerConfig.metrics.podScrapeAnnotations=true` - Advertises the metrics endpoint to annotation-based Prometheus scrapers (default: false)
-- `controllerConfig.podCache.enabled=true` - Uses a compact Pod cache and node-name index (default: true). Retains identity, labels, owners, node name and full status, not unused spec/metadata. Set to false for direct Pod reads; other resource caches are unchanged.
+- `controllerConfig.podCache.enabled=true` - Uses a compact Pod cache and node-name index (default: true). Retains identity, labels, owners and node name, not status or unused spec/metadata. Set to false for direct Pod reads; other resource caches are unchanged.
 - `resources.requests.memory` - Controller memory request (default: `128Mi`)
 - `resources.limits.memory` - Controller memory limit (default: `512Mi`); size for startup and concurrent-drain peaks on the largest supported clusters
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
@@ -324,24 +324,25 @@ OOM. Verify that rollout completes and the running Pod has the intended environm
 and resources.
 
 By default, the Pod informer stores a compact projection: identity, labels, owner
-references, node name, and the complete Pod status. Container specs, environment
-variables, volumes, annotations and managed fields are not retained. Keeping full
-status preserves the existing `DisruptionTarget` reporting without dropping Ready
-conditions, container statuses or Pod addresses. Projected Pods must not be used
-for full-object or full-status updates, which can clear discarded metadata.
-The controller patches the changed status with a resource-version precondition,
-preserving server-side annotations/spec and retrying conflicts on stale snapshots.
-RBAC adds Pod-status patch permission while retaining update permission for older
-controller instances during rolling upgrades and rollbacks.
+references and node name. Pod status, container specs, environment variables,
+volumes, annotations and managed fields are not retained. The node controller
+no longer publishes the anticipatory `DisruptionTarget` condition: scaling uses
+the EAS `LastEviction` signal, so no Pod-status write is needed. This is an
+intentional reporting change; existing Pod-status permissions remain only for
+older images during rolling upgrades and rollbacks. Projected Pods are read models
+and must not be used for full-object or full-status updates.
 
 The node-name index and all existing namespace/label/node filters are preserved.
 Each node reconciliation lists Pods once and traverses them once. EAS resources
 are loaded on the first Pod in each namespace; subsequent Pods reuse the owned
-objects and their updated resource versions.
+list snapshot instead of rescanning/copying the namespace's cache entries.
+Each matching EAS is updated once per node reconciliation, even when several Pods
+match it. The first matching Pod supplies the representative LastEviction name.
+Per-Pod metrics still count all matching Pods.
 
 Namespace eligibility does not limit the compact cache's object count: it still
 contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still
-receive full Pod objects, and retaining full status adds to the per-Pod footprint.
+receive full Pod objects, so transient decoding/initial-population costs remain.
 The `512Mi` default provides additional headroom, not a guarantee every cluster
 fits; startup, retained heap and concurrent-drain peaks still need measurement.
 
@@ -571,7 +572,7 @@ Namespace watches trigger reconciliation by listing all deployments/PDBs in that
 - Fast local memory operations
 
 Pod reads use a compact informer cache by default, retaining identity, labels,
-owners, node name and full status rather than full Pod specs/metadata. Setting
+owners and node name rather than Pod status or full spec/metadata. Setting
 `controllerConfig.podCache.enabled=false` uses direct API reads with the existing
 namespace, label, or node-name filters instead.
 

@@ -68,6 +68,7 @@ const cooldown = 1 * time.Minute
 // +kubebuilder:rbac:groups=eviction-autoscaler.azure.com,resources=evictionautoscalers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=watch;get;list;update
 // +kubebuilder:rbac:groups=core,resources=pods,verbs=watch;get;list
+// Retain legacy status-write permissions for mixed-version rollouts and rollbacks.
 // +kubebuilder:rbac:groups=core,resources=pods/status,verbs=patch;update
 // +kubebuilder:rbac:groups=core,resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update

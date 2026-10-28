@@ -183,7 +183,7 @@ func TestPodCacheRendering(t *testing.T) {
 	}
 }
 
-func TestPodStatusPatchRBAC(t *testing.T) {
+func TestPodStatusCompatibilityRBAC(t *testing.T) {
 	chartRole, err := runHelm(t, "template", "rbac-test",
 		filepath.Join("..", "..", "helm", "eviction-autoscaler"),
 		"--show-only", "templates/clusterrole.yaml")
@@ -214,7 +214,7 @@ func TestPodStatusPatchRBAC(t *testing.T) {
 					return
 				}
 			}
-			t.Fatal("Pod-status patch permission is missing")
+			t.Fatal("legacy Pod-status permissions are missing")
 		})
 	}
 }

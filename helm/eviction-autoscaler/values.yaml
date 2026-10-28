@@ -48,8 +48,8 @@ controllerConfig:
   #          disable eviction-autoscaler in place, without uninstalling the extension.
   enabled: true
 
-  # true (default): cache only Pod identity, labels, owner references, node name
-  # and full status. Unused spec/metadata are discarded before storage.
+  # true (default): cache only Pod identity, labels, owner references and node name.
+  # Pod status and unused spec/metadata are discarded before storage.
   # false: read Pods directly from the API server with the same filters instead.
   # The compact cache still scales with cluster Pod count; size memory accordingly.
   # Other resource caches are unchanged. Changing this setting requires a rollout.

@@ -7,7 +7,6 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -136,7 +135,7 @@ var _ = Describe("Node Pod cache configuration", func() {
 
 		var cachedPod corev1.Pod
 		Expect(mgr.GetClient().Get(ctx, client.ObjectKeyFromObject(sourcePod), &cachedPod)).To(Succeed())
-		Expect(cachedPod.Status).To(Equal(sourcePod.Status))
+		Expect(cachedPod.Status).To(Equal(corev1.PodStatus{}))
 		Expect(cachedPod.Labels).To(Equal(sourcePod.Labels))
 		Expect(cachedPod.OwnerReferences).To(Equal(sourcePod.OwnerReferences))
 		Expect(cachedPod.Annotations).To(BeEmpty())
@@ -146,23 +145,11 @@ var _ = Describe("Node Pod cache configuration", func() {
 			client.MatchingLabels{"app": "cache-test"})).To(Succeed())
 		Expect(matchingPods.Items).To(HaveLen(1))
 
-		Expect(reconciler.markPodDisruptionTarget(ctx, &cachedPod)).To(Succeed())
-
 		var storedPod corev1.Pod
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(sourcePod), &storedPod)).To(Succeed())
 		Expect(storedPod.Spec).To(Equal(sourcePod.Spec))
 		Expect(storedPod.Annotations).To(Equal(sourcePod.Annotations))
-		Expect(storedPod.Status.Conditions).To(ContainElement(HaveField("Type", corev1.DisruptionTarget)))
-		conditions := make([]corev1.PodCondition, 0, len(storedPod.Status.Conditions))
-		for _, condition := range storedPod.Status.Conditions {
-			if condition.Type != corev1.DisruptionTarget {
-				conditions = append(conditions, condition)
-			}
-		}
-		storedPod.Status.Conditions = conditions
 		Expect(storedPod.Status).To(Equal(sourcePod.Status))
-		// The original snapshot is now stale: a second patch must conflict.
-		Expect(apierrors.IsConflict(reconciler.markPodDisruptionTarget(ctx, &cachedPod))).To(BeTrue())
 	},
 		Entry("direct API reads", false),
 		Entry("cached reads", true),

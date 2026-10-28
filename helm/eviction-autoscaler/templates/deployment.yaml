@@ -1,3 +1,4 @@
+{{/* Support missing values without overriding an explicit enabled: false. */}}
 {{- $podCache := .Values.controllerConfig.podCache | default dict -}}
 {{- $podCacheEnabled := true -}}
 {{- if and (hasKey $podCache "enabled") (ne $podCache.enabled nil) -}}

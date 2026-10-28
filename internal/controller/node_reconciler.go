@@ -6,7 +6,6 @@ import (
 
 	pdbautoscaler "github.com/azure/eviction-autoscaler/api/v1"
 	"github.com/azure/eviction-autoscaler/internal/metrics"
-	"github.com/azure/eviction-autoscaler/internal/podutil"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -67,14 +66,17 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	logger.Info("Node is cordoned", "node", node.Name)
 
-	// The default Pod cache retains identity, labels, owners, node name and full
+	// The default cache retains Pod identity, labels, owners and node name, not
 	// status. POD_CACHE_ENABLED=false sends this same filtered list to the API.
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	// Namespace reuse avoids repeated cache scans/copies, not duplicate writes.
+	// The separate set below limits direct API updates to one per EAS this pass.
 	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
+	updatedAutoscalers := make(map[types.NamespacedName]struct{})
 	podchanged := false
 	for _, pod := range podlist.Items {
 		autoscalers, loaded := autoscalersByNamespace[pod.Namespace]
@@ -84,7 +86,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 				logger.Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
 				return ctrl.Result{}, err
 			}
-			// Reuse owned objects, including resource versions refreshed by Update.
+			// Keep owned objects so updates never mutate the shared informer cache.
 			autoscalers = list.DeepCopy().Items
 			autoscalersByNamespace[pod.Namespace] = autoscalers
 		}
@@ -100,12 +102,13 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		// Track eviction and node drain events
 		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
-		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
-		if err := r.markPodDisruptionTarget(ctx, &pod); err != nil {
-			logger.Error(err, "Unable to patch Pod status", "namespace", pod.Namespace, "podname", pod.Name)
-			return ctrl.Result{}, err
+		key := client.ObjectKeyFromObject(applicableEvictionAutoScaler)
+		if _, updated := updatedAutoscalers[key]; updated {
+			continue
 		}
-
+		logger.Info("Recording eviction for EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
+		// LastEviction drives surge reconciliation. No Pod-status write is needed;
+		// the first matching Pod represents this EAS for the current node pass.
 		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
 			PodName:      pod.Name,
 			EvictionTime: metav1.Now(),
@@ -114,6 +117,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			logger.Error(err, "unable to update EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name)
 			return ctrl.Result{}, err
 		}
+		updatedAutoscalers[key] = struct{}{}
 		podchanged = true
 	}
 
@@ -125,24 +129,6 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		cooldownNeeded = cooldown
 	}
 	return ctrl.Result{RequeueAfter: cooldownNeeded}, nil
-}
-
-// markPodDisruptionTarget writes changed status directly to the Kubernetes API
-// using PATCH. It uses the supplied cached/direct-read snapshot and performs no GET.
-func (r *NodeReconciler) markPodDisruptionTarget(ctx context.Context, pod *corev1.Pod) error {
-	updated := pod.DeepCopy()
-	if !podutil.UpdatePodCondition(&updated.Status, &corev1.PodCondition{
-		Type:    corev1.DisruptionTarget,
-		Status:  corev1.ConditionTrue,
-		Reason:  "EvictionAttempt",
-		Message: "eviction attempt anticipated by node cordon",
-	}) {
-		return nil
-	}
-	// A full Update would clear metadata omitted from the compact cache. Patch
-	// only the changed status and reject stale snapshots rather than lose updates.
-	patch := client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{})
-	return r.Status().Patch(ctx, updated, patch)
 }
 
 func (r *NodeReconciler) findMatchingEvictionAutoScaler(

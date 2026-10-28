@@ -137,7 +137,7 @@ var _ = Describe("Node Controller", func() {
 
 		})
 
-		It("should handle cordon by updating pod and EvictionAutoScaler", func() {
+		It("should handle cordon by updating EvictionAutoScaler without changing Pod status", func() {
 			nodeReconciler := &NodeReconciler{
 				Client: k8sClient,
 				Scheme: scheme.Scheme,
@@ -164,9 +164,8 @@ var _ = Describe("Node Controller", func() {
 			pod := &corev1.Pod{}
 			err = k8sClient.Get(ctx, podNamespacedName, pod)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(pod.Status.Conditions).To(HaveLen(2))
-			//First is still ready ignore it
-			Expect(pod.Status.Conditions[1].Type).To(Equal(corev1.DisruptionTarget))
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
 
 			By("updating pdb watcher ")
 			EvictionAutoScaler := &v1.EvictionAutoScaler{}
@@ -232,7 +231,7 @@ var _ = Describe("Node Controller", func() {
 			return reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nodeNamespacedName})
 		}
 
-		It("lists EAS once per namespace and reuses updated resource versions for matching Pods", func() {
+		It("lists EAS once per namespace and updates each EAS once for multiple matching Pods", func() {
 			otherNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "node-other-"}}
 			Expect(k8sClient.Create(ctx, otherNamespace)).To(Succeed())
 			Expect(k8sClient.Create(ctx, &v1.EvictionAutoScaler{
@@ -259,7 +258,7 @@ var _ = Describe("Node Controller", func() {
 
 			listCalls := make(map[string]int)
 			updateVersions := make(map[string][]string)
-			lastPodByNamespace := make(map[string]string)
+			firstPodByNamespace := make(map[string]string)
 			podListCalls := 0
 			firstNamespace := ""
 			result, err := reconcileCordonedNode(interceptor.Funcs{
@@ -282,7 +281,9 @@ var _ = Describe("Node Controller", func() {
 						podListCalls++
 						firstNamespace = list.Items[0].Namespace
 						for _, pod := range list.Items {
-							lastPodByNamespace[pod.Namespace] = pod.Name
+							if _, seen := firstPodByNamespace[pod.Namespace]; !seen {
+								firstPodByNamespace[pod.Namespace] = pod.Name
+							}
 						}
 					}
 					return nil
@@ -298,15 +299,14 @@ var _ = Describe("Node Controller", func() {
 			Expect(result.RequeueAfter).To(Equal(cooldown))
 			Expect(podListCalls).To(Equal(1))
 			Expect(listCalls).To(Equal(map[string]int{namespace: 1, otherNamespace.Name: 1}))
-			Expect(updateVersions[namespace]).To(HaveLen(2))
-			Expect(updateVersions[namespace][0]).NotTo(Equal(updateVersions[namespace][1]))
+			Expect(updateVersions[namespace]).To(HaveLen(1))
 			Expect(updateVersions[otherNamespace.Name]).To(HaveLen(1))
 			for _, podNamespace := range []string{namespace, otherNamespace.Name} {
 				var autoscaler v1.EvictionAutoScaler
 				Expect(k8sClient.Get(ctx, types.NamespacedName{
 					Name: resourceName, Namespace: podNamespace,
 				}, &autoscaler)).To(Succeed())
-				Expect(autoscaler.Spec.LastEviction.PodName).To(Equal(lastPodByNamespace[podNamespace]))
+				Expect(autoscaler.Spec.LastEviction.PodName).To(Equal(firstPodByNamespace[podNamespace]))
 			}
 		})
 
@@ -332,6 +332,48 @@ var _ = Describe("Node Controller", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
 			Expect(listCalls).To(Equal(1))
+		})
+
+		It("updates distinct matching EAS resources in the same namespace independently", func() {
+			const secondEAS = "second-autoscaler"
+			Expect(k8sClient.Create(ctx, &v1.EvictionAutoScaler{
+				ObjectMeta: metav1.ObjectMeta{Name: secondEAS, Namespace: namespace},
+				Spec:       v1.EvictionAutoScalerSpec{TargetName: "second-target", TargetKind: "deployment"},
+			})).To(Succeed())
+			Expect(k8sClient.Create(ctx, &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: secondEAS, Namespace: namespace},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &intstr.IntOrString{IntVal: 1},
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "second"}},
+				},
+			})).To(Succeed())
+			for _, name := range []string{"second-pod-a", "second-pod-b"} {
+				Expect(k8sClient.Create(ctx, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: name, Namespace: namespace, Labels: map[string]string{"app": "second"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: nodeName, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				})).To(Succeed())
+			}
+			updates := make(map[string]int)
+			intercepts := interceptor.Funcs{
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if _, ok := obj.(*v1.EvictionAutoScaler); ok {
+						updates[obj.GetName()]++
+					}
+					return c.Update(ctx, obj, opts...)
+				},
+			}
+			result, err := reconcileCordonedNode(intercepts)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown))
+			Expect(updates).To(Equal(map[string]int{resourceName: 1, secondEAS: 1}))
+			_, err = reconcileCordonedNode(intercepts)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updates).To(Equal(map[string]int{resourceName: 2, secondEAS: 2}),
+				"deduplication must be local to one reconciliation")
 		})
 
 		It("returns EAS list failures without updating Pod status", func() {
@@ -387,7 +429,8 @@ var _ = Describe("Node Controller", func() {
 			Expect(err).To(MatchError(listErr))
 			var pod corev1.Pod
 			Expect(k8sClient.Get(ctx, podNamespacedName, &pod)).To(Succeed())
-			Expect(pod.Status.Conditions).To(ContainElement(HaveField("Type", corev1.DisruptionTarget)))
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
 			var autoscaler v1.EvictionAutoScaler
 			Expect(k8sClient.Get(ctx, typeNamespacedName, &autoscaler)).To(Succeed())
 			Expect(autoscaler.Spec.LastEviction.PodName).To(Equal(podName))

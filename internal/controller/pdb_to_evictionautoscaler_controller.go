@@ -557,8 +557,8 @@ func (r *PDBToEvictionAutoScalerReconciler) discoverDeployment(ctx context.Conte
 	}
 	logger.Info("PDB Selector", "selector", pdb.Spec.Selector)
 
-	// Pod reads bypass the manager cache by default; keep this API query scoped to
-	// the PDB's namespace and selector.
+	// The compact Pod cache retains owner references for discovery. Keep the
+	// namespace and selector filters unchanged for the direct-API fallback too.
 	podList := &corev1.PodList{}
 	err = r.List(ctx, podList, &client.ListOptions{Namespace: pdb.Namespace, LabelSelector: selector})
 	if err != nil {

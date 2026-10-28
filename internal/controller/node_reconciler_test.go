@@ -11,6 +11,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	corev1 "k8s.io/api/core/v1" // Import corev1 package
@@ -214,6 +216,130 @@ var _ = Describe("Node Controller", func() {
 			//First is still ready ignore it
 			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
 
+		})
+
+		reconcileCordonedNode := func(intercepts interceptor.Funcs) (reconcile.Result, error) {
+			node := &corev1.Node{}
+			Expect(k8sClient.Get(ctx, nodeNamespacedName, node)).To(Succeed())
+			node.Spec.Unschedulable = true
+			Expect(k8sClient.Update(ctx, node)).To(Succeed())
+			watchClient, err := client.NewWithWatch(cfg, client.Options{Scheme: k8sClient.Scheme()})
+			Expect(err).NotTo(HaveOccurred())
+			reconciler := &NodeReconciler{
+				Client: interceptor.NewClient(watchClient, intercepts),
+				Scheme: k8sClient.Scheme(),
+			}
+			return reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: nodeNamespacedName})
+		}
+
+		It("lists EAS once per namespace and reuses updated resource versions for matching Pods", func() {
+			otherNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "node-other-"}}
+			Expect(k8sClient.Create(ctx, otherNamespace)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &v1.EvictionAutoScaler{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: otherNamespace.Name},
+				Spec:       v1.EvictionAutoScalerSpec{TargetName: "other-target", TargetKind: "deployment"},
+			})).To(Succeed())
+			Expect(k8sClient.Create(ctx, &policyv1.PodDisruptionBudget{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: otherNamespace.Name},
+				Spec: policyv1.PodDisruptionBudgetSpec{
+					MinAvailable: &intstr.IntOrString{IntVal: 1},
+					Selector:     &metav1.LabelSelector{MatchLabels: map[string]string{"app": "example"}},
+				},
+			})).To(Succeed())
+			for _, podNamespace := range []string{namespace, otherNamespace.Name} {
+				Expect(k8sClient.Create(ctx, &corev1.Pod{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "extra-pod", Namespace: podNamespace, Labels: map[string]string{"app": "example"},
+					},
+					Spec: corev1.PodSpec{
+						NodeName: nodeName, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+					},
+				})).To(Succeed())
+			}
+
+			listCalls := make(map[string]int)
+			updateVersions := make(map[string][]string)
+			lastPodByNamespace := make(map[string]string)
+			result, err := reconcileCordonedNode(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					switch list := list.(type) {
+					case *v1.EvictionAutoScalerList:
+						options := &client.ListOptions{}
+						for _, opt := range opts {
+							opt.ApplyToList(options)
+						}
+						listCalls[options.Namespace]++
+					case *corev1.PodList:
+						for _, pod := range list.Items {
+							lastPodByNamespace[pod.Namespace] = pod.Name
+						}
+					}
+					return nil
+				},
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if _, ok := obj.(*v1.EvictionAutoScaler); ok {
+						updateVersions[obj.GetNamespace()] = append(updateVersions[obj.GetNamespace()], obj.GetResourceVersion())
+					}
+					return c.Update(ctx, obj, opts...)
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(cooldown))
+			Expect(listCalls).To(Equal(map[string]int{namespace: 1, otherNamespace.Name: 1}))
+			Expect(updateVersions[namespace]).To(HaveLen(2))
+			Expect(updateVersions[namespace][0]).NotTo(Equal(updateVersions[namespace][1]))
+			Expect(updateVersions[otherNamespace.Name]).To(HaveLen(1))
+			for _, podNamespace := range []string{namespace, otherNamespace.Name} {
+				var autoscaler v1.EvictionAutoScaler
+				Expect(k8sClient.Get(ctx, types.NamespacedName{
+					Name: resourceName, Namespace: podNamespace,
+				}, &autoscaler)).To(Succeed())
+				Expect(autoscaler.Spec.LastEviction.PodName).To(Equal(lastPodByNamespace[podNamespace]))
+			}
+		})
+
+		It("lists an empty EAS namespace only once for multiple Pods", func() {
+			Expect(k8sClient.Delete(ctx, &v1.EvictionAutoScaler{
+				ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: namespace},
+			})).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "extra-pod", Namespace: namespace},
+				Spec: corev1.PodSpec{
+					NodeName: nodeName, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			})).To(Succeed())
+			listCalls := 0
+			result, err := reconcileCordonedNode(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*v1.EvictionAutoScalerList); ok {
+						listCalls++
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(BeZero())
+			Expect(listCalls).To(Equal(1))
+		})
+
+		It("returns EAS list failures without updating Pod status", func() {
+			listErr := errors.NewServiceUnavailable("test EAS list failure")
+			_, err := reconcileCordonedNode(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*v1.EvictionAutoScalerList); ok {
+						return listErr
+					}
+					return c.List(ctx, list, opts...)
+				},
+			})
+			Expect(err).To(MatchError(listErr))
+			var pod corev1.Pod
+			Expect(k8sClient.Get(ctx, podNamespacedName, &pod)).To(Succeed())
+			Expect(pod.Status.Conditions).To(HaveLen(1))
+			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
 		})
 	})
 })

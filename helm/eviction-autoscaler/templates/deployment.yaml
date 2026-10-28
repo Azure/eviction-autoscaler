@@ -1,4 +1,8 @@
 {{- $podCache := .Values.controllerConfig.podCache | default dict -}}
+{{- $podCacheEnabled := true -}}
+{{- if and (hasKey $podCache "enabled") (ne $podCache.enabled nil) -}}
+  {{- $podCacheEnabled = $podCache.enabled -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,7 +72,7 @@ spec:
           - name: CONTROLLER_ENABLED
             value: {{ .Values.controllerConfig.enabled | quote }}
           - name: POD_CACHE_ENABLED
-            value: {{ $podCache.enabled | default false | quote }}
+            value: {{ $podCacheEnabled | quote }}
         command:
         - /manager
         args:

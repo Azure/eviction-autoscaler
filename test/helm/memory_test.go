@@ -6,12 +6,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sigs.k8s.io/yaml"
 )
@@ -148,17 +150,18 @@ func TestPodCacheRendering(t *testing.T) {
 		args    []string
 		enabled string
 	}{
-		{name: "default", enabled: "false"},
+		{name: "default", enabled: "true"},
 		{name: "enabled", args: []string{"--set", "controllerConfig.podCache.enabled=true"}, enabled: "true"},
 		{name: "disabled", args: []string{"--set", "controllerConfig.podCache.enabled=false"}, enabled: "false"},
-		{name: "missing section", args: []string{"--set", "controllerConfig.podCache=null"}, enabled: "false"},
-		{name: "missing flag", args: []string{"--set", "controllerConfig.podCache.enabled=null"}, enabled: "false"},
+		{name: "missing section", args: []string{"--set", "controllerConfig.podCache=null"}, enabled: "true"},
+		{name: "missing flag", args: []string{"--set", "controllerConfig.podCache.enabled=null"}, enabled: "true"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			args := []string{
 				"template", "cache-test", filepath.Join("..", "..", "helm", "eviction-autoscaler"),
 				"--show-only", "templates/deployment.yaml",
 			}
+
 			output, err := runHelm(t, append(args, test.args...)...)
 			if err != nil {
 				t.Fatalf("render: %v\n%s", err, output)
@@ -176,6 +179,42 @@ func TestPodCacheRendering(t *testing.T) {
 				}
 			}
 			t.Fatal("POD_CACHE_ENABLED is missing")
+		})
+	}
+}
+
+func TestPodStatusPatchRBAC(t *testing.T) {
+	chartRole, err := runHelm(t, "template", "rbac-test",
+		filepath.Join("..", "..", "helm", "eviction-autoscaler"),
+		"--show-only", "templates/clusterrole.yaml")
+	if err != nil {
+		t.Fatalf("render RBAC: %v\n%s", err, chartRole)
+	}
+	generatedRole, err := os.ReadFile(filepath.Join("..", "..", "config", "rbac", "role.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name string
+		role []byte
+	}{
+		{"chart", chartRole},
+		{"generated", generatedRole},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var role rbacv1.ClusterRole
+			if err := yaml.Unmarshal(test.role, &role); err != nil {
+				t.Fatal(err)
+			}
+			for _, rule := range role.Rules {
+				if slices.Contains(rule.APIGroups, "") && slices.Contains(rule.Resources, "pods/status") {
+					if !slices.Equal(rule.Verbs, []string{"patch", "update"}) {
+						t.Fatalf("expected Pod-status patch and compatibility update permissions, got %v", rule.Verbs)
+					}
+					return
+				}
+			}
+			t.Fatal("Pod-status patch permission is missing")
 		})
 	}
 }

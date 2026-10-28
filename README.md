@@ -156,7 +156,7 @@ az k8s-extension create \
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
 - `controllerConfig.metrics.podScrapeAnnotations=true` - Advertises the metrics endpoint to annotation-based Prometheus scrapers (default: false)
-- `controllerConfig.podCache.enabled=false` - Reads Pods directly from the API server instead of retaining a cluster-wide Pod cache (default: false). Set to true to use the Pod cache and node-name index; other resource caches are unchanged.
+- `controllerConfig.podCache.enabled=true` - Uses a compact Pod cache and node-name index (default: true). Retains identity, labels, owners, node name and full status, not unused spec/metadata. Set to false for direct Pod reads; other resource caches are unchanged.
 - `resources.requests.memory` - Controller memory request (default: `128Mi`)
 - `resources.limits.memory` - Controller memory limit (default: `512Mi`); size for startup and concurrent-drain peaks on the largest supported clusters
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
@@ -249,7 +249,7 @@ and deployment reconciliation path. The relevant **chart values** are:
 ```yaml
 controllerConfig:
   podCache:
-    enabled: false
+    enabled: true
 resources:
   requests:
     memory: 128Mi
@@ -268,7 +268,7 @@ For a direct Helm installation, apply the same settings with:
 ```bash
 helm upgrade eviction-autoscaler ./helm/eviction-autoscaler \
   --namespace kube-system --reuse-values \
-  --set controllerConfig.podCache.enabled=false \
+  --set controllerConfig.podCache.enabled=true \
   --set resources.requests.memory=128Mi \
   --set resources.limits.memory=512Mi
 ```
@@ -320,12 +320,32 @@ retries. Do not rely on a patch to rescue an already-running process before its 
 OOM. Verify that rollout completes and the running Pod has the intended environment
 and resources.
 
-With Pod caching disabled, all Pod Get/List calls bypass the informer cache while
-preserving their existing filters. With caching enabled, the node-name index is
-registered for cached node-scoped lists. Namespace eligibility does not limit the
-enabled Pod cache's size: it retains cluster-wide Pods, including when
-`enabledByDefault=true`. The `512Mi` default provides additional headroom, not a
-guarantee that every cluster fits.
+By default, the Pod informer stores a compact projection: identity, labels, owner
+references, node name, and the complete Pod status. Container specs, environment
+variables, volumes, annotations and managed fields are not retained. Keeping full
+status preserves the existing `DisruptionTarget` reporting without dropping Ready
+conditions, container statuses or Pod addresses. Projected Pods must not be used
+for full-object or full-status updates, which can clear discarded metadata.
+The controller patches the changed status with a resource-version precondition,
+preserving server-side annotations/spec and retrying conflicts on stale snapshots.
+RBAC adds Pod-status patch permission while retaining update permission for older
+controller instances during rolling upgrades and rollbacks.
+
+The node-name index and all existing namespace/label/node filters are preserved.
+Within each node reconciliation, EAS resources are listed once per namespace and
+the updated objects are reused for subsequent matching Pods.
+
+Namespace eligibility does not limit the compact cache's object count: it still
+contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still
+receive full Pod objects, and retaining full status adds to the per-Pod footprint.
+The `512Mi` default provides additional headroom, not a guarantee every cluster
+fits; startup, retained heap and concurrent-drain peaks still need measurement.
+
+Set `controllerConfig.podCache.enabled=false` / `POD_CACHE_ENABLED=false` to bypass
+cached Pod Get/List reads, preserving the existing filters. This is a direct-API
+fallback, trading retained Pod memory for repeated API reads. Existing explicit
+false overrides remain false on upgrade; set the value to true to select compact
+caching.
 
 Disabling Pod caching has two parts: the manager's `DisableFor: Pod` setting routes
 Pod reads to the API server, and skipping `IndexField(Pod)` avoids creating an
@@ -546,10 +566,10 @@ Namespace watches trigger reconciliation by listing all deployments/PDBs in that
 - No API server round-trip overhead
 - Fast local memory operations
 
-Pod reads are different: by default, they go directly to the API server using the
-existing namespace, label, or node-name filters. Setting
-`controllerConfig.podCache.enabled=true` enables the cluster-wide Pod informer cache
-instead, trading retained memory for fewer repeated API reads.
+Pod reads use a compact informer cache by default, retaining identity, labels,
+owners, node name and full status rather than full Pod specs/metadata. Setting
+`controllerConfig.podCache.enabled=false` uses direct API reads with the existing
+namespace, label, or node-name filters instead.
 
 #### Example: enabled_by_default=false Configuration
 

@@ -35,6 +35,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	k8senv "k8s.io/utils/env"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -106,7 +107,7 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
-	podCacheEnabled, err := k8senv.GetBool("POD_CACHE_ENABLED", false)
+	podCacheEnabled, err := k8senv.GetBool("POD_CACHE_ENABLED", true)
 	if err != nil {
 		setupLog.Error(err, "Failed to parse POD_CACHE_ENABLED env variable")
 		os.Exit(1)
@@ -139,6 +140,9 @@ func main() {
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme: scheme,
 		Client: podClientOptions(podCacheEnabled),
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}: {Transform: controllers.TransformPodCache},
+		}},
 		Metrics: metricsserver.Options{
 			BindAddress:   metricsAddr,
 			SecureServing: secureMetrics,

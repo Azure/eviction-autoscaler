@@ -67,53 +67,26 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	logger.Info("Node is cordoned", "node", node.Name)
 
-	// With POD_CACHE_ENABLED=false (default), the manager sends this filtered list
-	// directly to the API server; it neither reads nor populates a Pod cache.
+	// The default Pod cache retains identity, labels, owners, node name and full
+	// status. POD_CACHE_ENABLED=false sends this same filtered list to the API.
 	var podlist corev1.PodList
 	if err := r.List(ctx, &podlist, client.MatchingFields{NodeNameIndex: node.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
 
+	autoscalersByNamespace, err := r.listEvictionAutoScalersForPods(ctx, podlist.Items)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	podchanged := false
 	for _, pod := range podlist.Items {
-		// TODO group pods by namespace to share list/get of EvictionAutoScalers/pdbs
-		// Also  could do this to avoid list/llooku up but need to measure if either helps
-		//if !possibleTarget(pod.GetOwnerReferences()) {
-		//	continue
-		//}
-
-		EvictionAutoScalerList := &pdbautoscaler.EvictionAutoScalerList{}
-		err = r.Client.List(ctx, EvictionAutoScalerList, &client.ListOptions{Namespace: pod.Namespace})
+		applicableEvictionAutoScaler, matched, err := r.findMatchingEvictionAutoScaler(
+			ctx, &pod, autoscalersByNamespace[pod.Namespace])
 		if err != nil {
-			logger.Error(err, "Error: Unable to list EvictionAutoScalers")
 			return ctrl.Result{}, err
 		}
-		var applicableEvictionAutoScaler *pdbautoscaler.EvictionAutoScaler
-		for _, EvictionAutoScaler := range EvictionAutoScalerList.Items {
-			// Fetch the PDB using a 1:1 name mapping
-			pdb := &policyv1.PodDisruptionBudget{}
-			err = r.Get(ctx, types.NamespacedName{Name: EvictionAutoScaler.Name, Namespace: EvictionAutoScaler.Namespace}, pdb)
-			if err != nil {
-				if errors.IsNotFound(err) {
-					logger.Error(err, "no matching pdb", "namespace", EvictionAutoScaler.Namespace, "name", EvictionAutoScaler.Name)
-					continue
-				}
-				return ctrl.Result{}, err
-			}
-
-			// Check if the PDB selector matches the evicted pod's labels
-			selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
-			if err != nil {
-				logger.Error(err, "Error: Invalid PDB selector", "pdbname", EvictionAutoScaler.Name)
-				continue
-			}
-
-			if selector.Matches(labels.Set(pod.Labels)) {
-				applicableEvictionAutoScaler = EvictionAutoScaler.DeepCopy()
-				break //should we keep going to ensure multiple EvictionAutoScalers don't match?
-			}
-		}
-		if applicableEvictionAutoScaler == nil {
+		if !matched {
 			continue
 		}
 
@@ -121,20 +94,9 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
 		logger.Info("Found EvictionAutoScaler for pod", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
-		pod := pod.DeepCopy()
-		// Preserve the existing anticipatory DisruptionTarget signal. Cache bypass
-		// changes reads, not this status write; the rest of Pod status must be retained.
-		updatedpod := podutil.UpdatePodCondition(&pod.Status, &corev1.PodCondition{
-			Type:    corev1.DisruptionTarget,
-			Status:  corev1.ConditionTrue,
-			Reason:  "EvictionAttempt",
-			Message: "eviction attempt anticipated by node cordon",
-		})
-		if updatedpod {
-			if err := r.Client.Status().Update(ctx, pod); err != nil {
-				logger.Error(err, "Error: Unable to update Pod status")
-				return ctrl.Result{}, err
-			}
+		if err := r.markPodDisruptionTarget(ctx, &pod); err != nil {
+			logger.Error(err, "Unable to patch Pod status", "namespace", pod.Namespace, "podname", pod.Name)
+			return ctrl.Result{}, err
 		}
 
 		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
@@ -158,8 +120,70 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{RequeueAfter: cooldownNeeded}, nil
 }
 
+func (r *NodeReconciler) markPodDisruptionTarget(ctx context.Context, pod *corev1.Pod) error {
+	updated := pod.DeepCopy()
+	if !podutil.UpdatePodCondition(&updated.Status, &corev1.PodCondition{
+		Type:    corev1.DisruptionTarget,
+		Status:  corev1.ConditionTrue,
+		Reason:  "EvictionAttempt",
+		Message: "eviction attempt anticipated by node cordon",
+	}) {
+		return nil
+	}
+	// A full Update would clear metadata omitted from the compact cache. Patch
+	// only the changed status and reject stale snapshots rather than lose updates.
+	patch := client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{})
+	return r.Status().Patch(ctx, updated, patch)
+}
+
+func (r *NodeReconciler) listEvictionAutoScalersForPods(
+	ctx context.Context, pods []corev1.Pod,
+) (map[string][]pdbautoscaler.EvictionAutoScaler, error) {
+	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
+	for _, pod := range pods {
+		if _, loaded := autoscalersByNamespace[pod.Namespace]; loaded {
+			continue
+		}
+		var autoscalers pdbautoscaler.EvictionAutoScalerList
+		if err := r.List(ctx, &autoscalers, client.InNamespace(pod.Namespace)); err != nil {
+			log.FromContext(ctx).Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
+			return nil, err
+		}
+		// Keep an owned snapshot: Update refreshes these objects' resource versions
+		// for subsequent Pods matching the same EAS within this reconciliation.
+		autoscalersByNamespace[pod.Namespace] = autoscalers.DeepCopy().Items
+	}
+	return autoscalersByNamespace, nil
+}
+
+func (r *NodeReconciler) findMatchingEvictionAutoScaler(
+	ctx context.Context, pod *corev1.Pod, autoscalers []pdbautoscaler.EvictionAutoScaler,
+) (*pdbautoscaler.EvictionAutoScaler, bool, error) {
+	logger := log.FromContext(ctx)
+	for i := range autoscalers {
+		autoscaler := &autoscalers[i]
+		var pdb policyv1.PodDisruptionBudget
+		if err := r.Get(ctx, types.NamespacedName{Name: autoscaler.Name, Namespace: autoscaler.Namespace}, &pdb); err != nil {
+			if errors.IsNotFound(err) {
+				logger.Error(err, "no matching pdb", "namespace", autoscaler.Namespace, "name", autoscaler.Name)
+				continue
+			}
+			return nil, false, err
+		}
+		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+		if err != nil {
+			logger.Error(err, "Error: Invalid PDB selector", "pdbname", autoscaler.Name)
+			continue
+		}
+		if selector.Matches(labels.Set(pod.Labels)) {
+			return autoscaler, true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// IndexField itself creates a Pod informer. Register it only for opt-in cached
+	// IndexField itself creates a Pod informer. Register it only for cached
 	// reads; direct reads use the API server's spec.nodeName field selector instead.
 	if r.PodCacheEnabled {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), &corev1.Pod{}, NodeNameIndex, func(rawObj client.Object) []string {

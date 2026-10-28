@@ -48,13 +48,13 @@ controllerConfig:
   #          disable eviction-autoscaler in place, without uninstalling the extension.
   enabled: true
 
-  # false (default): read Pods directly from the API server using the existing
-  # namespace, label, and node-name filters; do not retain a cluster-wide Pod cache.
-  # true: retain the informer-backed Pod cache and its node-name index. This
-  # reduces repeated API reads but memory grows with the total cluster Pod count.
+  # true (default): cache only Pod identity, labels, owner references, node name
+  # and full status. Unused spec/metadata are discarded before storage.
+  # false: read Pods directly from the API server with the same filters instead.
+  # The compact cache still scales with cluster Pod count; size memory accordingly.
   # Other resource caches are unchanged. Changing this setting requires a rollout.
   podCache:
-    enabled: false
+    enabled: true
 
   # Metrics configuration
   metrics:

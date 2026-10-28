@@ -233,8 +233,8 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 		return 0, fmt.Errorf("invalid PDB selector: %w", err)
 	}
 
-	// Pod reads bypass the manager cache by default; only the matching workload's
-	// Pods are fetched. The Node list below still uses the manager cache.
+	// The compact Pod cache retains node assignments and labels for this query.
+	// The direct-API fallback uses the same namespace and selector filters.
 	var podList corev1.PodList
 	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)

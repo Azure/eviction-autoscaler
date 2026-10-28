@@ -49,6 +49,7 @@ rules:
   resources:
   - pods/status
   verbs:
+  - patch
   - update
 - apiGroups:
   - eviction-autoscaler.azure.com

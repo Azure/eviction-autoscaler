@@ -42,6 +42,8 @@ func validateDeployment(input io.Reader) error {
 	return nil
 }
 
+// validateMemory checks non-negative memory and request <= limit when both exist.
+// Kubeconform validates schemas, not this cross-field quantity comparison.
 func validateMemory(resources corev1.ResourceRequirements) error {
 	request, hasRequest := resources.Requests[corev1.ResourceMemory]
 	limit, hasLimit := resources.Limits[corev1.ResourceMemory]

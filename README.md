@@ -335,8 +335,9 @@ RBAC adds Pod-status patch permission while retaining update permission for olde
 controller instances during rolling upgrades and rollbacks.
 
 The node-name index and all existing namespace/label/node filters are preserved.
-Within each node reconciliation, EAS resources are listed once per namespace and
-the updated objects are reused for subsequent matching Pods.
+Each node reconciliation lists Pods once and traverses them once. EAS resources
+are loaded on the first Pod in each namespace; subsequent Pods reuse the owned
+objects and their updated resource versions.
 
 Namespace eligibility does not limit the compact cache's object count: it still
 contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still

@@ -74,15 +74,22 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	autoscalersByNamespace, err := r.listEvictionAutoScalersForPods(ctx, podlist.Items)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
+	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
 	podchanged := false
 	for _, pod := range podlist.Items {
+		autoscalers, loaded := autoscalersByNamespace[pod.Namespace]
+		if !loaded {
+			var list pdbautoscaler.EvictionAutoScalerList
+			if err := r.List(ctx, &list, client.InNamespace(pod.Namespace)); err != nil {
+				logger.Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
+				return ctrl.Result{}, err
+			}
+			// Reuse owned objects, including resource versions refreshed by Update.
+			autoscalers = list.DeepCopy().Items
+			autoscalersByNamespace[pod.Namespace] = autoscalers
+		}
 		applicableEvictionAutoScaler, matched, err := r.findMatchingEvictionAutoScaler(
-			ctx, &pod, autoscalersByNamespace[pod.Namespace])
+			ctx, &pod, autoscalers)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
@@ -120,6 +127,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{RequeueAfter: cooldownNeeded}, nil
 }
 
+// markPodDisruptionTarget writes changed status directly to the Kubernetes API
+// using PATCH. It uses the supplied cached/direct-read snapshot and performs no GET.
 func (r *NodeReconciler) markPodDisruptionTarget(ctx context.Context, pod *corev1.Pod) error {
 	updated := pod.DeepCopy()
 	if !podutil.UpdatePodCondition(&updated.Status, &corev1.PodCondition{
@@ -134,26 +143,6 @@ func (r *NodeReconciler) markPodDisruptionTarget(ctx context.Context, pod *corev
 	// only the changed status and reject stale snapshots rather than lose updates.
 	patch := client.MergeFromWithOptions(pod, client.MergeFromWithOptimisticLock{})
 	return r.Status().Patch(ctx, updated, patch)
-}
-
-func (r *NodeReconciler) listEvictionAutoScalersForPods(
-	ctx context.Context, pods []corev1.Pod,
-) (map[string][]pdbautoscaler.EvictionAutoScaler, error) {
-	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
-	for _, pod := range pods {
-		if _, loaded := autoscalersByNamespace[pod.Namespace]; loaded {
-			continue
-		}
-		var autoscalers pdbautoscaler.EvictionAutoScalerList
-		if err := r.List(ctx, &autoscalers, client.InNamespace(pod.Namespace)); err != nil {
-			log.FromContext(ctx).Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
-			return nil, err
-		}
-		// Keep an owned snapshot: Update refreshes these objects' resource versions
-		// for subsequent Pods matching the same EAS within this reconciliation.
-		autoscalersByNamespace[pod.Namespace] = autoscalers.DeepCopy().Items
-	}
-	return autoscalersByNamespace, nil
 }
 
 func (r *NodeReconciler) findMatchingEvictionAutoScaler(

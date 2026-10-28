@@ -260,6 +260,8 @@ var _ = Describe("Node Controller", func() {
 			listCalls := make(map[string]int)
 			updateVersions := make(map[string][]string)
 			lastPodByNamespace := make(map[string]string)
+			podListCalls := 0
+			firstNamespace := ""
 			result, err := reconcileCordonedNode(interceptor.Funcs{
 				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 					if err := c.List(ctx, list, opts...); err != nil {
@@ -271,8 +273,14 @@ var _ = Describe("Node Controller", func() {
 						for _, opt := range opts {
 							opt.ApplyToList(options)
 						}
+						if options.Namespace != firstNamespace {
+							Expect(updateVersions[firstNamespace]).NotTo(BeEmpty(),
+								"process the first namespace before loading the next one")
+						}
 						listCalls[options.Namespace]++
 					case *corev1.PodList:
+						podListCalls++
+						firstNamespace = list.Items[0].Namespace
 						for _, pod := range list.Items {
 							lastPodByNamespace[pod.Namespace] = pod.Name
 						}
@@ -288,6 +296,7 @@ var _ = Describe("Node Controller", func() {
 			})
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(cooldown))
+			Expect(podListCalls).To(Equal(1))
 			Expect(listCalls).To(Equal(map[string]int{namespace: 1, otherNamespace.Name: 1}))
 			Expect(updateVersions[namespace]).To(HaveLen(2))
 			Expect(updateVersions[namespace][0]).NotTo(Equal(updateVersions[namespace][1]))
@@ -340,6 +349,49 @@ var _ = Describe("Node Controller", func() {
 			Expect(k8sClient.Get(ctx, podNamespacedName, &pod)).To(Succeed())
 			Expect(pod.Status.Conditions).To(HaveLen(1))
 			Expect(pod.Status.Conditions[0].Type).To(Equal(corev1.PodReady))
+		})
+
+		It("returns a later namespace list failure after preserving earlier Pod processing", func() {
+			otherNamespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{GenerateName: "node-list-error-"}}
+			Expect(k8sClient.Create(ctx, otherNamespace)).To(Succeed())
+			Expect(k8sClient.Create(ctx, &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "other-pod", Namespace: otherNamespace.Name},
+				Spec: corev1.PodSpec{
+					NodeName: nodeName, Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			})).To(Succeed())
+			listErr := errors.NewServiceUnavailable("test later namespace list failure")
+			_, err := reconcileCordonedNode(interceptor.Funcs{
+				List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+					if _, ok := list.(*v1.EvictionAutoScalerList); ok {
+						options := &client.ListOptions{}
+						for _, opt := range opts {
+							opt.ApplyToList(options)
+						}
+						if options.Namespace == otherNamespace.Name {
+							return listErr
+						}
+					}
+					if err := c.List(ctx, list, opts...); err != nil {
+						return err
+					}
+					if pods, ok := list.(*corev1.PodList); ok {
+						Expect(pods.Items).To(HaveLen(2))
+						if pods.Items[0].Namespace != namespace {
+							pods.Items[0], pods.Items[1] = pods.Items[1], pods.Items[0]
+						}
+					}
+					return nil
+				},
+			})
+			Expect(err).To(MatchError(listErr))
+			var pod corev1.Pod
+			Expect(k8sClient.Get(ctx, podNamespacedName, &pod)).To(Succeed())
+			Expect(pod.Status.Conditions).To(ContainElement(HaveField("Type", corev1.DisruptionTarget)))
+			var autoscaler v1.EvictionAutoScaler
+			Expect(k8sClient.Get(ctx, typeNamespacedName, &autoscaler)).To(Succeed())
+			Expect(autoscaler.Spec.LastEviction.PodName).To(Equal(podName))
+			Expect(autoscaler.Spec.LastEviction.EvictionTime.IsZero()).To(BeFalse())
 		})
 	})
 })

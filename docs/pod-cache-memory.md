@@ -78,6 +78,11 @@ not make a full status update safe when metadata has been discarded.
 4. Returns conflicts for normal controller retry rather than overwriting newer
    state.
 
+This helper performs a **direct API write** (`PATCH` to the Pod status subresource)
+when the condition changes. It performs no GET: its input is the Pod snapshot
+already obtained from the compact cache or direct-read fallback. An unchanged
+condition needs no API write; caching never makes a write local-only.
+
 The patch preserves server-side annotations/spec, other conditions, container
 statuses and Pod addresses. RBAC adds Pod-status `patch` permission while retaining
 `update` for older controller instances during rolling upgrades and rollbacks.
@@ -86,14 +91,19 @@ this against an API server and verifies preservation and stale-version conflicts
 
 ## Node reconciliation lookup reuse
 
-The [node reconciler](../internal/controller/node_reconciler.go) lists EAS resources
-once per distinct Pod namespace, before its main Pod loop. The snapshots are local
-to that reconciliation, not a second persistent cache.
+The [node reconciler](../internal/controller/node_reconciler.go) lists Pods once and
+processes the returned slice in a single traversal. When it first encounters a
+namespace, it lists that namespace's EAS resources and keeps an owned snapshot in
+a local map. Later Pods in that namespace reuse it, including an empty result.
+There is no namespace-preloading traversal or second persistent cache.
 
 Matching returns an owned EAS object from that snapshot. Successful updates retain
 the returned resource version so subsequent Pods matching the same EAS do not use
 the initial stale version. First-match semantics and error propagation remain;
 PDB Gets are still cache-backed and are not separately deduplicated.
+
+A list failure in a later namespace returns an error after earlier Pods may have
+been processed. Reconciliation is not transactional; the controller retries errors.
 
 The node controller uses one worker by default. Other controllers have independent
 workers, so this is not a global concurrency or API request-rate limit.

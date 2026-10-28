@@ -28,8 +28,11 @@ jobs:
       - name: Lint
         run: make lint
 
-      - name: Helm lint and template
+      - name: Helm lint, template and memory preflight
         run: make helm-validate
+
+      - name: Validate Kubernetes resource schemas
+        run: make helm-schema-validate
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v2
@@ -64,4 +67,3 @@ jobs:
       #    docker buildx build --platform linux/amd64,linux/arm64 -t paulgmiller/k8s-pdb-autoscaler:$SHORT_SHA --push .
           
         
-

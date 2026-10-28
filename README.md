@@ -238,6 +238,9 @@ Configuration options will be documented here in future updates. If you have sug
 
 #### Updating Controller Configuration
 
+For the OOM root cause, compact-cache design, status-write safety, and CI validation
+layers, see [Pod cache memory design](docs/pod-cache-memory.md).
+
 Controller environment settings, including `POD_CACHE_ENABLED`, are read at process
 startup. Memory requests and limits are rendered into the Deployment's Pod template.
 Neither is hot-reloaded by the running controller.

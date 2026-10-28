@@ -7,8 +7,10 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TransformPodCache drops unused spec and metadata while retaining complete status.
-// Projected Pods require status patches: Update can clear discarded metadata.
+// TransformPodCache is the OOM mitigation: discard unused Pod data before informer
+// storage, not merely from List results. Object count is still cluster-wide.
+// Full status is retained; writes must patch to avoid clearing discarded metadata.
+// See docs/pod-cache-memory.md for the cache/read/write flow and rollout limits.
 func TransformPodCache(obj any) (any, error) {
 	pod, ok := obj.(*corev1.Pod)
 	if !ok || pod == nil {

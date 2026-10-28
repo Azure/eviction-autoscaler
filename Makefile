@@ -102,6 +102,25 @@ helm-validate: helm ## Run helm lint and template on the chart
 	$(HELM_BIN) template eviction-autoscaler ./helm/eviction-autoscaler --namespace kube-system --show-only templates/deployment.yaml | go run ./cmd/validate-chart-resources
 	HELM_BIN="$(HELM_BIN)" go test ./cmd/validate-chart-resources ./test/helm -count=1
 
+.PHONY: helm-schema-validate
+helm-schema-validate: helm kubeconform ## Validate rendered Kubernetes resources and schema failure cases.
+	mkdir -p "$(LOCALBIN)/kubeconform-schemas"
+	@for version in 1.30.2 $(ENVTEST_K8S_VERSION); do \
+		for cached in true false; do \
+			echo "Validating Kubernetes $$version, Pod cache enabled=$$cached"; \
+			"$(HELM_BIN)" template eviction-autoscaler ./helm/eviction-autoscaler \
+				--namespace kube-system --set controllerConfig.podCache.enabled=$$cached \
+				| "$(KUBECONFORM)" -strict -summary -exit-on-error \
+					-kubernetes-version "$$version" \
+					-skip apiextensions.k8s.io/v1/CustomResourceDefinition \
+					-cache "$(LOCALBIN)/kubeconform-schemas"; \
+		done; \
+	done
+	HELM_BIN="$(HELM_BIN)" KUBECONFORM_BIN="$(KUBECONFORM)" \
+		KUBECONFORM_KUBERNETES_VERSION="$(ENVTEST_K8S_VERSION)" \
+		KUBECONFORM_CACHE="$(LOCALBIN)/kubeconform-schemas" \
+		go test ./test/helm -run '^TestKubernetesSchemaValidation$$' -count=1
+
 
 ##@ Build
 
@@ -201,11 +220,13 @@ KUBECTL ?= kubectl
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen-$(CONTROLLER_TOOLS_VERSION)
 ENVTEST ?= $(LOCALBIN)/setup-envtest-$(ENVTEST_VERSION)
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint-$(GOLANGCI_LINT_VERSION)
+KUBECONFORM ?= $(LOCALBIN)/kubeconform-$(KUBECONFORM_VERSION)
 
 ## Tool Versions
 CONTROLLER_TOOLS_VERSION ?= latest
 ENVTEST_VERSION ?= release-0.19
 GOLANGCI_LINT_VERSION ?= latest
+KUBECONFORM_VERSION = v0.8.0
 
 .PHONY: controller-gen
 controller-gen: $(CONTROLLER_GEN) ## Download controller-gen locally if necessary.
@@ -221,6 +242,11 @@ $(ENVTEST): $(LOCALBIN)
 golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/cmd/golangci-lint,${GOLANGCI_LINT_VERSION})
+
+.PHONY: kubeconform
+kubeconform: $(KUBECONFORM) ## Download the pinned Kubernetes schema validator locally if needed.
+$(KUBECONFORM): $(LOCALBIN)
+	$(call go-install-tool,$(KUBECONFORM),github.com/yannh/kubeconform/cmd/kubeconform,$(KUBECONFORM_VERSION))
 
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary (ideally with version)

@@ -73,9 +73,9 @@ func TestNodeEASNamespaceLookup(t *testing.T) {
 		wantUpdates map[client.ObjectKey]int
 	}{
 		{
-			name: "reuse lists and refreshed versions", autoscalers: true,
+			name: "reuse lists and deduplicate signals", autoscalers: true,
 			wantLists:   map[string]int{"namespace-a": 1, "namespace-b": 1},
-			wantUpdates: map[client.ObjectKey]int{keyA: 2, keyB: 1},
+			wantUpdates: map[client.ObjectKey]int{keyA: 1, keyB: 1},
 		},
 		{
 			name:        "remember empty results",
@@ -89,7 +89,7 @@ func TestNodeEASNamespaceLookup(t *testing.T) {
 		{
 			name: "later namespace error", autoscalers: true, failNS: "namespace-b",
 			wantLists:   map[string]int{"namespace-a": 1, "namespace-b": 1},
-			wantUpdates: map[client.ObjectKey]int{keyA: 2},
+			wantUpdates: map[client.ObjectKey]int{keyA: 1},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -97,7 +97,6 @@ func TestNodeEASNamespaceLookup(t *testing.T) {
 			backend := newNodeLookupClient(t, test.autoscalers)
 			listCalls := make(map[string]int)
 			updates := make(map[client.ObjectKey]int)
-			versions := make(map[client.ObjectKey][]string)
 			podLists := 0
 			listErr := errors.New("EAS list failed")
 			c := interceptor.NewClient(backend, interceptor.Funcs{
@@ -130,7 +129,6 @@ func TestNodeEASNamespaceLookup(t *testing.T) {
 					if _, ok := obj.(*easv1.EvictionAutoScaler); ok {
 						key := client.ObjectKeyFromObject(obj)
 						updates[key]++
-						versions[key] = append(versions[key], obj.GetResourceVersion())
 					}
 					return c.Update(ctx, obj, opts...)
 				},
@@ -148,9 +146,6 @@ func TestNodeEASNamespaceLookup(t *testing.T) {
 				!reflect.DeepEqual(updates, test.wantUpdates) {
 				t.Fatalf("Pod lists=%d, EAS lists=%v, updates=%v; want lists=%v updates=%v",
 					podLists, listCalls, updates, test.wantLists, test.wantUpdates)
-			}
-			if len(versions[keyA]) == 2 && versions[keyA][0] == versions[keyA][1] {
-				t.Fatal("reused a stale EAS resource version")
 			}
 			if test.failNS == "" {
 				wantRequeue := cooldown

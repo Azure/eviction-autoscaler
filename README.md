@@ -335,8 +335,9 @@ and must not be used for full-object or full-status updates.
 The node-name index and all existing namespace/label/node filters are preserved.
 The node controller lists EAS resources once per namespace within one Pod traversal,
 reusing an owned snapshot and refreshed resource versions. This avoids repeated
-cache scans and copies; LastEviction is still updated for each matching Pod.
-Per-EAS write deduplication is a separate optimization.
+cache scans and copies. A separate set updates LastEviction once per matching EAS
+per node reconciliation, using the first matching Pod as its representative.
+The set resets each pass, and per-Pod metrics still count every matched Pod.
 
 Namespace eligibility does not limit the compact cache's object count: it still
 contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still

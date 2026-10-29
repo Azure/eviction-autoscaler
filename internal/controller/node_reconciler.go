@@ -75,6 +75,8 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 
 	// Reuse local namespace snapshots to avoid repeated cache scans and copies.
 	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
+	// This separate set limits direct API updates, not cached List calls.
+	updatedAutoscalers := make(map[types.NamespacedName]struct{})
 	podchanged := false
 	for _, pod := range podlist.Items {
 		autoscalers, loaded := autoscalersByNamespace[pod.Namespace]
@@ -99,8 +101,13 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		// Track eviction and node drain events
 		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
+		key := client.ObjectKeyFromObject(applicableEvictionAutoScaler)
+		if _, updated := updatedAutoscalers[key]; updated {
+			continue
+		}
 		logger.Info("Recording eviction for EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
 		// LastEviction drives surge reconciliation. No Pod-status write is needed.
+		// The first matching Pod represents this EAS for the current node pass.
 		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
 			PodName:      pod.Name,
 			EvictionTime: metav1.Now(),
@@ -109,6 +116,7 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			logger.Error(err, "unable to update EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name)
 			return ctrl.Result{}, err
 		}
+		updatedAutoscalers[key] = struct{}{}
 		podchanged = true
 	}
 

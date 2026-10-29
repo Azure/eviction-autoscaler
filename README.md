@@ -333,9 +333,10 @@ older images during rolling upgrades and rollbacks. Projected Pods are read mode
 and must not be used for full-object or full-status updates.
 
 The node-name index and all existing namespace/label/node filters are preserved.
-The existing per-Pod EAS lookup and LastEviction update behavior is unchanged.
-Per-namespace EAS lookup reuse and per-EAS write deduplication are separate
-optimizations, not prerequisites for the compact Pod cache.
+The node controller lists EAS resources once per namespace within one Pod traversal,
+reusing an owned snapshot and refreshed resource versions. This avoids repeated
+cache scans and copies; LastEviction is still updated for each matching Pod.
+Per-EAS write deduplication is a separate optimization.
 
 Namespace eligibility does not limit the compact cache's object count: it still
 contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still

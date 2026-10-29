@@ -80,12 +80,22 @@ The [projection/reconciliation tests](../internal/controller/pod_cache_test.go)
 reject per-Pod reads/writes and verify that LastEviction is still recorded while
 the server-side Pod remains unchanged.
 
-## Node reconciliation scope
+## Node reconciliation lookup reuse
 
-The [node reconciler](../internal/controller/node_reconciler.go) retains its
-existing per-Pod EAS lookup, first-match selection and LastEviction update behavior.
-Per-namespace EAS-list reuse and once-per-EAS write deduplication are separate
-optimizations; neither is required to reduce retained Pod memory.
+The [node reconciler](../internal/controller/node_reconciler.go) lists Pods once and
+processes them in one traversal. On the first Pod in a namespace, it loads that
+namespace's EAS resources into an owned local snapshot. Later Pods reuse that
+snapshot, including an empty result. This avoids repeated cache scans and copies;
+the namespace map is not a second persistent cache and does not deduplicate writes.
+
+Matching preserves the first applicable EAS for each Pod. LastEviction is still
+updated for every matched Pod; the returned resource version is retained for later
+updates to the same EAS within this pass. A list failure in a later namespace can
+occur after earlier Pods have been processed; errors return for normal retry.
+PDB Gets are still cache-backed and are not separately deduplicated.
+
+This lookup optimization is independent of the retained Pod-memory mitigation.
+Once-per-EAS update deduplication is a separate follow-up.
 
 The node controller uses one worker by default. Other controllers have independent
 workers, so this is not a global concurrency or API request-rate limit.

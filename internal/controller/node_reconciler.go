@@ -73,42 +73,44 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		return ctrl.Result{}, err
 	}
 
-	// Namespace reuse avoids repeated cache scans/copies, not duplicate writes.
-	// The separate set below limits direct API updates to one per EAS this pass.
-	autoscalersByNamespace := make(map[string][]pdbautoscaler.EvictionAutoScaler)
-	updatedAutoscalers := make(map[types.NamespacedName]struct{})
 	podchanged := false
 	for _, pod := range podlist.Items {
-		autoscalers, loaded := autoscalersByNamespace[pod.Namespace]
-		if !loaded {
-			var list pdbautoscaler.EvictionAutoScalerList
-			if err := r.List(ctx, &list, client.InNamespace(pod.Namespace)); err != nil {
-				logger.Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
-				return ctrl.Result{}, err
-			}
-			// Keep owned objects so updates never mutate the shared informer cache.
-			autoscalers = list.DeepCopy().Items
-			autoscalersByNamespace[pod.Namespace] = autoscalers
-		}
-		applicableEvictionAutoScaler, matched, err := r.findMatchingEvictionAutoScaler(
-			ctx, &pod, autoscalers)
+		EvictionAutoScalerList := &pdbautoscaler.EvictionAutoScalerList{}
+		err = r.List(ctx, EvictionAutoScalerList, client.InNamespace(pod.Namespace))
 		if err != nil {
+			logger.Error(err, "Unable to list EvictionAutoScalers", "namespace", pod.Namespace)
 			return ctrl.Result{}, err
 		}
-		if !matched {
+		var applicableEvictionAutoScaler *pdbautoscaler.EvictionAutoScaler
+		for _, autoscaler := range EvictionAutoScalerList.Items {
+			var pdb policyv1.PodDisruptionBudget
+			err = r.Get(ctx, types.NamespacedName{Name: autoscaler.Name, Namespace: autoscaler.Namespace}, &pdb)
+			if err != nil {
+				if errors.IsNotFound(err) {
+					logger.Error(err, "no matching pdb", "namespace", autoscaler.Namespace, "name", autoscaler.Name)
+					continue
+				}
+				return ctrl.Result{}, err
+			}
+			selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+			if err != nil {
+				logger.Error(err, "Error: Invalid PDB selector", "pdbname", autoscaler.Name)
+				continue
+			}
+			if selector.Matches(labels.Set(pod.Labels)) {
+				applicableEvictionAutoScaler = autoscaler.DeepCopy()
+				break
+			}
+		}
+		if applicableEvictionAutoScaler == nil {
 			continue
 		}
 
 		// Track eviction and node drain events
 		metrics.EvictionCounter.WithLabelValues(pod.Namespace).Inc()
 
-		key := client.ObjectKeyFromObject(applicableEvictionAutoScaler)
-		if _, updated := updatedAutoscalers[key]; updated {
-			continue
-		}
 		logger.Info("Recording eviction for EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name, "namespace", pod.Namespace, "podname", pod.Name, "node", node.Name)
-		// LastEviction drives surge reconciliation. No Pod-status write is needed;
-		// the first matching Pod represents this EAS for the current node pass.
+		// LastEviction drives surge reconciliation. No Pod-status write is needed.
 		applicableEvictionAutoScaler.Spec.LastEviction = pdbautoscaler.Eviction{
 			PodName:      pod.Name,
 			EvictionTime: metav1.Now(),
@@ -117,7 +119,6 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 			logger.Error(err, "unable to update EvictionAutoScaler", "name", applicableEvictionAutoScaler.Name)
 			return ctrl.Result{}, err
 		}
-		updatedAutoscalers[key] = struct{}{}
 		podchanged = true
 	}
 
@@ -129,32 +130,6 @@ func (r *NodeReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 		cooldownNeeded = cooldown
 	}
 	return ctrl.Result{RequeueAfter: cooldownNeeded}, nil
-}
-
-func (r *NodeReconciler) findMatchingEvictionAutoScaler(
-	ctx context.Context, pod *corev1.Pod, autoscalers []pdbautoscaler.EvictionAutoScaler,
-) (*pdbautoscaler.EvictionAutoScaler, bool, error) {
-	logger := log.FromContext(ctx)
-	for i := range autoscalers {
-		autoscaler := &autoscalers[i]
-		var pdb policyv1.PodDisruptionBudget
-		if err := r.Get(ctx, types.NamespacedName{Name: autoscaler.Name, Namespace: autoscaler.Namespace}, &pdb); err != nil {
-			if errors.IsNotFound(err) {
-				logger.Error(err, "no matching pdb", "namespace", autoscaler.Namespace, "name", autoscaler.Name)
-				continue
-			}
-			return nil, false, err
-		}
-		selector, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
-		if err != nil {
-			logger.Error(err, "Error: Invalid PDB selector", "pdbname", autoscaler.Name)
-			continue
-		}
-		if selector.Matches(labels.Set(pod.Labels)) {
-			return autoscaler, true, nil
-		}
-	}
-	return nil, false, nil
 }
 
 func (r *NodeReconciler) SetupWithManager(mgr ctrl.Manager) error {

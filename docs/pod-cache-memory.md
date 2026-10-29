@@ -80,29 +80,12 @@ The [projection/reconciliation tests](../internal/controller/pod_cache_test.go)
 reject per-Pod reads/writes and verify that LastEviction is still recorded while
 the server-side Pod remains unchanged.
 
-## Node reconciliation lookup reuse
+## Node reconciliation scope
 
-The [node reconciler](../internal/controller/node_reconciler.go) lists Pods once and
-processes the returned slice in a single traversal. When it first encounters a
-namespace, it lists that namespace's EAS resources and keeps an owned snapshot in
-a local map. Later Pods in that namespace reuse it, including an empty result.
-There is no namespace-preloading traversal or second persistent cache.
-
-The namespace map avoids repeated cache scans and deep-copy allocations; it is
-not what deduplicates API writes. Matching still selects the first applicable EAS
-for each Pod. A separate set keyed by EAS namespace/name limits LastEviction updates
-to one per matching EAS per node reconciliation. The first matching Pod supplies
-the representative name; the timestamp and cooldown continue to be refreshed on
-later reconciliations while matching Pods remain on the cordoned node.
-
-The set is updated only after a successful direct API EAS update. Errors are
-returned for retry. Per-Pod eviction metrics still count every matched Pod.
-Distinct EAS resources, including same-name resources in different namespaces,
-are processed independently. PDB Gets remain cache-backed and are not separately
-deduplicated.
-
-A list failure in a later namespace returns an error after earlier Pods may have
-been processed. Reconciliation is not transactional; the controller retries errors.
+The [node reconciler](../internal/controller/node_reconciler.go) retains its
+existing per-Pod EAS lookup, first-match selection and LastEviction update behavior.
+Per-namespace EAS-list reuse and once-per-EAS write deduplication are separate
+optimizations; neither is required to reduce retained Pod memory.
 
 The node controller uses one worker by default. Other controllers have independent
 workers, so this is not a global concurrency or API request-rate limit.
@@ -145,7 +128,7 @@ CI checks complementary layers; no single tool establishes memory capacity:
 | Helm | `make helm-validate` | Chart lint/rendering and configuration regression tests |
 | Memory semantics | Go preflight within `make helm-validate` | Kubernetes-native quantity parsing, non-negative memory, request <= limit |
 | Kubernetes schemas | `make helm-schema-validate` | Strict Kubeconform validation of rendered built-in resources |
-| API server and behavior | Existing controller/envtest and e2e suites | CRD installation, read-only Pod handling and deduplicated eviction signals |
+| API server and behavior | Existing controller/envtest and e2e suites | CRD installation, read-only Pod handling and eviction signals |
 
 Kubeconform is pinned to **v0.8.0**. Schema validation covers both compact-cache and
 direct-read configurations against **1.30.2** (the e2e Kind configuration) and the

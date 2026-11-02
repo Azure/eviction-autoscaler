@@ -156,6 +156,9 @@ az k8s-extension create \
 - `controllerConfig.namespaces.enabledByDefault=true` - Enables all namespaces (default: false, opt-in mode)
 - `controllerConfig.namespaces.actionedNamespaces` - List of namespaces to enable when using opt-in mode (default: `[]`)
 - `controllerConfig.metrics.podScrapeAnnotations=true` - Advertises the metrics endpoint to annotation-based Prometheus scrapers (default: false)
+- `controllerConfig.podCache.enabled=true` - Uses a compact Pod cache and node-name index (default: true). Retains identity, labels, owners and node name, not status or unused spec/metadata. Set to false for direct Pod reads; other resource caches are unchanged.
+- `resources.requests.memory` - Controller memory request (default: `128Mi`)
+- `resources.limits.memory` - Controller memory limit (default: `512Mi`); size for startup and concurrent-drain peaks on the largest supported clusters
 - `nodeSelector` - Pins the controller pod to nodes matching these labels (default: `{}`, no constraint)
 - `affinity` - Full Kubernetes affinity spec for the controller pod, including `nodeAffinity` (default: `{}`)
 - `tolerations` - Allows the controller pod to schedule onto tainted nodes (default: `[]`)
@@ -235,19 +238,126 @@ Configuration options will be documented here in future updates. If you have sug
 
 #### Updating Controller Configuration
 
-> **Important:** When modifying controller configuration values (such as `controllerConfig.pdb.create` or `controllerConfig.namespaces.*`), you must delete and re-install the extension for the changes to take effect.
->
-> To update configuration:
->
-> 1. Delete the existing extension:
->    ```bash
->    az k8s-extension delete --resource-group <your-resource-group> \
->      --cluster-name <your-cluster-name> \
->      --cluster-type managedClusters \
->      --name evictionautoscaler --yes
->    ```
->
-> 2. Re-install the extension with your updated configuration settings using the `az k8s-extension create` command shown above.
+For the OOM root cause, compact-cache design, status-write safety, and CI validation
+layers, see [Pod cache memory design](docs/pod-cache-memory.md).
+
+Controller environment settings, including `POD_CACHE_ENABLED`, are read at process
+startup. Memory requests and limits are rendered into the Deployment's Pod template.
+Neither is hot-reloaded by the running controller.
+
+For Cosmic-managed installations, publish a chart/image version containing the new
+setting, then update the desired chart values through the ring configuration patch
+and deployment reconciliation path. The relevant **chart values** are:
+
+```yaml
+controllerConfig:
+  podCache:
+    enabled: true
+resources:
+  requests:
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+```
+
+This is a chart-values fragment, not a Cosmic PATCH request body. Cosmic's API schema
+and patch handler are outside this repository. A configuration patch only takes
+effect once the deployment pipeline applies it to the installed chart and changes
+the rendered Deployment. For Azure extension installations, use the configuration
+update mechanism supported by the installed extension version.
+
+For a direct Helm installation, apply the same settings with:
+
+```bash
+helm upgrade eviction-autoscaler ./helm/eviction-autoscaler \
+  --namespace kube-system --reuse-values \
+  --set controllerConfig.podCache.enabled=true \
+  --set resources.requests.memory=128Mi \
+  --set resources.limits.memory=512Mi
+```
+
+Memory settings must be non-negative Kubernetes quantities. When both are set,
+`resources.requests.memory` must not exceed `resources.limits.memory`, including
+when the units differ. The Go preflight validator uses Kubernetes' own quantity
+parser, supporting decimal, binary, fractional, and exponent forms without
+reimplementing quantity arithmetic in Helm.
+
+Run `make helm-validate` to render and validate the chart before deployment. To
+validate custom values, use the same overrides as the intended installation:
+
+```bash
+helm template eviction-autoscaler ./helm/eviction-autoscaler \
+  --namespace kube-system --show-only templates/deployment.yaml \
+  --set resources.requests.memory=128Mi \
+  --set resources.limits.memory=512Mi \
+  | go run ./cmd/validate-chart-resources
+```
+
+**Validation stage:** the Go preflight rejects invalid settings; `helm template`
+and `helm lint` alone do not compare memory requests and limits. Direct installs
+or upgrades that omit the preflight still rely on Kubernetes admission to reject
+invalid resources. Cosmic's deployment pipeline must invoke the preflight if it
+needs validation before submitting an update.
+
+**Upgrade note:** the default memory request increased from `64Mi` to `128Mi`.
+If an existing installation overrides only the limit to a value below `128Mi`,
+also set a compatible request explicitly. For example, an intentional `64Mi`
+limit requires `resources.requests.memory=64Mi` (or lower). The preflight reports
+an actionable error when only the limit is lowered. It does not silently reduce
+the request or increase the limit.
+
+Changing the Pod-cache setting or memory values changes the Pod template and
+triggers a Deployment rollout, replacing the controller Pod. Increasing a memory
+limit does not itself require an application restart on every Kubernetes version:
+supported clusters can use the separate
+[in-place Pod resize API](https://kubernetes.io/docs/tasks/configure-pod-container/resize-container-resources/).
+However, this chart and the controller do not invoke that API; a normal chart update
+uses a rollout, not an in-place resize.
+
+The replacement controller resumes from existing Kubernetes resources and persisted
+EAS spec/status. Expect a possible pause during startup and leader election; this is
+not a zero-downtime guarantee. Prefer applying resource changes before enabling EAS
+or starting drains, and ensure the replacement Pod can be scheduled with its new
+request. During an active drain, a rollout can interrupt reconciliation and require
+retries. Do not rely on a patch to rescue an already-running process before its next
+OOM. Verify that rollout completes and the running Pod has the intended environment
+and resources.
+
+By default, the Pod informer stores a compact projection: identity, labels, owner
+references and node name. Pod status, container specs, environment variables,
+volumes, annotations and managed fields are not retained. The node controller
+no longer publishes the anticipatory `DisruptionTarget` condition: scaling uses
+the EAS `LastEviction` signal, so no Pod-status write is needed. This is an
+intentional reporting change; existing Pod-status permissions remain only for
+older images during rolling upgrades and rollbacks. Projected Pods are read models
+and must not be used for full-object or full-status updates.
+
+The node-name index and all existing namespace/label/node filters are preserved.
+The existing per-Pod EAS lookup and LastEviction update behavior is unchanged.
+Per-namespace EAS lookup reuse and per-EAS write deduplication are separate
+optimizations, not prerequisites for the compact Pod cache.
+
+Namespace eligibility does not limit the compact cache's object count: it still
+contains cluster-wide Pods, including when `enabledByDefault=true`. Watches still
+receive full Pod objects, so transient decoding/initial-population costs remain.
+The `512Mi` default provides additional headroom, not a guarantee every cluster
+fits; startup, retained heap and concurrent-drain peaks still need measurement.
+
+Set `controllerConfig.podCache.enabled=false` / `POD_CACHE_ENABLED=false` to bypass
+cached Pod Get/List reads, preserving the existing filters. This is a direct-API
+fallback, trading retained Pod memory for repeated API reads. Existing explicit
+false overrides remain false on upgrade; set the value to true to select compact
+caching.
+
+Disabling Pod caching has two parts: the manager's `DisableFor: Pod` setting routes
+Pod reads to the API server, and skipping `IndexField(Pod)` avoids creating an
+informer just to maintain the node-name index. Removing only the index would not
+disable cached reads; a later Pod list could still create the informer.
+
+The node controller uses controller-runtime's default of one worker, so cordoned
+nodes are processed sequentially rather than listing every cordoned node's Pods
+in parallel. The EAS and PDB controllers have their own workers and can issue Pod
+reads concurrently; this is not a global API request-rate limit.
 
 ### Excluding Deployments from Automatic PDB Creation
 
@@ -454,9 +564,14 @@ EOF
 
 Namespace watches trigger reconciliation by listing all deployments/PDBs in that namespace. This is efficient because:
 - The controller-runtime client uses an **in-memory cache**
-- List operations read from cache, not the Kubernetes API server
+- Deployment/PDB list operations read from cache, not the Kubernetes API server
 - No API server round-trip overhead
 - Fast local memory operations
+
+Pod reads use a compact informer cache by default, retaining identity, labels,
+owners and node name rather than Pod status or full spec/metadata. Setting
+`controllerConfig.podCache.enabled=false` uses direct API reads with the existing
+namespace, label, or node-name filters instead.
 
 #### Example: enabled_by_default=false Configuration
 

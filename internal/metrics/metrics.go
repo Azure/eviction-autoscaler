@@ -167,6 +167,13 @@ var (
 		},
 	)
 
+	LeaderActive = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "eviction_autoscaler_leader_active",
+			Help: "1 while this process holds the leader lease, 0 while waiting or stepping down; only used with leader election",
+		},
+	)
+
 	// PDBFloorTeardownUnrestorableCounter tracks PDB-floor teardowns where the partner
 	// PDB could not be restored to its original spec because the snapshot annotation was
 	// missing (only reachable via external annotation tampering — the snapshot and pin
@@ -355,6 +362,7 @@ func init() {
 		DeploymentGauge,
 		ZeroMaxSurgeWorkloadGauge,
 		ControllerEnabled,
+		LeaderActive,
 		PDBGauge,
 		EvictionCounter,
 		BlockedEvictionCounter,

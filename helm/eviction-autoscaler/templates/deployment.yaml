@@ -4,6 +4,7 @@
 {{- if and (hasKey $podCache "enabled") (ne $podCache.enabled nil) -}}
   {{- $podCacheEnabled = $podCache.enabled -}}
 {{- end -}}
+{{- $leaderElection := .Values.controllerConfig.leaderElection | default dict -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -78,6 +79,9 @@ spec:
         - /manager
         args:
         - --leader-elect
+        - --leader-election-lease-duration={{ $leaderElection.leaseDuration | default "60s" }}
+        - --leader-election-renew-deadline={{ $leaderElection.renewDeadline | default "40s" }}
+        - --leader-election-retry-period={{ $leaderElection.retryPeriod | default "2s" }}
         - --health-probe-bind-address=:8081
         - --metrics-bind-address=:8080
         ports:

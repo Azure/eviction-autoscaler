@@ -314,6 +314,50 @@ supported clusters can use the separate
 However, this chart and the controller do not invoke that API; a normal chart update
 uses a rollout, not an in-place resize.
 
+### Leader-election recovery
+
+With `--leader-elect` (enabled by the chart), the process keeps health and metrics
+available when it loses leadership. It cancels the current reconciliation manager,
+waits for its workers and caches to stop, and retries election with jitter. Only
+after acquiring the lease again does it build a fresh reconciliation manager;
+initial informer lists rediscover resources, including changes made while paused.
+It never resumes the stopped manager or runs two leadership terms concurrently.
+
+The default lease duration is **60s**, renewal deadline **40s**, and retry period
+**2s**. Individual election requests time out after half the renewal deadline
+(**20s** by default, with a 1s minimum). These larger budgets tolerate longer API
+stalls, but are not a guarantee against leadership loss and can delay failover.
+The existing lease name and namespace remain unchanged.
+
+Override the CLI flags `--leader-election-lease-duration`,
+`--leader-election-renew-deadline`, and `--leader-election-retry-period`, or set:
+
+```yaml
+controllerConfig:
+  leaderElection:
+    leaseDuration: 60s
+    renewDeadline: 40s
+    retryPeriod: 2s
+```
+
+Lease duration must exceed the renewal deadline, which must exceed 1.2 times the
+positive retry period. Invalid settings fail startup. Monitor API latency and CPU
+throttling when selecting budgets; increasing them does not fix those causes.
+
+`/healthz` stays healthy while waiting for leadership; `/readyz` fails when this
+process does not hold the lease. The `eviction_autoscaler_leader_active` gauge is
+1 while holding leadership and 0 otherwise (when election is enabled). It does
+not indicate that informer startup has completed. Metrics remain available while
+paused. With election disabled, reconciliation starts directly as before.
+
+If the old reconciliation manager cannot fully stop within **10s**, the process
+still exits non-zero rather than risk overlapping workers. Unexpected manager
+startup/runtime errors also remain fatal. A normal shutdown does not release the
+lease early, so another replica waits for expiration. This is separate from OOM
+mitigation and does not change the chart's replica count.
+
+### Behavior during resource rollouts
+
 The replacement controller resumes from existing Kubernetes resources and persisted
 EAS spec/status. Expect a possible pause during startup and leader election; this is
 not a zero-downtime guarantee. Prefer applying resource changes before enabling EAS

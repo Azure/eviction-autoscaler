@@ -88,14 +88,19 @@ namespace's EAS resources into an owned local snapshot. Later Pods reuse that
 snapshot, including an empty result. This avoids repeated cache scans and copies;
 the namespace map is not a second persistent cache and does not deduplicate writes.
 
-Matching preserves the first applicable EAS for each Pod. LastEviction is still
-updated for every matched Pod; the returned resource version is retained for later
-updates to the same EAS within this pass. A list failure in a later namespace can
-occur after earlier Pods have been processed; errors return for normal retry.
+Matching preserves the first applicable EAS for each Pod. A separate set keyed by
+EAS namespace/name limits LastEviction API updates to one per EAS per node pass.
+The first matching Pod supplies the representative name; the set resets on the
+next reconciliation, and per-Pod metrics still count all matched Pods.
+
+The set is marked only after a successful update, so failures return for retry.
+Distinct EAS resources in the same namespace and same-name EAS resources in different
+namespaces remain independent. A list failure in a later namespace can occur after
+earlier Pods have been processed; errors return for normal retry.
 PDB Gets are still cache-backed and are not separately deduplicated.
 
-This lookup optimization is independent of the retained Pod-memory mitigation.
-Once-per-EAS update deduplication is a separate follow-up.
+Namespace-list reuse and once-per-EAS update deduplication are independent of the
+retained Pod-memory mitigation.
 
 The node controller uses one worker by default. Other controllers have independent
 workers, so this is not a global concurrency or API request-rate limit.

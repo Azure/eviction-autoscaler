@@ -4,7 +4,7 @@
 # Use Microsoft's FIPS-validated Go distribution (uses OpenSSL backend for FIPS)
 # Use --platform=$TARGETPLATFORM so CGO compiles natively via QEMU, avoiding
 # cross-compiler issues with CGO_ENABLED=1 on arm64.
-FROM --platform=$TARGETPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.25 AS builder
+FROM --platform=$TARGETPLATFORM mcr.microsoft.com/oss/go/microsoft/golang:1.26 AS builder
 
 WORKDIR /workspace
 

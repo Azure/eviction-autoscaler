@@ -203,6 +203,18 @@ func triggerOnPDBAnnotationChange(e event.UpdateEvent, logger logr.Logger) bool 
 				"oldValue", oldVal, "newValue", newVal)
 			return true
 		}
+		// pdb_mutated is derived from the pinned-floor marker (livelyMutated), so a change to it
+		// alone — external removal/corruption, or our own teardown dropping it — must re-trigger a
+		// reconcile so the gauge is re-derived (and, for tampering, the marker repaired); otherwise a
+		// stale pdb_mutated==1 could linger and hide the pinned-but-not-mutated drift signal.
+		oldFloor := tryGet(oldPDB.Annotations, AnnotationPinnedFloor)
+		newFloor := tryGet(newPDB.Annotations, AnnotationPinnedFloor)
+		if oldFloor != newFloor {
+			logger.Info("PDB update event detected, pinned-floor annotation changed",
+				"namespace", newPDB.Namespace, "name", newPDB.Name,
+				"oldValue", oldFloor, "newValue", newFloor)
+			return true
+		}
 		if !intstrPtrEqual(oldPDB.Spec.MinAvailable, newPDB.Spec.MinAvailable) || !intstrPtrEqual(oldPDB.Spec.MaxUnavailable, newPDB.Spec.MaxUnavailable) {
 			logger.Info("PDB update event detected, disruption spec changed",
 				"namespace", newPDB.Namespace, "name", newPDB.Name)
@@ -221,6 +233,8 @@ func countPodsOnCordoned(ctx context.Context, c client.Client, pdb *policyv1.Pod
 		return 0, fmt.Errorf("invalid PDB selector: %w", err)
 	}
 
+	// The compact Pod cache retains node assignments and labels for this query.
+	// The direct-API fallback uses the same namespace and selector filters.
 	var podList corev1.PodList
 	if err := c.List(ctx, &podList, client.InNamespace(pdb.Namespace), client.MatchingLabelsSelector{Selector: selector}); err != nil {
 		return 0, fmt.Errorf("failed to list pods for PDB %s: %w", pdb.Name, err)

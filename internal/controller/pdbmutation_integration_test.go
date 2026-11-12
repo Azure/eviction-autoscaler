@@ -166,6 +166,12 @@ var _ = Describe("PDB floor pin/restore/bail", func() {
 		Expect(pdb.Spec.MinAvailable).NotTo(BeNil())
 		Expect(pdb.Spec.MinAvailable.IntVal).To(Equal(int32(4)))
 		Expect(pdb.Annotations).To(HaveKey(AnnotationOriginalPDBSpec))
+		// A second reconcile now sees the already-mutated PDB at entry, so pdb_mutated reads 1
+		// (it reflects the live PDB state as fetched, which is what makes an unrestored mutation
+		// observable as mutated==1 without pinned==1).
+		actuatePDB()
+		Expect(testutil.ToFloat64(metrics.PDBFloorPinned.WithLabelValues(ns, name, name))).To(Equal(1.0), "pdb_floor_pinned should be 1 while pinned")
+		Expect(testutil.ToFloat64(metrics.PDBMutated.WithLabelValues(ns, name))).To(Equal(1.0), "pdb_mutated should be 1 while the PDB carries the mutation")
 		return ea
 	}
 

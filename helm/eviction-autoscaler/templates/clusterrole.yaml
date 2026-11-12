@@ -48,7 +48,9 @@ rules:
   - ""
   resources:
   - pods/status
+  # Older controller images still write Pod status during rollouts/rollbacks.
   verbs:
+  - patch
   - update
 - apiGroups:
   - eviction-autoscaler.azure.com

@@ -619,14 +619,6 @@ func installKEDA() error {
 	return err
 }
 
-// uninstallKEDA removes KEDA
-func uninstallKEDA() {
-	cmd := exec.Command("helm", "uninstall", "keda", "--namespace", "keda")
-	_, _ = utils.Run(cmd)
-	cmd = exec.Command("kubectl", "delete", "namespace", "keda")
-	_, _ = utils.Run(cmd)
-}
-
 const e2eLogsDir = "/tmp/e2e-logs"
 
 // dumpClusterState writes controller logs and cluster resource state to e2eLogsDir

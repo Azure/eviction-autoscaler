@@ -2066,12 +2066,13 @@ var _ = Describe("controller", Ordered, func() {
 			err = clientset.Update(ctx, &node)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("cleaning up KEDA test resources")
+			// Keep KEDA and its CRDs until AfterAll deletes the shared cluster.
+			// Later specs reuse controller replicas with registered ScaledObject informers.
+			By("cleaning up KEDA test workload resources")
 			deleteKEDAScaledObject("nginx-keda", testNs)
 			deleteDeployment("nginx-keda", testNs)
 			cmd = exec.Command("kubectl", "delete", "namespace", testNs)
 			_, _ = utils.Run(cmd)
-			uninstallKEDA()
 		})
 
 		It("should surge and scale back down for an AKS-owned namespace (kube-system)", func() {

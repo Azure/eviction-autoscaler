@@ -17,12 +17,14 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -33,11 +35,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	k8senv "k8s.io/utils/env"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/config"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	runtimeelection "sigs.k8s.io/controller-runtime/pkg/leaderelection"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
@@ -81,12 +86,32 @@ func podClientOptions(enabled bool) client.Options {
 	}
 }
 
+func reconciliationManagerOptions(ctx context.Context, podCacheEnabled bool) ctrl.Options {
+	skipNameValidation := true
+	shutdownTimeout := time.Duration(-1)
+	return ctrl.Options{
+		Scheme: scheme,
+		Client: podClientOptions(podCacheEnabled),
+		Cache: cache.Options{ByObject: map[client.Object]cache.ByObject{
+			&corev1.Pod{}: {Transform: controllers.TransformPodCache},
+		}},
+		Metrics:                metricsserver.Options{BindAddress: "0"},
+		HealthProbeBindAddress: "0",
+		BaseContext:            func() context.Context { return ctx },
+		// The supervisor bounds shutdown externally and must observe full worker termination.
+		GracefulShutdownTimeout: &shutdownTimeout,
+		// Only one term runs at a time; each rebuilds the same named controllers.
+		Controller: config.Controller{SkipNameValidation: &skipNameValidation},
+	}
+}
+
 func main() {
 	var metricsAddr string
 	var enableLeaderElection bool
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var electionOptions leaderElectionOptions
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metric endpoint binds to. "+
 		"Use the port :8080. If not set, it will be 0 in order to disable the metrics server")
@@ -98,6 +123,7 @@ func main() {
 		"If set the metrics endpoint is served securely")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics servers")
+	electionOptions.bindFlags(flag.CommandLine)
 
 	opts := zap.Options{
 		Development: true,
@@ -149,19 +175,6 @@ func main() {
 			TLSOpts:       tlsOpts,
 		},
 		HealthProbeBindAddress: probeAddr,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "d482b936.azure.com",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -274,7 +287,11 @@ func main() {
 		metrics.ControllerEnabled.Set(0)
 	}
 
-	if controllerEnabled {
+	registerReconcilers := func(mgr ctrl.Manager) error {
+		if !controllerEnabled {
+			setupLog.Info("Controller is disabled; serving health and metrics only")
+			return nil
+		}
 		// Build the set of reconcilers to register (inline, where nsfilter is in scope), then
 		// set them up in one flat loop — keeping the kill-switch gate free of deep nesting.
 		reconcilers := []reconcilerSetup{
@@ -299,27 +316,56 @@ func main() {
 			&controllers.NodeReconciler{Client: mgr.GetClient(), Scheme: mgr.GetScheme(), PodCacheEnabled: podCacheEnabled},
 		)
 		for _, r := range reconcilers {
-			if err = r.SetupWithManager(mgr); err != nil {
-				setupLog.Error(err, "unable to set up controller", "controller", fmt.Sprintf("%T", r))
-				os.Exit(1)
+			if err := r.SetupWithManager(mgr); err != nil {
+				return fmt.Errorf("set up controller %T: %w", r, err)
 			}
 		}
 		setupLog.Info("Reconcilers registered", "count", len(reconcilers))
-	} else {
-		// Manager still starts, so /metrics and the health endpoints stay up. This controller's
-		// metric families are registered in metrics.init() (import-time, not per-reconciler), so
-		// they stay exposed — but with no reconcilers running nothing updates them: the *Vec
-		// metrics report no series, and the plain NodeCordoningCounter sits at 0.
-		setupLog.Info("Controller is disabled (CONTROLLER_ENABLED=false); " +
-			"no reconcilers registered — serving health and metrics only")
+		return nil
 	}
 	// +kubebuilder:scaffold:builder
+
+	readyCheck := healthz.Ping
+	if enableLeaderElection {
+		lock, lockErr := runtimeelection.NewResourceLock(rest.CopyConfig(mgr.GetConfig()), mgr, runtimeelection.Options{
+			LeaderElection: true, LeaderElectionID: leaderElectionID, RenewDeadline: electionOptions.renewDeadline,
+		})
+		if lockErr != nil {
+			setupLog.Error(lockErr, "unable to create leader election lock")
+			os.Exit(1)
+		}
+		supervisor, supervisorErr := newLeadershipSupervisor(lock, electionOptions, func(ctx context.Context) error {
+			termManager, err := ctrl.NewManager(mgr.GetConfig(), reconciliationManagerOptions(ctx, podCacheEnabled))
+			if err != nil {
+				return fmt.Errorf("create reconciliation manager: %w", err)
+			}
+			if err := registerReconcilers(termManager); err != nil {
+				return err
+			}
+			return termManager.Start(ctx)
+		})
+		if supervisorErr != nil {
+			setupLog.Error(supervisorErr, "unable to configure leader election")
+			os.Exit(1)
+		}
+		if err := mgr.Add(supervisor); err != nil {
+			setupLog.Error(err, "unable to supervise leader election")
+			os.Exit(1)
+		}
+		readyCheck = supervisor.Check
+		setupLog.Info("Leader election configuration", "leaseDuration", electionOptions.leaseDuration,
+			"renewDeadline", electionOptions.renewDeadline, "retryPeriod", electionOptions.retryPeriod,
+			"requestTimeout", max(time.Second, electionOptions.renewDeadline/2))
+	} else if err := registerReconcilers(mgr); err != nil {
+		setupLog.Error(err, "unable to register reconcilers")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", readyCheck); err != nil {
 		setupLog.Error(err, "unable to set up ready check")
 		os.Exit(1)
 	}

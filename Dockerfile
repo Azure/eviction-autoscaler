@@ -18,7 +18,7 @@ COPY go.sum go.sum
 RUN go mod download
 
 # Copy the go source
-COPY cmd/main.go cmd/main.go
+COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 
@@ -28,7 +28,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=1 \
     GOOS=${TARGETOS:-linux} \
     GOARCH=${TARGETARCH:-amd64} \
-    go build -trimpath -ldflags="-s -w" -o manager cmd/main.go
+    go build -trimpath -ldflags="-s -w" -o manager ./cmd
 
 # Use Azure Linux distroless base as FIPS-compliant runtime image.
 # 'base' variant includes glibc and libssl required by the CGO/OpenSSL-linked binary.

@@ -727,6 +727,75 @@ var _ = Describe("EvictionAutoScaler Controller", func() {
 			Expect(*dep.Spec.Replicas).To(Equal(int32(3)), "no premature scale-down while drain is still blocked")
 		})
 
+		It("should surge above the autoscaler floor when live replicas already exceed it", func() {
+			controllerReconciler := &EvictionAutoScalerReconciler{
+				Client: k8sClient,
+				Scheme: k8sClient.Scheme(),
+				Filter: &evictionTestFilter{},
+			}
+
+			// HPA floor is 1. The deployment is already at 5, which does not
+			// change the floor. One cordoned pod still leaves DisruptionsAllowed at 0
+			// on a PDB whose minAvailable tracks the live count.
+			dep := &appsv1.Deployment{}
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			dep.Spec.Replicas = int32Ptr(5)
+			Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+
+			minReplicas := int32(1)
+			hpa := &autoscalingv2.HorizontalPodAutoscaler{
+				ObjectMeta: metav1.ObjectMeta{Name: "live-above-floor", Namespace: namespace},
+				Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+					ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+						Kind: "Deployment",
+						Name: deploymentName,
+					},
+					MinReplicas: &minReplicas,
+					MaxReplicas: 10,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hpa)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+			ea := &v1.EvictionAutoScaler{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			Expect(ea.Status.MinReplicas).To(Equal(int32(1)))
+
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: "live-above-floor-" + namespace},
+				Spec:       corev1.NodeSpec{Unschedulable: true},
+			}
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
+			pod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "live-above-floor-pod-" + namespace,
+					Namespace: namespace,
+					Labels:    map[string]string{"app": "example"},
+				},
+				Spec: corev1.PodSpec{
+					NodeName:   node.Name,
+					Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, pdb)).To(Succeed())
+			pdb.Status.DisruptionsAllowed = 0
+			Expect(k8sClient.Status().Update(ctx, pdb)).To(Succeed())
+
+			Expect(k8sClient.Get(ctx, typeNamespacedName, ea)).To(Succeed())
+			ea.Spec.LastEviction = v1.Eviction{PodName: pod.Name, EvictionTime: metav1.Now()}
+			Expect(k8sClient.Update(ctx, ea)).To(Succeed())
+
+			_, err = controllerReconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(k8sClient.Get(ctx, deploymentNamespacedName, dep)).To(Succeed())
+			Expect(*dep.Spec.Replicas).To(Equal(int32(6)))
+		})
+
 		It("should surge incrementally across multiple nodes then scale back down when all drains complete", func() {
 			// Full end-to-end multi-node drain scenario:
 			//   1. Cordon node A (2 pods) → surge to minReplicas+2

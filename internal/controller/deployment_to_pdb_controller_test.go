@@ -329,6 +329,51 @@ var _ = Describe("DeploymentToPDBReconciler", func() {
 			Expect(err).ToNot(HaveOccurred())
 			Expect(pdb.Name).To(Equal("deployment-with-nil-strategy"))
 		})
+
+		It("should copy matchExpressions onto the created PodDisruptionBudget", func() {
+			maxUnavailable := intstr.FromInt(0)
+			dep := createDeployment("deployment-with-expressions", namespace, "expr-app", 2, &maxUnavailable)
+			dep.Spec.Selector.MatchExpressions = []metav1.LabelSelectorRequirement{{
+				Key:      "tier",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"web"},
+			}}
+			dep.Spec.Template.Labels["tier"] = "web"
+			Expect(r.Client.Create(ctx, dep)).To(Succeed())
+
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: dep.Name},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: dep.Name}, pdb)).To(Succeed())
+			Expect(pdb.Spec.Selector.MatchLabels).To(Equal(map[string]string{"app": "expr-app"}))
+			Expect(pdb.Spec.Selector.MatchExpressions).To(Equal(dep.Spec.Selector.MatchExpressions))
+		})
+
+		It("should not create an empty selector when the deployment uses only matchExpressions", func() {
+			maxUnavailable := intstr.FromInt(0)
+			dep := createDeployment("deployment-expressions-only", namespace, "expr-only", 2, &maxUnavailable)
+			dep.Spec.Selector = &metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key:      "app",
+					Operator: metav1.LabelSelectorOpIn,
+					Values:   []string{"expr-only"},
+				}},
+			}
+			Expect(r.Client.Create(ctx, dep)).To(Succeed())
+
+			_, err := r.Reconcile(ctx, reconcile.Request{
+				NamespacedName: client.ObjectKey{Namespace: namespace, Name: dep.Name},
+			})
+			Expect(err).ToNot(HaveOccurred())
+
+			pdb := &policyv1.PodDisruptionBudget{}
+			Expect(r.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: dep.Name}, pdb)).To(Succeed())
+			Expect(pdb.Spec.Selector.MatchExpressions).To(Equal(dep.Spec.Selector.MatchExpressions))
+			Expect(pdb.Spec.Selector.MatchLabels).To(BeEmpty())
+		})
 	})
 
 	Describe("when the PDB already exists", func() {

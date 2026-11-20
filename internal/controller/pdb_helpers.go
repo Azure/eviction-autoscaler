@@ -105,8 +105,9 @@ func CreatePDBForDeployment(ctx context.Context, c client.Client, deployment *v1
 			Name:      deployment.Name,
 			Namespace: deployment.Namespace,
 			Annotations: map[string]string{
-				PDBOwnedByAnnotationKey: ControllerName,
-				"target":                deployment.Name,
+				PDBOwnedByAnnotationKey:         ControllerName,
+				PDBDeploymentOwnerAnnotationKey: "true",
+				"target":                        deployment.Name,
 			},
 			OwnerReferences: []metav1.OwnerReference{
 				{
